@@ -15,40 +15,34 @@ The `sfpp` command is a real console-script executable (created by pip), NOT a
 .cmd batch file, so Ctrl-C reaches the program directly and never shows
 cmd.exe's "Terminate batch job (Y/N)?" prompt.
 """
-import glob
+import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 import sysconfig
+
+NODE_MIN = (18, 11)
 
 
 def run(python, *args):
     return subprocess.call([python] + list(args))
 
 
-def scripts_dirs(python):
-    """Candidate directories where pip may have put the `sfpp` console script."""
-    dirs = []
-    s = sysconfig.get_path('scripts')
-    if s:
-        dirs.append(s)
-    # Some managed/vendor Python installs redirect pip to a different
-    # interpreter; scan the interpreter tree for a Scripts folder as a fallback.
-    root = os.path.dirname(os.path.dirname(python))
-    for hit in glob.glob(os.path.join(root, '**', 'Scripts'), recursive=True):
-        if hit not in dirs:
-            dirs.append(hit)
-    return dirs
+def scripts_dir():
+    """The interpreter's Scripts dir — exactly where pip put the `sfpp` script.
+
+    We deliberately avoid globbing the whole drive: with a bare Python install
+    (e.g. C:\\Python310) a recursive `C:\\**\\Scripts` scan never returns."""
+    return sysconfig.get_path('scripts')
 
 
-def find_sfpp(python):
+def find_sfpp():
     """Return the absolute path of the installed `sfpp` executable, or None."""
-    for d in scripts_dirs(python):
-        for name in ('sfpp.exe', 'sfpp'):
-            p = os.path.join(d, name)
-            if os.path.isfile(p):
-                return p
+    d = scripts_dir()
+    for name in ('sfpp.exe', 'sfpp'):
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
     return None
 
 
@@ -87,7 +81,7 @@ def main():
     python = sys.executable
 
     print('Installing Profile Pruner (package + sfpp command)...')
-    # Regular (non-editable) install: copies the module into site-packages so
+    # Regular (non-editable) install: copies the package into site-packages so
     # the `sfpp` console script resolves it reliably, independent of the repo
     # path or any editable-install finder.
     rc = run(python, '-m', 'pip', 'install', here)
@@ -95,23 +89,19 @@ def main():
         print('ERROR: pip install failed (exit code %d).' % rc)
         sys.exit(rc)
 
-    exe = find_sfpp(python)
+    exe = find_sfpp()
     if exe is None:
-        print('WARNING: could not locate the `sfpp` script. It may be under a')
-        print('different interpreter. Run `pip show -f sf-profile-pruner` to find it.')
+        print('WARNING: could not locate the `sfpp` script under %s.' % scripts_dir())
+        print('Run `pip show -f sf-profile-pruner` to find where it was installed.')
     else:
         add_to_path(os.path.dirname(exe))
         print('sfpp installed at: %s' % exe)
         print('Added its folder to PATH.')
 
-    # Runtime checks (non-fatal: the pruner also auto-discovers these).
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'profile_pruner', os.path.join(here, 'prune_profile.py'))
-    pp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pp)
+    # Runtime checks (non-fatal: the pruner also auto-discovers these at run time).
+    import prune_profile as pp
     print('')
-    node = pp.find_node((18, 11))
+    node = pp.find_node(NODE_MIN)
     print('  Node.js      : %s' % (node if node else 'MISSING (need >= 18.11)'))
     sf = pp.find_sf('sf')
     print('  Salesforce   : %s' % (sf if os.path.isfile(sf) else 'MISSING'))

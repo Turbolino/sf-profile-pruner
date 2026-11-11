@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.6] - 2026-11-11
+
+### Fixed
+
+- `first_config.py` could hang forever after `pip install` finished: it scanned
+  the whole drive with a recursive `C:\**\Scripts` glob when the running Python
+  lived at the drive root (e.g. `C:\Python310`). It now uses only the
+  interpreter's own `sysconfig` scripts directory.
+
+### Changed
+
+- Refactored the single `prune_profile.py` module into a `prune_profile/`
+  package split into thematic modules (`constants`, `xmlio`, `sfcli`, `board`,
+  `state`, `engine`, `cli`). Public API re-exported from `__init__.py`; the
+  console script is now `prune_profile.cli:main`, and `python -m prune_profile`
+  also works. No behaviour change.
+- Modernized `pyproject.toml`: SPDX license expression (`AGPL-3.0-only`),
+  `license-files`, `setuptools>=77`; removed the deprecated license classifier
+  and TOML-table license (clears the PyPI build warnings).
+- `install_dependencies.py` now imports the package instead of loading the old
+  single file.
+
 ## [1.10.5] - 2026-11-11
 
 ### Fixed
