@@ -241,6 +241,14 @@ class TestStatusBoard(unittest.TestCase):
         b.freeze()
         b.finalize_stopped()
 
+    def test_clip_to_terminal_width(self):
+        b = pp.StatusBoard(1, quiet=True)
+        self.assertEqual(b._clip('hello'), 'hello')
+        b.width = 10
+        self.assertEqual(b._clip('1234567890'), '123456789')
+        b.width = 0
+        self.assertEqual(b._clip('hello world'), 'hello world')
+
 
 class TestControl(unittest.TestCase):
     def test_initial_state(self):
