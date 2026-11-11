@@ -313,6 +313,21 @@ def remove_from_list(elements, block, member):
     return kept, removed
 
 
+def dangling_members(elements, child, existing):
+    """Return the set of values referenced via `child` in `elements` that are
+    absent from `existing`. Empty values and the '*' master record type are
+    never treated as dangling."""
+    out = set()
+    for el in elements:
+        ce = el.find(M + child)
+        if ce is None or ce.text is None:
+            continue
+        val = ce.text.strip()
+        if val and val != '*' and val not in existing:
+            out.add(val)
+    return out
+
+
 def build_subprofile(elements):
     """Serialize a list of top-level section elements into a Profile XML bytes."""
     root = etree.Element(M + 'Profile', nsmap={None: NS})

@@ -20,14 +20,17 @@ from .constants import (
     AUTHOR_NOTE,
     BANNER,
     BLOCK_MAP,
+    LISTABLE,
     M,
+    MIN_API,
     NS,
     TERMINAL_STATUSES,
     __author__,
     __email__,
     __version__,
+    version_ge,
 )
-from .engine import process_section, worker
+from .engine import prefetch_dangling, process_section, worker
 from .sfcli import (
     _candidate_dirs,
     _node_version,
@@ -37,6 +40,7 @@ from .sfcli import (
     dry_run,
     find_node,
     find_sf,
+    list_metadata,
     poll_deploy,
     report_deploy,
     start_deploy,
@@ -46,6 +50,7 @@ from .xmlio import (
     apply_removals_batch,
     build_subprofile,
     candidates_for_block,
+    dangling_members,
     humanize_status,
     load_log_entries,
     prepare_work_copy,
@@ -61,16 +66,17 @@ from .xmlio import (
 )
 
 __all__ = [
-    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'M', 'NS',
-    'TERMINAL_STATUSES', '__version__', '__author__', '__email__',
+    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'LISTABLE', 'M',
+    'MIN_API', 'NS', 'TERMINAL_STATUSES', '__version__', '__author__',
+    '__email__', 'version_ge',
     'Control', 'Logger', 'Progress', 'StatusBoard', 'SharedState',
-    'process_section', 'worker',
+    'prefetch_dangling', 'process_section', 'worker',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
-    'deploy', 'dry_run', 'find_node', 'find_sf', 'poll_deploy',
-    'report_deploy', 'start_deploy',
+    'deploy', 'dry_run', 'find_node', 'find_sf', 'list_metadata',
+    'poll_deploy', 'report_deploy', 'start_deploy',
     'apply_removals_batch', 'build_subprofile', 'candidates_for_block',
-    'humanize_status', 'load_log_entries', 'prepare_work_copy',
-    'prunable_blocks', 'read_outcome', 'remove_block', 'remove_from_list',
-    'remove_temp_project', 'resolve_error', 'strip_blank_lines',
-    'write_package_xml', 'write_sfdx_project', 'etree',
+    'dangling_members', 'humanize_status', 'load_log_entries',
+    'prepare_work_copy', 'prunable_blocks', 'read_outcome', 'remove_block',
+    'remove_from_list', 'remove_temp_project', 'resolve_error',
+    'strip_blank_lines', 'write_package_xml', 'write_sfdx_project', 'etree',
 ]

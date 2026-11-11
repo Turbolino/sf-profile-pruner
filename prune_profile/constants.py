@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '1.10.12'
+__version__ = '1.11.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -68,4 +68,73 @@ BLOCK_MAP = {
     'StandardObject':     [('objectPermissions', 'object', 'exact')],
     'ServicePresenceStatus': [('servicePresenceStatusAccesses', 'servicePresenceStatus', 'exact')],
     'DataCategoryGroup':  [('categoryGroupVisibilities', 'dataCategoryGroup', 'exact')],
+    # Newer Profile sections (introduced in API 63.0 / 66.0). The child element
+    # name is not yet pinned down by the WSDL, so both variants are listed; a
+    # non-matching name is simply never hit.
+    'AgentDefinition':    [
+        ('agentAccesses', 'agentName', 'exact'),
+        ('agentAccesses', 'agent', 'exact'),
+    ],
+    'GenComputingSummaryDefinition': [
+        ('genComputingSummaryDefAccesses', 'name', 'exact'),
+        ('genComputingSummaryDefAccesses', 'genComputingSummaryDef', 'exact'),
+    ],
 }
+
+# ---------------------------------------------------------------------------
+# Pre-fetch: enumerate existing org metadata via `sf org list metadata` and
+# prune dangling references BEFORE the dry-run loop. Only types whose
+# listMetadata enumeration is complete are here.
+#
+# CustomField / CustomObject / StandardObject are deliberately absent:
+# listMetadata does NOT return standard fields/objects (only custom ones), so
+# enumerating them would prune every valid standard reference. Those stay
+# handled by the per-section dry-run, which is authoritative.
+# ---------------------------------------------------------------------------
+
+# metadata-type name (for `sf org list metadata`) -> [(block, child)]
+LISTABLE = {
+    'ApexClass':          [('classAccesses', 'apexClass')],
+    'ApexPage':           [('pageAccesses', 'apexPage'),
+                           ('loginFlows', 'visualForcePage')],
+    'CustomApplication':  [('applicationVisibilities', 'application')],
+    'CustomTab':          [('tabVisibilities', 'tab')],
+    'CustomPermission':   [('customPermissions', 'name')],
+    'CustomMetadataType': [('customMetadataTypeAccesses', 'name')],
+    'ExternalDataSource': [('externalDataSourceAccesses', 'externalDataSource')],
+    'Flow':               [('flowAccesses', 'flow'),
+                           ('loginFlows', 'flow')],
+    'Layout':             [('layoutAssignments', 'layout')],
+    'RecordType':         [('recordTypeVisibilities', 'recordType'),
+                           ('layoutAssignments', 'recordType')],
+    'ServicePresenceStatus': [('servicePresenceStatusAccesses', 'servicePresenceStatus')],
+    'DataCategoryGroup':  [('categoryGroupVisibilities', 'dataCategoryGroup')],
+    'AgentDefinition':    [('agentAccesses', 'agentName'),
+                           ('agentAccesses', 'agent')],
+    'GenComputingSummaryDefinition': [('genComputingSummaryDefAccesses', 'name'),
+                                      ('genComputingSummaryDefAccesses', 'genComputingSummaryDef')],
+}
+
+# Minimum API version that introduced the corresponding Profile section; the
+# type is not fetched below it.
+MIN_API = {
+    'AgentDefinition': '63.0',
+    'GenComputingSummaryDefinition': '66.0',
+}
+
+
+def version_ge(a, b):
+    """Compare dotted numeric versions: True if a >= b (missing parts = 0)."""
+    def _tup(v):
+        out = []
+        for part in str(v).split('.'):
+            digits = ''.join(ch for ch in part if ch.isdigit())
+            out.append(int(digits) if digits else 0)
+        return out
+    ta, tb = _tup(a), _tup(b)
+    while len(ta) < len(tb):
+        ta.append(0)
+    while len(tb) < len(ta):
+        tb.append(0)
+    return ta >= tb
+

@@ -383,5 +383,40 @@ class TestSharedState(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestPrefetch(unittest.TestCase):
+    def test_dangling_members(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<flowAccesses><flow>Exists</flow></flowAccesses>'
+               '<flowAccesses><flow>MissingFlow</flow></flowAccesses>'
+               '<recordTypeVisibilities><recordType>*</recordType></recordTypeVisibilities>'
+               '<layoutAssignments><layout>X</layout></layoutAssignments>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        flows = [c for c in root if c.tag == pp.M + 'flowAccesses']
+        self.assertEqual(pp.dangling_members(flows, 'flow', {'Exists'}), {'MissingFlow'})
+        self.assertEqual(pp.dangling_members(flows, 'flow', {'Exists', 'MissingFlow'}), set())
+        rts = [c for c in root if c.tag == pp.M + 'recordTypeVisibilities']
+        # '*' is the master record type and is never dangling
+        self.assertEqual(pp.dangling_members(rts, 'recordType', set()), set())
+        # an element without the requested child is never dangling
+        self.assertEqual(pp.dangling_members(flows, 'visualForcePage', set()), set())
+
+    def test_listable_keys_are_block_map_keys(self):
+        for mdtype in pp.LISTABLE:
+            self.assertIn(mdtype, pp.BLOCK_MAP,
+                          'LISTABLE key %r must be a BLOCK_MAP key' % mdtype)
+        # every LISTABLE block is prunable
+        prunable = pp.prunable_blocks()
+        for mdtype, mappings in pp.LISTABLE.items():
+            for block, _child in mappings:
+                self.assertIn(block, prunable)
+
+    def test_version_ge(self):
+        self.assertTrue(pp.version_ge('68.0', '63.0'))
+        self.assertTrue(pp.version_ge('66.0', '66.0'))
+        self.assertFalse(pp.version_ge('62.0', '63.0'))
+        self.assertTrue(pp.version_ge('68', '63.0'))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
