@@ -152,6 +152,32 @@ class TestFindSf(unittest.TestCase):
         self.assertTrue(os.path.isfile(r) or r == 'sf', r)
 
 
+class TestSfInvocation(unittest.TestCase):
+    def test_batch_shim_resolves_to_node_runjs(self):
+        d = tempfile.mkdtemp()
+        runjs = os.path.join(d, 'node_modules', '@salesforce', 'cli', 'bin', 'run.js')
+        os.makedirs(os.path.dirname(runjs), exist_ok=True)
+        open(runjs, 'w').close()
+        sf_cmd = os.path.join(d, 'sf.cmd')
+        open(sf_cmd, 'w').close()
+        node = r'C:\node.exe'
+        out = pp._sf_invocation([sf_cmd, 'project', 'deploy', 'report'], node)
+        self.assertEqual(out[0], node)
+        self.assertIn('run.js', out[2])
+        self.assertEqual(out[3:], ['project', 'deploy', 'report'])
+
+    def test_batch_shim_without_runjs_falls_back(self):
+        d = tempfile.mkdtemp()
+        sf_cmd = os.path.join(d, 'sf.cmd')
+        open(sf_cmd, 'w').close()
+        cmd = [sf_cmd, 'x']
+        self.assertEqual(pp._sf_invocation(cmd, r'C:\node.exe'), cmd)
+
+    def test_non_cmd_untouched(self):
+        cmd = [r'C:\sf\sf.exe', 'x']
+        self.assertEqual(pp._sf_invocation(cmd, r'C:\node.exe'), cmd)
+
+
 class TestFindNode(unittest.TestCase):
     def test_version_none_for_missing(self):
         self.assertIsNone(pp._node_version(r'C:\__missing__\node.exe'))
