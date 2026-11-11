@@ -2,6 +2,7 @@
 """Console UI: timestamped logging and the live multi-thread progress board."""
 
 import os
+import shutil
 import sys
 import threading
 import time
@@ -56,8 +57,12 @@ class StatusBoard:
         self.lock = threading.Lock()
         self.lines_on_screen = 0
         self.active = (not quiet) and bool(getattr(sys.stdout, 'isatty', lambda: False)())
-        if self.active and os.name == 'nt':
-            self.active = self._enable_ansi()
+        self.width = 0
+        if self.active:
+            if os.name == 'nt':
+                self.active = self._enable_ansi()
+            if self.active:
+                self.width = self._terminal_width()
         self._was_active = self.active
         # A background ticker re-renders the board once a second so the
         # `elapsed` clock keeps moving even when no worker posts an update.
@@ -87,16 +92,44 @@ class StatusBoard:
 
     @staticmethod
     def _enable_ansi():
+        """Enable VT processing on the console so ANSI cursor/erase codes
+        actually move the cursor. Uses the real stdout handle (robust when
+        stdout was attached to a console buffer) and falls back to
+        STD_OUTPUT_HANDLE. Returns False when VT cannot be enabled."""
         try:
             import ctypes
+            import msvcrt
             k = ctypes.windll.kernel32
-            h = k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            handle = None
+            try:
+                fd = sys.stdout.fileno()
+                if fd is not None and fd >= 0:
+                    handle = msvcrt.get_osfhandle(fd)
+            except Exception:
+                handle = None
+            if not handle:
+                handle = k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
             mode = ctypes.c_uint32()
-            k.GetConsoleMode(h, ctypes.byref(mode))
-            k.SetConsoleMode(h, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-            return True
+            if not k.GetConsoleMode(handle, ctypes.byref(mode)):
+                return False
+            return bool(k.SetConsoleMode(handle, mode.value | 0x0004))
         except Exception:
             return False
+
+    @staticmethod
+    def _terminal_width():
+        """Current console width in columns (0 when unknown)."""
+        try:
+            return shutil.get_terminal_size((120, 24)).columns
+        except Exception:
+            return 0
+
+    def _clip(self, text):
+        """Trim `text` so it never exceeds the console width (prevents the
+        line from wrapping, which would break the in-place cursor accounting)."""
+        if self.width and len(text) >= self.width:
+            return text[:self.width - 1]
+        return text
 
     def _fmt_row(self, tid, status, tag, op, initial, remaining):
         removed = max(0, initial - remaining)
@@ -137,8 +170,8 @@ class StatusBoard:
         if self.lines_on_screen:
             out.append('\x1b[%dA' % self.lines_on_screen)
         for row in self.rows:
-            out.append('\x1b[2K' + row + '\n')
-        out.append('\x1b[2K' + self._summary() + '\n')
+            out.append('\x1b[2K' + self._clip(row) + '\n')
+        out.append('\x1b[2K' + self._clip(self._summary()) + '\n')
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
         self.lines_on_screen = self.n + 1
