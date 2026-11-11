@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.6.1'
+__version__ = '1.7.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -108,17 +108,76 @@ def timestamp():
 class Logger:
     def __init__(self, quiet, log_path=None):
         self.quiet = quiet
+        self.console = not quiet
         self.log_path = log_path
         self._lock = threading.Lock()
 
     def log(self, msg):
         line = '[%s] %s' % (timestamp(), msg)
         with self._lock:
-            if not self.quiet:
+            if self.console and not self.quiet:
                 print(line, flush=True)
             if self.log_path:
                 with open(self.log_path, 'a', encoding='utf-8') as f:
                     f.write(line + '\n')
+
+
+class StatusBoard:
+    """One live-updating line per worker thread on the console.
+
+    Renders N lines (one per thread) and redraws them in place on every
+    update. Falls back to no-op when stdout is not a TTY (e.g. piped) or
+    when --quiet is set."""
+
+    def __init__(self, n_threads, quiet):
+        self.n = n_threads
+        self.rows = ['[idle]'] * n_threads
+        self.lock = threading.Lock()
+        self.lines_on_screen = 0
+        self.active = (not quiet) and bool(getattr(sys.stdout, 'isatty', lambda: False)())
+        if self.active and os.name == 'nt':
+            self.active = self._enable_ansi()
+
+    @staticmethod
+    def _enable_ansi():
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_uint32()
+            k.GetConsoleMode(h, ctypes.byref(mode))
+            k.SetConsoleMode(h, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            return True
+        except Exception:
+            return False
+
+    def set(self, tid, status, detail=''):
+        with self.lock:
+            self.rows[tid] = '[T%d] %-14s %s' % (tid, status, detail)
+            if self.active:
+                self._render()
+
+    def _render(self):
+        out = []
+        if self.lines_on_screen:
+            out.append('\x1b[%dA' % self.lines_on_screen)
+        for row in self.rows:
+            out.append('\x1b[2K' + row + '\n')
+        sys.stdout.write(''.join(out))
+        sys.stdout.flush()
+        self.lines_on_screen = self.n
+
+    def finish(self):
+        if not self.active:
+            return
+        with self.lock:
+            if self.lines_on_screen:
+                out = ['\x1b[%dA' % self.lines_on_screen]
+                for _ in range(self.n):
+                    out.append('\x1b[2K\n')
+                sys.stdout.write(''.join(out))
+                sys.stdout.flush()
+                self.lines_on_screen = 0
 
 
 def resolve_error(problem):
@@ -259,7 +318,8 @@ def report_deploy(sf, job_id, org, cwd=None):
     return _run_sf(cmd, sf, 'deploy report', cwd=cwd)
 
 
-def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None):
+def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
+                on_status=None):
     """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error)."""
     deadline = time.time() + job_timeout * 60
     last_status = ''
@@ -272,6 +332,8 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None):
         if status and status != last_status:
             logger.log('  [job %s] status: %s' % (job_id, status))
             last_status = status
+            if on_status:
+                on_status(status)
         if status in TERMINAL_STATUSES:
             return res, None
         time.sleep(poll_interval)
@@ -375,20 +437,24 @@ def find_sf(default='sf'):
     return default
 
 
-def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None):
+def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
+            on_status=None):
     """Start an async dry-run and poll to completion. Returns (result_dict_or_None, error)."""
     job_id, err = start_deploy(sf, manifest_path, org, dry_run=True, cwd=cwd)
     if err:
         return None, err
-    return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=cwd)
+    return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger,
+                       cwd=cwd, on_status=on_status)
 
 
-def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None):
+def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
+           on_status=None):
     """Real async deploy. Returns (ok, detail)."""
     job_id, err = start_deploy(sf, manifest_path, org, dry_run=False, cwd=cwd)
     if err:
         return False, err
-    res, err = poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=cwd)
+    res, err = poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger,
+                           cwd=cwd, on_status=on_status)
     if res is None:
         return False, err or 'unparseable deploy output'
     result = res.get('result', {})
@@ -614,8 +680,8 @@ class SharedState:
             self.section_status[block] = (ok, reason)
 
     def apply_and_record(self, block, new_elements, removals, tid):
-        """Under the mutex: update the section, append the error log, rewrite
-        GOOD and ERRORS, and log the names of what was removed."""
+        """Under the mutex: update the section, append the error log, and
+        rewrite GOOD and ERRORS."""
         with self.lock:
             self.groups[block] = new_elements
             for typ, member, problem in removals:
@@ -624,8 +690,6 @@ class SharedState:
                 with open(self.err_log, 'a', encoding='utf-8') as f:
                     f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
             self._write_outputs_locked()
-            names = ', '.join("'%s'" % m for _t, m, _p in removals)
-            self.logger.log('[T%d][%s] removed %s' % (tid, block, names))
 
     def _write_outputs_locked(self):
         surviving = set()
@@ -649,7 +713,7 @@ class SharedState:
             return sum(len(v) for v in self.removed_by_type.values())
 
 
-def process_section(tid, block, state, sf, org, poll_interval, job_timeout,
+def process_section(tid, block, state, board, sf, org, poll_interval, job_timeout,
                     profile_name, api_version, worker_proj, logger, max_iter):
     """Prune a single section until its sub-profile dry-runs clean.
     Returns (ok, reason)."""
@@ -671,8 +735,10 @@ def process_section(tid, block, state, sf, org, poll_interval, job_timeout,
         with open(profile_path, 'wb') as f:
             f.write(build_subprofile(elements))
 
+        board.set(tid, 'dry-run', '%s (%d entries)' % (block, len(elements)))
         res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
-                           logger, cwd=worker_proj)
+                           logger, cwd=worker_proj,
+                           on_status=lambda s: board.set(tid, 'dry-run', '%s [%s]' % (block, s)))
         if res is None:
             return False, err or 'dry-run failed'
         result = res.get('result', {})
@@ -688,6 +754,7 @@ def process_section(tid, block, state, sf, org, poll_interval, job_timeout,
                     'numberComponentErrors': result.get('numberComponentErrors')}
             return False, json.dumps(diag)[:400]
 
+        board.set(tid, 'removing', '%s (%d errors)' % (block, len(failures)))
         removals = []
         for f in failures:
             problem = str(f.get('problem', ''))
@@ -708,18 +775,22 @@ def process_section(tid, block, state, sf, org, poll_interval, job_timeout,
         state.apply_and_record(block, new_elements, removals, tid)
 
 
-def worker(tid, state, queue, queue_lock, sf, org, poll_interval, job_timeout,
+def worker(tid, state, queue, queue_lock, board, sf, org, poll_interval, job_timeout,
            profile_name, api_version, worker_proj, logger, max_iter):
     """Consume one section at a time until the queue is empty."""
     while True:
         with queue_lock:
             if not queue:
+                board.set(tid, 'idle', '')
                 return
             block = queue.popleft()
-        ok, reason = process_section(tid, block, state, sf, org, poll_interval,
+        board.set(tid, 'start', block)
+        ok, reason = process_section(tid, block, state, board, sf, org, poll_interval,
                                      job_timeout, profile_name, api_version,
                                      worker_proj, logger, max_iter)
         state.record_section(block, ok, reason)
+        board.set(tid, 'done' if ok else 'failed',
+                  block if ok else '%s - %s' % (block, reason))
         logger.log('[T%d][%s] %s' % (tid, block, ('DONE: ' + reason) if ok else ('FAILED: ' + reason)))
 
 
@@ -915,13 +986,15 @@ def main():
         # ---------- launch workers ----------
         workers_dir = os.path.join(work_dir, 'workers')
         queue_lock = threading.Lock()
+        board = StatusBoard(args.thread_number, args.quiet)
+        logger.console = False  # board owns the console during the parallel phase
         threads = []
         for tid in range(args.thread_number):
             wp = os.path.join(workers_dir, 'w%d' % tid)
             write_sfdx_project(wp, args.api_version)
             t = threading.Thread(
                 target=worker,
-                args=(tid, state, queue, queue_lock, sf, args.org,
+                args=(tid, state, queue, queue_lock, board, sf, args.org,
                       args.poll_interval, args.job_timeout, profile_name,
                       args.api_version, wp, logger, args.max_iter),
                 daemon=True)
@@ -929,6 +1002,8 @@ def main():
             threads.append(t)
         for t in threads:
             t.join()
+        board.finish()
+        logger.console = not args.quiet
 
         # ---------- outcome ----------
         failed = [(b, r) for b, (ok, r) in state.section_status.items() if not ok]

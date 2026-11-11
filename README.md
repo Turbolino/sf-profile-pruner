@@ -120,6 +120,9 @@ python prune_profile.py \
 
 - **Dry-run by default**: the org is never modified.
 - **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
+- **Live progress board**: during pruning, the console shows one
+  self-updating line per worker thread (status + what it is doing). The full
+  timestamped log still goes to `run.log`, and a summary is printed at the end.
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
