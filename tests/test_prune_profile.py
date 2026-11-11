@@ -174,12 +174,22 @@ class TestStatusBoard(unittest.TestCase):
         self.assertIn('[T1]', b.rows[1])
         self.assertIn('dry-run', b.rows[1])
         self.assertIn('tabVisibilities', b.rows[1])
-        self.assertIn('rem:5', b.rows[1])
-        self.assertIn('del:5', b.rows[1])
-        self.assertIn('ini:10', b.rows[1])
+        self.assertIn('remaining:5', b.rows[1])
+        self.assertIn('deleted:5', b.rows[1])
+        self.assertIn('initial:10', b.rows[1])
         self.assertIn('removing', b.rows[0])
         self.assertIn('classAccesses', b.rows[0])
         # thread 2 still idle
+        self.assertIn('idle', b.rows[2])
+
+    def test_mark_stopped_only_active(self):
+        b = pp.StatusBoard(3, quiet=True)
+        b.set(0, 'dry-run', 'tabVisibilities', 'polling', 10, 5)
+        b.set(1, 'idle')
+        b.mark_stopped()
+        self.assertIn('stopped', b.rows[0])
+        self.assertIn('stopped by user', b.rows[0])
+        self.assertIn('idle', b.rows[1])
         self.assertIn('idle', b.rows[2])
 
     def test_finish_idempotent(self):
@@ -196,6 +206,13 @@ class TestStatusBoard(unittest.TestCase):
         self.assertIn('done: 1', b._summary())
         self.assertIn('running: 1', b._summary())
         self.assertIn('todo: 8', b._summary())
+
+
+class TestControl(unittest.TestCase):
+    def test_initial_state(self):
+        c = pp.Control()
+        self.assertFalse(c.pause.is_set())
+        self.assertFalse(c.stop.is_set())
 
 
 class TestProgress(unittest.TestCase):

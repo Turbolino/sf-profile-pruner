@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-11-11
+
+### Added
+
+- Ctrl-C now pauses the run and prompts `Resume [N] / stop [S]`: N resumes the
+  workers, S marks the active threads "stopped by user" and prints the summary.
+  The board rows are no longer wiped on interrupt.
+
+### Changed
+
+- Live board columns widened and labelled `remaining` / `deleted` / `initial`.
+- Child `sf` process runs in its own process group, so Ctrl-C no longer shows
+  the cmd.exe "Terminate batch job" prompt.
+
 ## [1.9.0] - 2026-11-11
 
 ### Added

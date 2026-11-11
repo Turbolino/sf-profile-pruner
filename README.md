@@ -118,10 +118,13 @@ python prune_profile.py \
 - **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
 - **Live progress board**: during pruning, the console shows one
   self-updating line per worker thread with columns `[Tx] status | tag |
-  operation | rem/del/ini`, plus a summary line with the elapsed time
-  (hh:mm:ss) and the tag counters (done / running / todo). The full
+  operation | remaining/deleted/initial`, plus a summary line with the elapsed
+  time (hh:mm:ss) and the tag counters (done / running / todo). The full
   timestamped log still goes to `run.log`, and a final summary is printed at
   the end.
+- **Ctrl-C pauses the run**: the threads are marked `paused`, and a prompt
+  asks `Resume [N] / stop [S]`. `N` resumes the workers; `S` marks the active
+  threads "stopped by user" and prints the summary.
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
