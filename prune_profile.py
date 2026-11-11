@@ -45,7 +45,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.1.0'
+__version__ = '1.2.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -53,7 +53,7 @@ AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
 APP_NAME = 'Profile Pruner'
 
 BANNER = r'''
- _____   ______  _____  _______ _____        _______       _____   ______ _     _ __   _ _______  ______
+  _____   ______  _____  _______ _____        _______       _____   ______ _     _ __   _ _______  ______
  |_____] |_____/ |     | |______   |   |      |______      |_____] |_____/ |     | | \  | |______ |_____/
  |       |    \_ |_____| |       __|__ |_____ |______      |       |    \_ |_____| |  \_| |______ |    \_
 '''
@@ -196,14 +196,28 @@ def strip_blank_lines(path):
         f.writelines(kept)
 
 
-def dry_run(sf, manifest_path, org):
-    cmd = [sf, 'project', 'deploy', 'start', '--dry-run',
-           '--manifest', manifest_path, '--target-org', org, '--json']
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+def run_deploy(sf, manifest_path, org, wait_minutes, dry_run=False):
+    """Run `sf project deploy start`. Returns (result_dict_or_None, error_string)."""
+    cmd = [sf, 'project', 'deploy', 'start']
+    if dry_run:
+        cmd.append('--dry-run')
+    cmd += ['--manifest', manifest_path, '--target-org', org,
+            '--wait', str(wait_minutes), '--json']
     try:
-        return json.loads(proc.stdout)
-    except Exception:
-        return None
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding='utf-8', errors='replace')
+    except FileNotFoundError:
+        return None, 'sf executable not found: %s (install the Salesforce CLI or pass --sf <path>)' % sf
+    except OSError as e:
+        return None, 'failed to run sf: %s' % e
+    out = (proc.stdout or '').strip()
+    if not out:
+        return None, 'sf returned no output (stderr: %s)' % (proc.stderr or '').strip()[:400]
+    try:
+        return json.loads(out), None
+    except Exception as e:
+        return None, 'unparseable JSON (%s). stderr: %s | stdout head: %s' % (
+            e, (proc.stderr or '').strip()[:300], out[:300])
 
 
 def find_sf(default='sf'):
@@ -217,15 +231,16 @@ def find_sf(default='sf'):
     return default
 
 
-def deploy(sf, manifest_path, org):
-    """Real deploy (no --dry-run) of the manifest. Returns (ok, detail)."""
-    cmd = [sf, 'project', 'deploy', 'start',
-           '--manifest', manifest_path, '--target-org', org, '--json']
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
-    try:
-        res = json.loads(proc.stdout)
-    except Exception:
-        return False, 'unparseable deploy output'
+def dry_run(sf, manifest_path, org, wait_minutes):
+    """Dry-run deploy. Returns (result_dict_or_None, error_string)."""
+    return run_deploy(sf, manifest_path, org, wait_minutes, dry_run=True)
+
+
+def deploy(sf, manifest_path, org, wait_minutes):
+    """Real deploy (no --dry-run). Returns (ok, detail)."""
+    res, err = run_deploy(sf, manifest_path, org, wait_minutes, dry_run=False)
+    if res is None:
+        return False, err or 'unparseable deploy output'
     result = res.get('result', {})
     if result.get('success') is True:
         return True, 'deployed successfully'
@@ -273,6 +288,8 @@ def main():
                     help='iteration cap (default: 5000)')
     ap.add_argument('--sf', default='sf',
                     help='command/path of the Salesforce CLI (default: sf)')
+    ap.add_argument('--wait-minutes', type=int, default=30,
+                    help='minutes the CLI waits for each deploy to complete (default: 30)')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--quiet', action='store_true',
@@ -346,7 +363,7 @@ def main():
     if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(work_path):
         if args.deploy_on_success:
             logger.log('Profile already clean; deploying the GOOD profile as requested...')
-            ok, detail = deploy(sf, manifest_path, args.org)
+            ok, detail = deploy(sf, manifest_path, args.org, args.wait_minutes)
             print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
             sys.exit(0 if ok else 1)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % profile_name)
@@ -387,8 +404,12 @@ def main():
             if len(parts) >= 3:
                 t, m = parts[1], parts[2]
                 error_members.setdefault(t, set()).add(m)
-            start_iter += 1
-        logger.log('RESUME: %d metadata already removed, continuing from the next error.' % start_iter)
+                try:
+                    start_iter = max(start_iter, int(parts[0]))
+                except ValueError:
+                    pass
+        logger.log('RESUME: %d metadata already removed (last iteration %d), continuing from the next error.'
+                   % (sum(len(v) for v in error_members.values()), start_iter))
 
     elif has_log:
         # Log present but the working copy is missing: inconsistent state, do not destroy anything.
@@ -419,9 +440,9 @@ def main():
         iterations = i
         logger.log('[ITER %d] dry-run in progress...' % i)
 
-        res = dry_run(sf, manifest_path, args.org)
+        res, err = dry_run(sf, manifest_path, args.org, args.wait_minutes)
         if res is None:
-            result_reason = 'deploy returned unparseable output'
+            result_reason = err or 'deploy returned unparseable output'
             break
 
         result = res.get('result', {})
@@ -431,29 +452,6 @@ def main():
 
         details = result.get('details', {})
         failures = details.get('componentFailures') or []
-
-        # Async edge case: the CLI can return the deploy job before the
-        # validation details are populated, so `details` is empty although
-        # errors actually exist. Retry a few times instead of aborting.
-        attempts = 0
-        while not failures and attempts < 3:
-            attempts += 1
-            logger.log('[ITER %d] no componentFailures yet, retrying dry-run (%d/3)...' % (i, attempts))
-            time.sleep(5)
-            retry_res = dry_run(sf, manifest_path, args.org)
-            if retry_res is None:
-                continue
-            res = retry_res
-            result = res.get('result', {})
-            if result.get('success') is True:
-                result_state = 'SUCCESS'
-                break
-            details = result.get('details', {})
-            failures = details.get('componentFailures') or []
-
-        if result_state == 'SUCCESS':
-            break
-
         if not failures:
             # Full diagnostics: avoid aborting with {} and no explanation.
             diag = {
@@ -463,34 +461,51 @@ def main():
                 'numberComponentErrors': result.get('numberComponentErrors'),
                 'details': details,
             }
-            result_reason = 'deploy failed without componentFailures after retries: %s' % json.dumps(diag)[:1000]
+            result_reason = 'deploy failed without componentFailures: %s' % json.dumps(diag)[:1000]
             break
 
-        problem = str(failures[0].get('problem', ''))
-        logger.log('[ITER %d] ERROR: %s' % (i, problem))
+        logger.log('[ITER %d] %d component failure(s).' % (i, len(failures)))
 
-        rr = resolve_error(problem)
-        if rr is None:
-            result_reason = 'unmappable error: %s' % problem
-            break
-
-        what, member = rr
-        candidates = BLOCK_MAP.get(what)
-        if candidates is None:
-            result_reason = 'unmappable type (%s): %s' % (what, problem)
-            break
-
-        removed = remove_block(work_path, member, candidates)
-        error_members.setdefault(what, set()).add(member)
-        removed_this_run += removed
+        processed = 0
+        iter_nodes = 0
+        skipped = 0
+        for f in failures:
+            problem = str(f.get('problem', ''))
+            rr = resolve_error(problem)
+            if rr is None:
+                skipped += 1
+                logger.log('[ITER %d] skip (unmappable): %s' % (i, problem))
+                continue
+            what, member = rr
+            candidates = BLOCK_MAP.get(what)
+            if candidates is None:
+                skipped += 1
+                logger.log('[ITER %d] skip (unmappable type %s): %s' % (i, what, problem))
+                continue
+            if member in error_members.get(what, set()):
+                skipped += 1
+                continue
+            try:
+                removed = remove_block(work_path, member, candidates)
+            except RuntimeError as e:
+                skipped += 1
+                logger.log('[ITER %d] skip: %s' % (i, e))
+                continue
+            error_members.setdefault(what, set()).add(member)
+            removed_this_run += removed
+            iter_nodes += removed
+            with open(err_log, 'a', encoding='utf-8') as f:
+                f.write('%d|%s|%s|%s\n' % (i, what, member, problem))
+            processed += 1
 
         write_package_xml(os.path.join(errors_dir, 'package.xml'), error_members, args.api_version)
 
-        with open(err_log, 'a', encoding='utf-8') as f:
-            f.write('%d|%s|%s|%s\n' % (i, what, member, problem))
+        if processed == 0:
+            result_reason = 'no removable block among %d failure(s) (%d skipped)' % (len(failures), skipped)
+            break
 
-        logger.log('[ITER %d] removed %s \'%s\' (%d node(s))  [elapsed %.0fs]'
-                   % (i, what, member, removed, time.time() - t0))
+        logger.log('[ITER %d] removed %d metadata (%d node(s))  [elapsed %.0fs]'
+                   % (i, processed, iter_nodes, time.time() - t0))
 
     elapsed = time.time() - t0
 
@@ -510,7 +525,7 @@ def main():
     deploy_detail = ''
     if result_state == 'SUCCESS' and args.deploy_on_success:
         logger.log('Deploying the cleaned profile to org %s...' % args.org)
-        ok, deploy_detail = deploy(sf, manifest_path, args.org)
+        ok, deploy_detail = deploy(sf, manifest_path, args.org, args.wait_minutes)
         if not ok:
             result_state = 'DEPLOY_FAILED'
 

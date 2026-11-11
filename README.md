@@ -24,8 +24,9 @@ Pruner cleans exactly those leftover references.
 
 ## How it works
 
-1. `sf project deploy start --dry-run` on the profile.
-2. Parse the first component error and remove the offending XML block.
+1. `sf project deploy start --dry-run --wait` on the profile (the CLI waits
+   and returns the full result — no manual polling).
+2. Parse every component error and remove the offending XML blocks in one pass.
 3. Refresh a cumulative `package.xml` with the errored metadata.
 4. Repeat until the dry-run succeeds.
 
@@ -86,6 +87,8 @@ python prune_profile.py \
 
 - **Dry-run by default**: the org is never modified.
 - **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
+- **Batch removal**: every component failure reported by a single deploy is
+  resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
   same command again and it continues from the last error — nothing is redone.
 - **Already clean**: if a previous run ended with `SUCCESS` and you launch it
@@ -105,6 +108,7 @@ python prune_profile.py \
 | `--api-version` | Manifest API version. Default: `68.0`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
+| `--wait-minutes` | Minutes the CLI waits for each deploy to complete. Default: `30`. |
 | `--fresh` | Ignore previous state and restart from the original. |
 | `--quiet` | Suppress progressive stdout output. |
 | `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |
