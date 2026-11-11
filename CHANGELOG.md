@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.11] - 2026-11-11
+
+### Fixed
+
+- Ctrl-C could hang on `Saving pending work...`: a worker blocked inside a
+  slow `sf deploy report`/`deploy start` call never saw the stop flag. `sf`
+  commands are now run via `Popen` with an interruptible poll loop, and the
+  child process (and its tree) is terminated on stop, so the workers exit
+  promptly and the shutdown completes.
+
 ## [1.10.10] - 2026-11-11
 
 ### Fixed

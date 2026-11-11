@@ -31,8 +31,27 @@ def _sf_invocation(cmd, node):
     return cmd
 
 
-def _run_sf(cmd, sf, what, cwd=None):
-    """Run an sf command and parse its JSON. Returns (data_or_None, error)."""
+def _terminate_proc(proc):
+    """Kill a spawned sf child (and its tree on Windows). Best-effort."""
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                           capture_output=True, timeout=10)
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _run_sf(cmd, sf, what, cwd=None, control=None):
+    """Run an sf command and parse its JSON. Returns (data_or_None, error).
+
+    When `control` is provided, the child is polled in a loop so a stop request
+    terminates it promptly (otherwise a slow `sf deploy report` would block the
+    worker and, in turn, the Ctrl-C shutdown)."""
     env = os.environ.copy()
     good_node = find_node()
     if good_node:
@@ -41,30 +60,47 @@ def _run_sf(cmd, sf, what, cwd=None):
         env['PATH'] = os.path.dirname(os.path.abspath(good_node)) + os.pathsep + env.get('PATH', '')
     run_cmd = _sf_invocation(cmd, good_node)
     try:
-        proc = subprocess.run(run_cmd, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace', env=env, cwd=cwd)
+        proc = subprocess.Popen(run_cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True,
+                                encoding='utf-8', errors='replace', env=env, cwd=cwd)
     except FileNotFoundError:
         return None, ('sf executable not found: %s. Install the Salesforce CLI '
                       '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
     except OSError as e:
         return None, 'failed to run %s: %s' % (what, e)
-    out = (proc.stdout or '').strip()
+
+    if control is None:
+        out, err = proc.communicate()
+    else:
+        out, err = '', ''
+        while True:
+            if control.stop.is_set():
+                _terminate_proc(proc)
+                return None, 'stopped by user'
+            try:
+                out, err = proc.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+            except OSError:
+                break
+    out = (out or '').strip()
     if not out:
-        return None, '%s returned no output (stderr: %s)' % (what, (proc.stderr or '').strip()[:400])
+        return None, '%s returned no output (stderr: %s)' % (what, (err or '').strip()[:400])
     try:
         return json.loads(out), None
     except Exception as e:
         return None, 'unparseable JSON from %s (%s). stderr: %s | stdout head: %s' % (
-            what, e, (proc.stderr or '').strip()[:300], out[:300])
+            what, e, (err or '').strip()[:300], out[:300])
 
 
-def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None):
+def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None, control=None):
     """Start an async deploy. Returns (job_id, error)."""
     cmd = [sf, 'project', 'deploy', 'start', '--async']
     if dry_run:
         cmd.append('--dry-run')
     cmd += ['--manifest', manifest_path, '--target-org', org, '--json']
-    res, err = _run_sf(cmd, sf, 'deploy start', cwd=cwd)
+    res, err = _run_sf(cmd, sf, 'deploy start', cwd=cwd, control=control)
     if err:
         return None, err
     result = res.get('result', {})
@@ -74,11 +110,11 @@ def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None):
     return job_id, None
 
 
-def report_deploy(sf, job_id, org, cwd=None):
+def report_deploy(sf, job_id, org, cwd=None, control=None):
     """Fetch the status/details of a deploy job. Returns (result_dict, error)."""
     cmd = [sf, 'project', 'deploy', 'report', '--job-id', job_id,
            '--target-org', org, '--json']
-    return _run_sf(cmd, sf, 'deploy report', cwd=cwd)
+    return _run_sf(cmd, sf, 'deploy report', cwd=cwd, control=control)
 
 
 def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
@@ -89,7 +125,7 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
     while time.time() < deadline:
         if control and control.stop.is_set():
             return None, 'stopped by user'
-        res, err = report_deploy(sf, job_id, org, cwd=cwd)
+        res, err = report_deploy(sf, job_id, org, cwd=cwd, control=control)
         if res is None:
             return None, err
         result = res.get('result', {})
@@ -118,7 +154,8 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
 def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
             on_status=None, control=None):
     """Start an async dry-run and poll to completion. Returns (result_dict_or_None, error)."""
-    job_id, err = start_deploy(sf, manifest_path, org, dry_run=True, cwd=cwd)
+    job_id, err = start_deploy(sf, manifest_path, org, dry_run=True, cwd=cwd,
+                               control=control)
     if err:
         return None, err
     return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger,
@@ -126,13 +163,14 @@ def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None
 
 
 def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
-           on_status=None):
+           on_status=None, control=None):
     """Real async deploy. Returns (ok, detail)."""
-    job_id, err = start_deploy(sf, manifest_path, org, dry_run=False, cwd=cwd)
+    job_id, err = start_deploy(sf, manifest_path, org, dry_run=False, cwd=cwd,
+                               control=control)
     if err:
         return False, err
     res, err = poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger,
-                           cwd=cwd, on_status=on_status)
+                           cwd=cwd, on_status=on_status, control=control)
     if res is None:
         return False, err or 'unparseable deploy output'
     result = res.get('result', {})
