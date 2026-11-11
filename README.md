@@ -53,6 +53,8 @@ with the `sf crud-mdapi read` command.)
    section from the queue.
 4. GOOD/ and ERRORS/ are assembled from the surviving entries, keeping the
    original document order.
+5. As a final safety check, the tool runs one last **dry-run of the whole
+   assembled package**; only if it succeeds the outcome is `SUCCESS`.
 
 ## Requirements
 
