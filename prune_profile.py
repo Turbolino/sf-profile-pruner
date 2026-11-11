@@ -43,12 +43,15 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from collections import OrderedDict, deque
+from copy import deepcopy
 from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.4.2'
+__version__ = '1.5.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -103,14 +106,16 @@ class Logger:
     def __init__(self, quiet, log_path=None):
         self.quiet = quiet
         self.log_path = log_path
+        self._lock = threading.Lock()
 
     def log(self, msg):
         line = '[%s] %s' % (timestamp(), msg)
-        if not self.quiet:
-            print(line, flush=True)
-        if self.log_path:
-            with open(self.log_path, 'a', encoding='utf-8') as f:
-                f.write(line + '\n')
+        with self._lock:
+            if not self.quiet:
+                print(line, flush=True)
+            if self.log_path:
+                with open(self.log_path, 'a', encoding='utf-8') as f:
+                    f.write(line + '\n')
 
 
 def resolve_error(problem):
@@ -202,7 +207,7 @@ def strip_blank_lines(path):
 TERMINAL_STATUSES = {'Succeeded', 'SucceededPartial', 'Failed', 'Canceled'}
 
 
-def _run_sf(cmd, sf, what):
+def _run_sf(cmd, sf, what, cwd=None):
     """Run an sf command and parse its JSON. Returns (data_or_None, error)."""
     env = os.environ.copy()
     good_node = find_node()
@@ -212,7 +217,7 @@ def _run_sf(cmd, sf, what):
         env['PATH'] = os.path.dirname(os.path.abspath(good_node)) + os.pathsep + env.get('PATH', '')
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace', env=env)
+                              encoding='utf-8', errors='replace', env=env, cwd=cwd)
     except FileNotFoundError:
         return None, ('sf executable not found: %s. Install the Salesforce CLI '
                       '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
@@ -228,13 +233,13 @@ def _run_sf(cmd, sf, what):
             what, e, (proc.stderr or '').strip()[:300], out[:300])
 
 
-def start_deploy(sf, manifest_path, org, dry_run=False):
+def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None):
     """Start an async deploy. Returns (job_id, error)."""
     cmd = [sf, 'project', 'deploy', 'start', '--async']
     if dry_run:
         cmd.append('--dry-run')
     cmd += ['--manifest', manifest_path, '--target-org', org, '--json']
-    res, err = _run_sf(cmd, sf, 'deploy start')
+    res, err = _run_sf(cmd, sf, 'deploy start', cwd=cwd)
     if err:
         return None, err
     result = res.get('result', {})
@@ -244,19 +249,19 @@ def start_deploy(sf, manifest_path, org, dry_run=False):
     return job_id, None
 
 
-def report_deploy(sf, job_id, org):
+def report_deploy(sf, job_id, org, cwd=None):
     """Fetch the status/details of a deploy job. Returns (result_dict, error)."""
     cmd = [sf, 'project', 'deploy', 'report', '--job-id', job_id,
            '--target-org', org, '--json']
-    return _run_sf(cmd, sf, 'deploy report')
+    return _run_sf(cmd, sf, 'deploy report', cwd=cwd)
 
 
-def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger):
+def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None):
     """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error)."""
     deadline = time.time() + job_timeout * 60
     last_status = ''
     while time.time() < deadline:
-        res, err = report_deploy(sf, job_id, org)
+        res, err = report_deploy(sf, job_id, org, cwd=cwd)
         if res is None:
             return None, err
         result = res.get('result', {})
@@ -367,20 +372,20 @@ def find_sf(default='sf'):
     return default
 
 
-def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger):
+def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None):
     """Start an async dry-run and poll to completion. Returns (result_dict_or_None, error)."""
-    job_id, err = start_deploy(sf, manifest_path, org, dry_run=True)
+    job_id, err = start_deploy(sf, manifest_path, org, dry_run=True, cwd=cwd)
     if err:
         return None, err
-    return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger)
+    return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=cwd)
 
 
-def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger):
+def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None):
     """Real async deploy. Returns (ok, detail)."""
-    job_id, err = start_deploy(sf, manifest_path, org, dry_run=False)
+    job_id, err = start_deploy(sf, manifest_path, org, dry_run=False, cwd=cwd)
     if err:
         return False, err
-    res, err = poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger)
+    res, err = poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=cwd)
     if res is None:
         return False, err or 'unparseable deploy output'
     result = res.get('result', {})
@@ -521,6 +526,200 @@ def remove_temp_project(project_dir, out_dir):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Parallel section pruning
+# ---------------------------------------------------------------------------
+
+def prunable_blocks():
+    """The top-level Profile tags that carry a reference to other metadata."""
+    blocks = set()
+    for cands in BLOCK_MAP.values():
+        for block, _child, _mode in cands:
+            blocks.add(block)
+    return blocks
+
+
+def candidates_for_block(block):
+    """(type, child, mode) tuples relevant to a given top-level section tag."""
+    out = []
+    for typ, cands in BLOCK_MAP.items():
+        for b, child, mode in cands:
+            if b == block:
+                out.append((typ, child, mode))
+    return out
+
+
+def _matches(val, member, mode):
+    if mode == 'exact':
+        return val == member
+    if mode == 'prefix':
+        return val.startswith(member + '.')
+    if mode == 'suffix':
+        return val.endswith('-' + member)
+    return False
+
+
+def remove_from_list(elements, block, member):
+    """Filter `member` out of a list of section elements. Returns (kept, removed)."""
+    cands = candidates_for_block(block)
+    kept = []
+    removed = 0
+    for el in elements:
+        hit = False
+        for _typ, child, mode in cands:
+            child_el = el.find(M + child)
+            val = (child_el.text or '').strip() if child_el is not None else ''
+            if _matches(val, member, mode):
+                hit = True
+                break
+        if hit:
+            removed += 1
+        else:
+            kept.append(el)
+    return kept, removed
+
+
+def build_subprofile(elements):
+    """Serialize a list of top-level section elements into a Profile XML bytes."""
+    root = etree.Element(M + 'Profile', nsmap={None: NS})
+    for el in elements:
+        root.append(deepcopy(el))
+    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+class SharedState:
+    """Thread-safe shared results: per-section groups + cumulative errors."""
+
+    def __init__(self, groups, original_seq, logger, err_log, good_profile_path,
+                 good_pkg_path, errors_pkg_path, profile_name, api_version):
+        self.lock = threading.Lock()
+        self.groups = groups              # OrderedDict: block -> [lxml elements]
+        self.original_seq = original_seq  # [lxml elements] in document order
+        self.logger = logger
+        self.err_log = err_log
+        self.good_profile_path = good_profile_path
+        self.good_pkg_path = good_pkg_path
+        self.errors_pkg_path = errors_pkg_path
+        self.profile_name = profile_name
+        self.api_version = api_version
+        self.removed_by_type = {}         # type -> set(member)
+        self.seq = 0
+        self.section_status = {}           # block -> (ok, reason)
+
+    def record_section(self, block, ok, reason):
+        with self.lock:
+            self.section_status[block] = (ok, reason)
+
+    def apply_and_record(self, block, new_elements, removals, tid):
+        """Under the mutex: update the section, append the error log, rewrite
+        GOOD and ERRORS, and log the names of what was removed."""
+        with self.lock:
+            self.groups[block] = new_elements
+            for typ, member, problem in removals:
+                self.removed_by_type.setdefault(typ, set()).add(member)
+                self.seq += 1
+                with open(self.err_log, 'a', encoding='utf-8') as f:
+                    f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
+            self._write_outputs_locked()
+            names = ', '.join("'%s'" % m for _t, m, _p in removals)
+            self.logger.log('[T%d][%s] removed %s' % (tid, block, names))
+
+    def _write_outputs_locked(self):
+        surviving = set()
+        for elements in self.groups.values():
+            for el in elements:
+                surviving.add(id(el))
+        root = etree.Element(M + 'Profile', nsmap={None: NS})
+        for el in self.original_seq:
+            if id(el) in surviving:
+                root.append(deepcopy(el))
+        os.makedirs(os.path.dirname(self.good_profile_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.good_pkg_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.errors_pkg_path), exist_ok=True)
+        tree = etree.ElementTree(root)
+        tree.write(self.good_profile_path, encoding='utf-8', xml_declaration=True)
+        write_package_xml(self.good_pkg_path, {'Profile': [self.profile_name]}, self.api_version)
+        write_package_xml(self.errors_pkg_path, self.removed_by_type, self.api_version)
+
+    def totals(self):
+        with self.lock:
+            return sum(len(v) for v in self.removed_by_type.values())
+
+
+def process_section(tid, block, state, sf, org, poll_interval, job_timeout,
+                    profile_name, api_version, worker_proj, logger, max_iter):
+    """Prune a single section until its sub-profile dry-runs clean.
+    Returns (ok, reason)."""
+    manifest_path = os.path.join(worker_proj, 'manifest.xml')
+    profile_path = os.path.join(worker_proj, 'force-app', 'main', 'default',
+                                'profiles', '%s.profile-meta.xml' % profile_name)
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    write_package_xml(manifest_path, {'Profile': [profile_name]}, api_version)
+
+    guard = 0
+    while True:
+        guard += 1
+        if guard > max_iter:
+            return False, 'iteration cap %d reached' % max_iter
+        with state.lock:
+            elements = list(state.groups.get(block, []))
+        if not elements:
+            return True, 'no entries left'
+        with open(profile_path, 'wb') as f:
+            f.write(build_subprofile(elements))
+
+        res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
+                           logger, cwd=worker_proj)
+        if res is None:
+            return False, err or 'dry-run failed'
+        result = res.get('result', {})
+        if result.get('success') is True:
+            return True, 'clean'
+
+        details = result.get('details', {})
+        failures = details.get('componentFailures') or []
+        if not failures:
+            diag = {'status': res.get('status'),
+                    'message': result.get('message'),
+                    'errorMessage': result.get('errorMessage'),
+                    'numberComponentErrors': result.get('numberComponentErrors')}
+            return False, json.dumps(diag)[:400]
+
+        removals = []
+        for f in failures:
+            problem = str(f.get('problem', ''))
+            rr = resolve_error(problem)
+            if rr is None:
+                logger.log('[T%d][%s] unmappable, skipped: %s' % (tid, block, problem))
+                continue
+            removals.append((rr[0], rr[1], problem))
+
+        if not removals:
+            return False, 'no mappable error among %d failure(s)' % len(failures)
+
+        new_elements = list(elements)
+        for typ, member, _problem in removals:
+            new_elements, _n = remove_from_list(new_elements, block, member)
+        if len(new_elements) == len(elements):
+            return False, 'no progress: reported member(s) not found in section %s' % block
+        state.apply_and_record(block, new_elements, removals, tid)
+
+
+def worker(tid, state, queue, queue_lock, sf, org, poll_interval, job_timeout,
+           profile_name, api_version, worker_proj, logger, max_iter):
+    """Consume one section at a time until the queue is empty."""
+    while True:
+        with queue_lock:
+            if not queue:
+                return
+            block = queue.popleft()
+        ok, reason = process_section(tid, block, state, sf, org, poll_interval,
+                                     job_timeout, profile_name, api_version,
+                                     worker_proj, logger, max_iter)
+        state.record_section(block, ok, reason)
+        logger.log('[T%d][%s] %s' % (tid, block, ('DONE: ' + reason) if ok else ('FAILED: ' + reason)))
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
@@ -550,6 +749,8 @@ def main():
                     help='seconds to wait between status polls of a deploy job (default: 5)')
     ap.add_argument('--job-timeout', type=int, default=30,
                     help='minutes to wait for a deploy job to finish before aborting (default: 30)')
+    ap.add_argument('--thread-number', type=int, default=8, metavar='X',
+                    help='number of parallel section jobs, 1..64 (default: 8)')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--quiet', action='store_true',
@@ -560,6 +761,10 @@ def main():
     ap.add_argument('-V', '--version', action='version',
                     version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
     args = ap.parse_args()
+
+    if not (1 <= args.thread_number <= 64):
+        print('ERROR: --thread-number must be between 1 and 64 (got %d).' % args.thread_number)
+        sys.exit(2)
 
     if not args.quiet:
         print(BANNER, flush=True)
@@ -630,15 +835,13 @@ def main():
             good_profile = os.path.join(good_dir, 'profiles', '%s.profile-meta.xml' % profile_name)
             os.makedirs(os.path.dirname(work_path), exist_ok=True)
             shutil.copyfile(good_profile, work_path)
-            os.chdir(project_dir)
             logger.log('Profile already clean; deploying the GOOD profile as requested...')
-            ok, detail = deploy(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
-            if not user_project:
-                remove_temp_project(project_dir, out_dir)
+            ok, detail = deploy(sf, manifest_path, args.org, args.poll_interval,
+                                args.job_timeout, logger, cwd=project_dir)
+            remove_temp_project(work_dir, out_dir)
             print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
             sys.exit(0 if ok else 1)
-        if not user_project:
-            remove_temp_project(project_dir, out_dir)
+        remove_temp_project(work_dir, out_dir)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % profile_name)
         sys.exit(0)
 
@@ -657,130 +860,96 @@ def main():
             os.remove(err_pkg)
         logger.log('CLEAN RUN (--fresh): outputs cleared.')
 
-    # ---------- rebuild the working profile (original + recorded removals) ----------
-    prepare_work_copy(work_path, original_copy, err_log, fresh=args.fresh)
+    # ---------- load original, split into per-section groups ----------
+    tree = etree.parse(original_copy)
+    root = tree.getroot()
+    original_seq = [c for c in root if isinstance(c.tag, str)]
+    groups = OrderedDict()
+    for el in original_seq:
+        block = el.tag.split('}')[-1]
+        groups.setdefault(block, []).append(el)
 
-    # ---------- seed the cumulative state from the log ----------
-    error_members = {}   # type -> set(member)
-    start_iter = 0
-    try:
-        for line in open(err_log, encoding='utf-8', errors='replace'):
-            line = line.strip()
-            if not line:
+    # ---------- apply recorded removals (resume) ----------
+    removed_by_type = {}
+    for typ, member in load_log_entries(err_log):
+        removed_by_type.setdefault(typ, set()).add(member)
+        for block, child, mode in BLOCK_MAP.get(typ, []):
+            g = groups.get(block)
+            if g is None:
                 continue
-            parts = line.split('|')
-            if len(parts) >= 3:
-                error_members.setdefault(parts[1], set()).add(parts[2])
-                try:
-                    start_iter = max(start_iter, int(parts[0]))
-                except ValueError:
-                    pass
-    except OSError:
-        pass
-    if start_iter:
-        logger.log('RESUME: %d metadata already removed (last iteration %d).'
-                   % (sum(len(v) for v in error_members.values()), start_iter))
+            g, _n = remove_from_list(g, block, member)
+            groups[block] = g
+
+    total_resumed = sum(len(v) for v in removed_by_type.values())
+    if total_resumed:
+        logger.log('RESUME: %d metadata already removed.' % total_resumed)
     else:
         logger.log('FIRST RUN.')
 
-    os.chdir(project_dir)
+    # ---------- queue of prunable sections that still have entries ----------
+    queue = deque()
+    for block in groups:
+        if block in prunable_blocks() and groups[block]:
+            queue.append(block)
+    logger.log('Sections to prune: %s' % (', '.join(queue) if queue else '(none)'))
+
+    # ---------- shared state + initial outputs ----------
+    good_profile_path = os.path.join(good_dir, 'profiles', '%s.profile-meta.xml' % profile_name)
+    errors_pkg = os.path.join(errors_dir, 'package.xml')
+    state = SharedState(groups, original_seq, logger, err_log, good_profile_path,
+                        good_pkg, errors_pkg, profile_name, args.api_version)
+    state.removed_by_type = removed_by_type
+    with state.lock:
+        state._write_outputs_locked()
+
     t0 = time.time()
-
-    result_state = 'ABORTED'
     result_reason = ''
-    iterations = start_iter
-    removed_this_run = 0
 
-    for i in range(start_iter + 1, start_iter + args.max_iter + 1):
-        iterations = i
-        logger.log('[ITER %d] dry-run in progress...' % i)
+    if not queue:
+        result_state = 'SUCCESS'
+        logger.log('Nothing to prune: all sections already clean.')
+    else:
+        # ---------- launch workers ----------
+        workers_dir = os.path.join(work_dir, 'workers')
+        queue_lock = threading.Lock()
+        threads = []
+        for tid in range(args.thread_number):
+            wp = os.path.join(workers_dir, 'w%d' % tid)
+            write_sfdx_project(wp, args.api_version)
+            t = threading.Thread(
+                target=worker,
+                args=(tid, state, queue, queue_lock, sf, args.org,
+                      args.poll_interval, args.job_timeout, profile_name,
+                      args.api_version, wp, logger, args.max_iter),
+                daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
 
-        res, err = dry_run(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
-        if res is None:
-            result_reason = err or 'deploy returned unparseable output'
-            break
-
-        result = res.get('result', {})
-        if result.get('success') is True:
+        # ---------- outcome ----------
+        failed = [(b, r) for b, (ok, r) in state.section_status.items() if not ok]
+        if failed:
+            result_state = 'ABORTED'
+            result_reason = '; '.join('%s: %s' % (b, r) for b, r in failed)
+        else:
             result_state = 'SUCCESS'
-            break
-
-        details = result.get('details', {})
-        failures = details.get('componentFailures') or []
-        if not failures:
-            # Full diagnostics: avoid aborting with {} and no explanation.
-            diag = {
-                'status': res.get('status'),
-                'message': result.get('message'),
-                'errorMessage': result.get('errorMessage'),
-                'numberComponentErrors': result.get('numberComponentErrors'),
-                'details': details,
-            }
-            result_reason = 'deploy failed without componentFailures: %s' % json.dumps(diag)[:1000]
-            break
-
-        logger.log('[ITER %d] %d component failure(s).' % (i, len(failures)))
-
-        processed = 0
-        iter_nodes = 0
-        skipped = 0
-        for f in failures:
-            problem = str(f.get('problem', ''))
-            rr = resolve_error(problem)
-            if rr is None:
-                skipped += 1
-                logger.log('[ITER %d] skip (unmappable): %s' % (i, problem))
-                continue
-            what, member = rr
-            candidates = BLOCK_MAP.get(what)
-            if candidates is None:
-                skipped += 1
-                logger.log('[ITER %d] skip (unmappable type %s): %s' % (i, what, problem))
-                continue
-            if member in error_members.get(what, set()):
-                skipped += 1
-                continue
-            try:
-                removed = remove_block(work_path, member, candidates)
-            except RuntimeError as e:
-                skipped += 1
-                logger.log('[ITER %d] skip: %s' % (i, e))
-                continue
-            error_members.setdefault(what, set()).add(member)
-            removed_this_run += removed
-            iter_nodes += removed
-            with open(err_log, 'a', encoding='utf-8') as f:
-                f.write('%d|%s|%s|%s\n' % (i, what, member, problem))
-            processed += 1
-
-        write_package_xml(os.path.join(errors_dir, 'package.xml'), error_members, args.api_version)
-
-        if processed == 0:
-            result_reason = 'no removable block among %d failure(s) (%d skipped)' % (len(failures), skipped)
-            break
-
-        logger.log('[ITER %d] removed %d metadata (%d node(s))  [elapsed %.0fs]'
-                   % (i, processed, iter_nodes, time.time() - t0))
 
     elapsed = time.time() - t0
 
-    # ---------- strip blank lines from the working profile ----------
-    strip_blank_lines(work_path)
-
-    # ---------- GOOD ----------
-    good_profiles = os.path.join(good_dir, 'profiles')
-    os.makedirs(good_profiles, exist_ok=True)
-    shutil.copyfile(work_path, os.path.join(good_profiles, '%s.profile-meta.xml' % profile_name))
-    write_package_xml(os.path.join(good_dir, 'package.xml'), {'Profile': [profile_name]}, args.api_version)
-
-    # ---------- ERRORS (cumulative, always refreshed) ----------
-    write_package_xml(os.path.join(errors_dir, 'package.xml'), error_members, args.api_version)
+    # ---------- final GOOD/ERRORS ----------
+    with state.lock:
+        state._write_outputs_locked()
+    total_removed = state.totals()
 
     # ---------- optional deploy (only with --deploy-on-success) ----------
     deploy_detail = ''
     if result_state == 'SUCCESS' and args.deploy_on_success:
         logger.log('Deploying the cleaned profile to org %s...' % args.org)
-        ok, deploy_detail = deploy(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
+        os.makedirs(os.path.dirname(work_path), exist_ok=True)
+        shutil.copyfile(good_profile_path, work_path)
+        ok, deploy_detail = deploy(sf, manifest_path, args.org, args.poll_interval,
+                                   args.job_timeout, logger, cwd=project_dir)
         if not ok:
             result_state = 'DEPLOY_FAILED'
 
@@ -789,16 +958,14 @@ def main():
     lines.append('OUTCOME: %s' % result_state)
     if result_reason:
         lines.append('REASON: %s' % result_reason)
-    lines.append('ITERATIONS: %d' % iterations)
-    lines.append('METADATA REMOVED (total): %d' % sum(len(v) for v in error_members.values()))
-    lines.append('NODES REMOVED (this run): %d' % removed_this_run)
+    lines.append('METADATA REMOVED (total): %d' % total_removed)
     lines.append('TIME: %.1fs' % elapsed)
     if deploy_detail:
         lines.append('DEPLOY: %s' % deploy_detail)
     lines.append('')
     lines.append('Removed by type:')
-    for t in sorted(error_members):
-        lines.append('  %s : %d' % (t, len(error_members[t])))
+    for t in sorted(removed_by_type):
+        lines.append('  %s : %d' % (t, len(removed_by_type[t])))
     lines.append('')
     lines.append('Output:')
     lines.append('  GOOD   : %s' % good_dir)
@@ -807,10 +974,8 @@ def main():
     with open(report, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
 
-    # ---------- throw away the temporary micro-project ----------
-    if not user_project:
-        remove_temp_project(project_dir, out_dir)
-        logger.log('Temporary project removed: %s' % project_dir)
+    # ---------- throw away our temporary work area ----------
+    remove_temp_project(work_dir, out_dir)
 
     # ---------- final output ----------
     logger.log('')
