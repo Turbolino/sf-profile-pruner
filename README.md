@@ -33,11 +33,13 @@ with the `sf crud-mdapi read` command.)
 
 ## How it works
 
-1. `sf project deploy start --dry-run --wait` on the profile (the CLI waits
-   and returns the full result — no manual polling).
-2. Parse every component error and remove the offending XML blocks in one pass.
-3. Refresh a cumulative `package.xml` with the errored metadata.
-4. Repeat until the dry-run succeeds.
+1. Start an async deploy dry-run (`sf project deploy start --dry-run --async`)
+   which returns a job ID immediately.
+2. Poll the job status with `sf project deploy report --job-id <ID>` until it
+   reaches a terminal status (Succeeded/Failed/…).
+3. Parse every component error and remove the offending XML blocks in one pass.
+4. Refresh a cumulative `package.xml` with the errored metadata.
+5. Repeat until the dry-run succeeds.
 
 ## Requirements
 
@@ -117,7 +119,8 @@ python prune_profile.py \
 | `--api-version` | Manifest API version. Default: `68.0`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
-| `--wait-minutes` | Minutes the CLI waits for each deploy to complete. Default: `30`. |
+| `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
+| `--job-timeout` | Minutes to wait for a deploy job to finish before aborting. Default: `30`. |
 | `--fresh` | Ignore previous state and restart from the original. |
 | `--quiet` | Suppress progressive stdout output. |
 | `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |

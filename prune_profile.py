@@ -9,8 +9,9 @@ and never modifies the org; with `--deploy-on-success` the cleaned profile is
 deployed at the end.
 
 Algorithm (per iteration):
-  1. deploy dry-run of the profile
-  2. remove the XML block that caused the error
+  1. start an async deploy dry-run (--dry-run --async) and poll its job
+     status via `sf project deploy report` until it is terminal
+  2. remove the XML block(s) that caused every reported error
   3. refresh the cumulative package.xml with the errored metadata
 until the dry-run succeeds.
 
@@ -45,7 +46,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.2.0'
+__version__ = '1.3.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -196,28 +197,69 @@ def strip_blank_lines(path):
         f.writelines(kept)
 
 
-def run_deploy(sf, manifest_path, org, wait_minutes, dry_run=False):
-    """Run `sf project deploy start`. Returns (result_dict_or_None, error_string)."""
-    cmd = [sf, 'project', 'deploy', 'start']
-    if dry_run:
-        cmd.append('--dry-run')
-    cmd += ['--manifest', manifest_path, '--target-org', org,
-            '--wait', str(wait_minutes), '--json']
+TERMINAL_STATUSES = {'Succeeded', 'SucceededPartial', 'Failed', 'Canceled'}
+
+
+def _run_sf(cmd, sf, what):
+    """Run an sf command and parse its JSON. Returns (data_or_None, error)."""
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               encoding='utf-8', errors='replace')
     except FileNotFoundError:
         return None, 'sf executable not found: %s (install the Salesforce CLI or pass --sf <path>)' % sf
     except OSError as e:
-        return None, 'failed to run sf: %s' % e
+        return None, 'failed to run %s: %s' % (what, e)
     out = (proc.stdout or '').strip()
     if not out:
-        return None, 'sf returned no output (stderr: %s)' % (proc.stderr or '').strip()[:400]
+        return None, '%s returned no output (stderr: %s)' % (what, (proc.stderr or '').strip()[:400])
     try:
         return json.loads(out), None
     except Exception as e:
-        return None, 'unparseable JSON (%s). stderr: %s | stdout head: %s' % (
-            e, (proc.stderr or '').strip()[:300], out[:300])
+        return None, 'unparseable JSON from %s (%s). stderr: %s | stdout head: %s' % (
+            what, e, (proc.stderr or '').strip()[:300], out[:300])
+
+
+def start_deploy(sf, manifest_path, org, dry_run=False):
+    """Start an async deploy. Returns (job_id, error)."""
+    cmd = [sf, 'project', 'deploy', 'start', '--async']
+    if dry_run:
+        cmd.append('--dry-run')
+    cmd += ['--manifest', manifest_path, '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'deploy start')
+    if err:
+        return None, err
+    result = res.get('result', {})
+    job_id = result.get('id') or result.get('jobId')
+    if not job_id:
+        return None, 'deploy start returned no job id: %s' % json.dumps(res)[:400]
+    return job_id, None
+
+
+def report_deploy(sf, job_id, org):
+    """Fetch the status/details of a deploy job. Returns (result_dict, error)."""
+    cmd = [sf, 'project', 'deploy', 'report', '--job-id', job_id,
+           '--target-org', org, '--json']
+    return _run_sf(cmd, sf, 'deploy report')
+
+
+def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger):
+    """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error)."""
+    deadline = time.time() + job_timeout * 60
+    last_status = ''
+    while time.time() < deadline:
+        res, err = report_deploy(sf, job_id, org)
+        if res is None:
+            return None, err
+        result = res.get('result', {})
+        status = str(result.get('status', ''))
+        if status and status != last_status:
+            logger.log('  [job %s] status: %s' % (job_id, status))
+            last_status = status
+        if status in TERMINAL_STATUSES:
+            return res, None
+        time.sleep(poll_interval)
+    return None, 'deploy job %s did not reach a terminal status within %d min (last status: %s)' % (
+        job_id, job_timeout, last_status or '?')
 
 
 def find_sf(default='sf'):
@@ -231,14 +273,20 @@ def find_sf(default='sf'):
     return default
 
 
-def dry_run(sf, manifest_path, org, wait_minutes):
-    """Dry-run deploy. Returns (result_dict_or_None, error_string)."""
-    return run_deploy(sf, manifest_path, org, wait_minutes, dry_run=True)
+def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger):
+    """Start an async dry-run and poll to completion. Returns (result_dict_or_None, error)."""
+    job_id, err = start_deploy(sf, manifest_path, org, dry_run=True)
+    if err:
+        return None, err
+    return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger)
 
 
-def deploy(sf, manifest_path, org, wait_minutes):
-    """Real deploy (no --dry-run). Returns (ok, detail)."""
-    res, err = run_deploy(sf, manifest_path, org, wait_minutes, dry_run=False)
+def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger):
+    """Real async deploy. Returns (ok, detail)."""
+    job_id, err = start_deploy(sf, manifest_path, org, dry_run=False)
+    if err:
+        return False, err
+    res, err = poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger)
     if res is None:
         return False, err or 'unparseable deploy output'
     result = res.get('result', {})
@@ -288,8 +336,10 @@ def main():
                     help='iteration cap (default: 5000)')
     ap.add_argument('--sf', default='sf',
                     help='command/path of the Salesforce CLI (default: sf)')
-    ap.add_argument('--wait-minutes', type=int, default=30,
-                    help='minutes the CLI waits for each deploy to complete (default: 30)')
+    ap.add_argument('--poll-interval', type=float, default=5.0,
+                    help='seconds to wait between status polls of a deploy job (default: 5)')
+    ap.add_argument('--job-timeout', type=int, default=30,
+                    help='minutes to wait for a deploy job to finish before aborting (default: 30)')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--quiet', action='store_true',
@@ -363,7 +413,7 @@ def main():
     if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(work_path):
         if args.deploy_on_success:
             logger.log('Profile already clean; deploying the GOOD profile as requested...')
-            ok, detail = deploy(sf, manifest_path, args.org, args.wait_minutes)
+            ok, detail = deploy(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
             print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
             sys.exit(0 if ok else 1)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % profile_name)
@@ -440,7 +490,7 @@ def main():
         iterations = i
         logger.log('[ITER %d] dry-run in progress...' % i)
 
-        res, err = dry_run(sf, manifest_path, args.org, args.wait_minutes)
+        res, err = dry_run(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
         if res is None:
             result_reason = err or 'deploy returned unparseable output'
             break
@@ -525,7 +575,7 @@ def main():
     deploy_detail = ''
     if result_state == 'SUCCESS' and args.deploy_on_success:
         logger.log('Deploying the cleaned profile to org %s...' % args.org)
-        ok, deploy_detail = deploy(sf, manifest_path, args.org, args.wait_minutes)
+        ok, deploy_detail = deploy(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
         if not ok:
             result_state = 'DEPLOY_FAILED'
 
