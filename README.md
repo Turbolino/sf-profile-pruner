@@ -54,7 +54,7 @@ references.
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.9+
 - `lxml` (installed automatically by the scripts below)
 - Salesforce CLI (`sf`) — auto-discovered from `PATH` and common install
   locations, or pass `--sf <path>` explicitly
@@ -107,7 +107,7 @@ sfpp \
 Or, without the `sfpp` launcher:
 
 ```bash
-python prune_profile.py \
+python -m prune_profile \
   --profile-path "path/to/My Profile.profile-meta.xml" \
   --profile-name "My Profile" \
   --out-dir "path/to/output" \
@@ -177,6 +177,23 @@ out-dir/
 > You don't need your own SFDX project. If `--project-dir` is omitted, the tool
 > creates a minimal one (`sfdx-project.json` only) under `.work/project/`, uses
 > it for the deploy commands, and deletes it when finished.
+
+## Repository structure
+
+The tool is a small Python package split into thematic modules:
+
+```
+prune_profile/
+├── __init__.py     public package surface (re-exports)
+├── __main__.py     lets you run `python -m prune_profile`
+├── constants.py    identity/version, namespace and the error-type mapping
+├── xmlio.py        profile XML + package/manifest file I/O
+├── sfcli.py        Salesforce CLI integration + sf/Node discovery
+├── board.py        console logging and the live progress board
+├── state.py        thread-safe shared pruning state
+├── engine.py       parallel per-section pruning workers
+└── cli.py          command-line entry point (`main()`)
+```
 
 ## Notes
 

@@ -1,0 +1,106 @@
+# -*- coding: utf-8 -*-
+"""Parallel pruning engine: the per-section worker and its section loop."""
+
+import json
+import os
+
+from .sfcli import dry_run
+from .xmlio import build_subprofile, remove_from_list, resolve_error, write_package_xml
+
+
+def process_section(tid, block, state, board, sf, org, poll_interval, job_timeout,
+                    profile_name, api_version, worker_proj, logger, max_iter, control):
+    """Prune a single section until its sub-profile dry-runs clean.
+    Returns (ok, reason)."""
+    manifest_path = os.path.join(worker_proj, 'manifest.xml')
+    profile_path = os.path.join(worker_proj, 'force-app', 'main', 'default',
+                                'profiles', '%s.profile-meta.xml' % profile_name)
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    write_package_xml(manifest_path, {'Profile': [profile_name]}, api_version)
+
+    with state.lock:
+        initial = state.initial_counts.get(block, 0)
+
+    guard = 0
+    while True:
+        guard += 1
+        if guard > max_iter:
+            return False, 'iteration cap %d reached' % max_iter
+        if control.stop.is_set():
+            return False, 'stopped by user'
+        with state.lock:
+            elements = list(state.groups.get(block, []))
+        if not elements:
+            return True, 'no entries left'
+        with open(profile_path, 'wb') as f:
+            f.write(build_subprofile(elements))
+
+        board.set(tid, 'dry-run', block, 'polling', initial, len(elements))
+        res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
+                           logger, cwd=worker_proj,
+                           on_status=lambda s: board.set(tid, 'dry-run', block, s,
+                                                         initial, len(elements)),
+                           control=control)
+        if res is None:
+            if err == 'stopped by user':
+                return False, 'stopped by user'
+            return False, err or 'dry-run failed'
+        result = res.get('result', {})
+        if result.get('success') is True:
+            return True, 'clean'
+
+        details = result.get('details', {})
+        failures = details.get('componentFailures') or []
+        if not failures:
+            diag = {'status': res.get('status'),
+                    'message': result.get('message'),
+                    'errorMessage': result.get('errorMessage'),
+                    'numberComponentErrors': result.get('numberComponentErrors')}
+            return False, json.dumps(diag)[:400]
+
+        board.set(tid, 'removing', block, '%d errors' % len(failures),
+                  initial, len(elements))
+        removals = []
+        for f in failures:
+            problem = str(f.get('problem', ''))
+            rr = resolve_error(problem)
+            if rr is None:
+                logger.log('[T%d][%s] unmappable, skipped: %s' % (tid, block, problem))
+                continue
+            removals.append((rr[0], rr[1], problem))
+
+        if not removals:
+            return False, 'no mappable error among %d failure(s)' % len(failures)
+
+        new_elements = list(elements)
+        for typ, member, _problem in removals:
+            new_elements, _n = remove_from_list(new_elements, block, member)
+        if len(new_elements) == len(elements):
+            return False, 'no progress: reported member(s) not found in section %s' % block
+        state.apply_and_record(block, new_elements, removals, tid)
+
+
+def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
+           poll_interval, job_timeout, profile_name, api_version, worker_proj,
+           logger, max_iter):
+    """Consume one section at a time until the queue is empty."""
+    while True:
+        if control.stop.is_set():
+            return
+        with queue_lock:
+            if not queue:
+                board.set(tid, 'idle')
+                return
+            block = queue.popleft()
+        progress.start()
+        board.set(tid, 'start', block, 'queued')
+        ok, reason = process_section(tid, block, state, board, sf, org, poll_interval,
+                                     job_timeout, profile_name, api_version,
+                                     worker_proj, logger, max_iter, control)
+        state.record_section(block, ok, reason)
+        progress.finish(ok)
+        if control.stop.is_set():
+            return
+        board.set(tid, 'ok' if ok else 'fail', block,
+                  reason if not ok else 'clean', 0, 0)
+        logger.log('[T%d][%s] %s' % (tid, block, ('DONE: ' + reason) if ok else ('FAILED: ' + reason)))
