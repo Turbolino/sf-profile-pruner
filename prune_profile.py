@@ -26,13 +26,13 @@ RESUME BEHAVIOUR
 
 OUTPUT (in --out-dir)
   ORIGINAL_<name>.profile-meta.xml   untouched copy of the original
-  GOOD/package.xml + GOOD/profiles/   clean, deployable profile
-  ERRORS/package.xml                  cumulative package of missing metadata
-  errors_log.txt                      line-by-line log (resumable)
-  run.log                             progressive log copy
-  report.txt                          final outcome
-  .work/manifest.xml                  internal manifest (not a deliverable)
-  .work/project/                      minimal temporary SFDX project (removed at the end)
+  GOOD/<name>.profile-meta.xml       clean, deployable profile (the only GOOD artifact)
+  ERRORS/package.xml                 cumulative package of removed/missing metadata
+  errors_log.txt                     line-by-line log (resumable)
+  run.log                            progressive log copy
+  report.txt                         final outcome
+  .work/manifest.xml                 internal manifest (not a deliverable)
+  .work/project/                     minimal temporary SFDX project (removed at the end)
 """
 
 import argparse
@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.7.0'
+__version__ = '1.8.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -660,14 +660,13 @@ class SharedState:
     """Thread-safe shared results: per-section groups + cumulative errors."""
 
     def __init__(self, groups, original_seq, logger, err_log, good_profile_path,
-                 good_pkg_path, errors_pkg_path, profile_name, api_version):
+                 errors_pkg_path, profile_name, api_version):
         self.lock = threading.Lock()
         self.groups = groups              # OrderedDict: block -> [lxml elements]
         self.original_seq = original_seq  # [lxml elements] in document order
         self.logger = logger
         self.err_log = err_log
         self.good_profile_path = good_profile_path
-        self.good_pkg_path = good_pkg_path
         self.errors_pkg_path = errors_pkg_path
         self.profile_name = profile_name
         self.api_version = api_version
@@ -681,7 +680,7 @@ class SharedState:
 
     def apply_and_record(self, block, new_elements, removals, tid):
         """Under the mutex: update the section, append the error log, and
-        rewrite GOOD and ERRORS."""
+        rewrite the GOOD profile and the ERRORS package."""
         with self.lock:
             self.groups[block] = new_elements
             for typ, member, problem in removals:
@@ -701,11 +700,9 @@ class SharedState:
             if id(el) in surviving:
                 root.append(deepcopy(el))
         os.makedirs(os.path.dirname(self.good_profile_path), exist_ok=True)
-        os.makedirs(os.path.dirname(self.good_pkg_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.errors_pkg_path), exist_ok=True)
         tree = etree.ElementTree(root)
         tree.write(self.good_profile_path, encoding='utf-8', xml_declaration=True)
-        write_package_xml(self.good_pkg_path, {'Profile': [self.profile_name]}, self.api_version)
         write_package_xml(self.errors_pkg_path, self.removed_by_type, self.api_version)
 
     def totals(self):
@@ -903,10 +900,9 @@ def main():
 
     # ---------- already clean? ----------
     prev_outcome = read_outcome(report)
-    good_pkg = os.path.join(good_dir, 'package.xml')
-    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(good_pkg):
+    good_profile = os.path.join(good_dir, '%s.profile-meta.xml' % profile_name)
+    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(good_profile):
         if args.deploy_on_success:
-            good_profile = os.path.join(good_dir, 'profiles', '%s.profile-meta.xml' % profile_name)
             os.makedirs(os.path.dirname(work_path), exist_ok=True)
             shutil.copyfile(good_profile, work_path)
             logger.log('Profile already clean; deploying the GOOD profile as requested...')
@@ -924,11 +920,8 @@ def main():
         for p in (err_log, report, run_log):
             if os.path.exists(p):
                 os.remove(p)
-        good_profiles = os.path.join(good_dir, 'profiles')
-        if os.path.isdir(good_profiles):
-            shutil.rmtree(good_profiles, ignore_errors=True)
-        if os.path.exists(good_pkg):
-            os.remove(good_pkg)
+        if os.path.exists(good_profile):
+            os.remove(good_profile)
         err_pkg = os.path.join(errors_dir, 'package.xml')
         if os.path.exists(err_pkg):
             os.remove(err_pkg)
@@ -968,10 +961,10 @@ def main():
     logger.log('Sections to prune: %s' % (', '.join(queue) if queue else '(none)'))
 
     # ---------- shared state + initial outputs ----------
-    good_profile_path = os.path.join(good_dir, 'profiles', '%s.profile-meta.xml' % profile_name)
+    good_profile_path = os.path.join(good_dir, '%s.profile-meta.xml' % profile_name)
     errors_pkg = os.path.join(errors_dir, 'package.xml')
     state = SharedState(groups, original_seq, logger, err_log, good_profile_path,
-                        good_pkg, errors_pkg, profile_name, args.api_version)
+                        errors_pkg, profile_name, args.api_version)
     state.removed_by_type = removed_by_type
     with state.lock:
         state._write_outputs_locked()

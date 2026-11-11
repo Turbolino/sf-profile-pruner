@@ -223,14 +223,15 @@ class TestSharedState(unittest.TestCase):
             # drop the tabVisibilities entry
             tab = groups['tabVisibilities']
             groups['tabVisibilities'] = []
-            good = os.path.join(d, 'GOOD', 'profiles', 'X.profile-meta.xml')
+            good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
             errpkg = os.path.join(d, 'ERRORS', 'package.xml')
-            goodpkg = os.path.join(d, 'GOOD', 'package.xml')
             st = pp.SharedState(groups, seq, pp.Logger(True), os.path.join(d, 'e.txt'),
-                                good, goodpkg, errpkg, 'X', '68.0')
+                                good, errpkg, 'X', '68.0')
             st._write_outputs_locked()
             tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
             self.assertEqual(tags, ['fieldPermissions', 'classAccesses', 'objectPermissions'])
+            # no package.xml in GOOD
+            self.assertFalse(os.path.isfile(os.path.join(d, 'GOOD', 'package.xml')))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
