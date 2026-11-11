@@ -50,39 +50,9 @@ AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
 APP_NAME = 'Profile Pruner'
 
 BANNER = r'''
-PPPPPPPPPPPPPPPPP                                           ffffffffffffffff    iiii  lllllll
-P::::::::::::::::P                                         f::::::::::::::::f  i::::i l:::::l
-P::::::PPPPPP:::::P                                       f::::::::::::::::::f  iiii  l:::::l
-PP:::::P     P:::::P                                      f::::::fffffff:::::f        l:::::l
-  P::::P     P:::::Prrrrr   rrrrrrrrr      ooooooooooo    f:::::f       ffffffiiiiiii  l::::l     eeeeeeeeeeee
-  P::::P     P:::::Pr::::rrr:::::::::r   oo:::::::::::oo  f:::::f             i:::::i  l::::l   ee::::::::::::ee
-  P::::PPPPPP:::::P r:::::::::::::::::r o:::::::::::::::of:::::::ffffff        i::::i  l::::l  e::::::eeeee:::::ee
-  P:::::::::::::PP  rr::::::rrrrr::::::ro:::::ooooo:::::of::::::::::::f        i::::i  l::::l e::::::e     e:::::e
-  P::::PPPPPPPPP     r:::::r     r:::::ro::::o     o::::of::::::::::::f        i::::i  l::::l e:::::::eeeee::::::e
-  P::::P             r:::::r     rrrrrrro::::o     o::::of:::::::ffffff        i::::i  l::::l e:::::::::::::::::e
-  P::::P             r:::::r            o::::o     o::::o f:::::f              i::::i  l::::l e::::::eeeeeeeeeee
-  P::::P             r:::::r            o::::o     o::::o f:::::f              i::::i  l::::l e:::::::e
-PP::::::PP           r:::::r            o:::::ooooo:::::of:::::::f            i::::::il::::::le::::::::e
-P::::::::P           r:::::r            o:::::::::::::::of:::::::f            i::::::il::::::l e::::::::eeeeeeee
-P::::::::P           r:::::r             oo:::::::::::oo f:::::::f            i::::::il::::::l  ee:::::::::::::e
-PPPPPPPPPP           rrrrrrr               ooooooooooo   fffffffff            iiiiiiiillllllll    eeeeeeeeeeeeee
-
-PPPPPPPPPPPPPPPPP
-P::::::::::::::::P
-P::::::PPPPPP:::::P
-PP:::::P     P:::::P
-  P::::P     P:::::Prrrrr   rrrrrrrrr   uuuuuu    uuuuuunnnn  nnnnnnnn        eeeeeeeeeeee    rrrrr   rrrrrrrrr
-  P::::P     P:::::Pr::::rrr:::::::::r  u::::u    u::::un:::nn::::::::nn    ee::::::::::::ee  r::::rrr:::::::::r
-  P::::PPPPPP:::::P r:::::::::::::::::r u::::u    u::::un::::::::::::::nn  e::::::eeeee:::::eer:::::::::::::::::r
-  P:::::::::::::PP  rr::::::rrrrr::::::ru::::u    u::::unn:::::::::::::::ne::::::e     e:::::err::::::rrrrr::::::r
-  P::::PPPPPPPPP     r:::::r     r:::::ru::::u    u::::u  n:::::nnnn:::::ne:::::::eeeee::::::e r:::::r     r:::::r
-  P::::P             r:::::r     rrrrrrru::::u    u::::u  n::::n    n::::ne:::::::::::::::::e  r:::::r     rrrrrrr
-  P::::P             r:::::r            u::::u    u::::u  n::::n    n::::ne::::::eeeeeeeeeee   r:::::r
-  P::::P             r:::::r            u:::::uuuu:::::u  n::::n    n::::ne:::::::e            r:::::r
-PP::::::PP           r:::::r            u:::::::::::::::uun::::n    n::::ne::::::::e           r:::::r
-P::::::::P           r:::::r             u:::::::::::::::un::::n    n::::n e::::::::eeeeeeee   r:::::r
-P::::::::P           r:::::r              uu::::::::uu:::un::::n    n::::n  ee:::::::::::::e   r:::::r
-PPPPPPPPPP           rrrrrrr                uuuuuuuu  uuuunnnnnn    nnnnnn    eeeeeeeeeeeeee   rrrrrrr
+ _____   ______  _____  _______ _____        _______       _____   ______ _     _ __   _ _______  ______
+ |_____] |_____/ |     | |______   |   |      |______      |_____] |_____/ |     | | \  | |______ |_____/
+ |       |    \_ |_____| |       __|__ |_____ |______      |       |    \_ |_____| |  \_| |______ |    \_
 '''
 
 NS = 'http://soap.sforce.com/2006/04/metadata'
@@ -410,6 +380,29 @@ def main():
 
         details = result.get('details', {})
         failures = details.get('componentFailures') or []
+
+        # Async edge case: the CLI can return the deploy job before the
+        # validation details are populated, so `details` is empty although
+        # errors actually exist. Retry a few times instead of aborting.
+        attempts = 0
+        while not failures and attempts < 3:
+            attempts += 1
+            logger.log('[ITER %d] no componentFailures yet, retrying dry-run (%d/3)...' % (i, attempts))
+            time.sleep(5)
+            retry_res = dry_run(sf, manifest_path, args.org)
+            if retry_res is None:
+                continue
+            res = retry_res
+            result = res.get('result', {})
+            if result.get('success') is True:
+                result_state = 'SUCCESS'
+                break
+            details = result.get('details', {})
+            failures = details.get('componentFailures') or []
+
+        if result_state == 'SUCCESS':
+            break
+
         if not failures:
             # Full diagnostics: avoid aborting with {} and no explanation.
             diag = {
@@ -419,7 +412,7 @@ def main():
                 'numberComponentErrors': result.get('numberComponentErrors'),
                 'details': details,
             }
-            result_reason = 'deploy failed without componentFailures: %s' % json.dumps(diag)[:1000]
+            result_reason = 'deploy failed without componentFailures after retries: %s' % json.dumps(diag)[:1000]
             break
 
         problem = str(failures[0].get('problem', ''))

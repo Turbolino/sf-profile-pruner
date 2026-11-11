@@ -91,4 +91,4 @@ made with <3 by Lorenzo D'Aleo — turbolino.dev@proton.me
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 (AGPL-3.0) — see [LICENSE](LICENSE).
