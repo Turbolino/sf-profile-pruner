@@ -64,18 +64,26 @@ references.
 
 ## Installation
 
-Install the Python dependencies and **check Node.js and the Salesforce CLI**:
+### From PyPI (recommended)
 
 ```bash
-python install_dependencies.py
+pip install sf-profile-pruner
 ```
 
-It installs `lxml` via pip, then verifies that a compatible Node.js (>= 18.11)
-and the `sf` CLI are present (it reports their exact location, or what is
-missing).
+This installs the package, its dependency (`lxml`) and the `sfpp` command.
 
-One-time setup that does the same check and also makes the tool callable as
-`sfpp` from any terminal:
+```bash
+sfpp --help
+```
+
+> The `sfpp` command is a real console-script executable (not a `.cmd` batch
+> file), so pressing Ctrl-C goes straight to the program — cmd.exe never shows
+> its "Terminate batch job (Y/N)?" prompt.
+
+### From the repository
+
+One-time setup that installs the package + dependency, creates the `sfpp`
+command, checks Node.js and the Salesforce CLI, and puts `sfpp` on your PATH:
 
 ```bash
 python first_config.py
@@ -87,12 +95,13 @@ Then open a **new** terminal and run:
 sfpp --help
 ```
 
-> `first_config` runs `pip install .`, which installs the package and its
-> dependency (`lxml`), creates a real `sfpp` **executable** (not a `.cmd` batch
-> file), and adds it to your user `PATH`. Because `sfpp` is a console-script
-> `.exe`, pressing Ctrl-C goes straight to the program — cmd.exe never shows
-> its "Terminate batch job (Y/N)?" prompt. Re-run `first_config` after updating
-> the tool to refresh the installed copy.
+> `first_config` runs `pip install .` under the hood, so it also resolves the
+> `lxml` dependency. Re-run it after updating the tool to refresh the installed
+> copy.
+
+> **Requirements checked at setup time** (and auto-discovered at run time if
+> missing): a compatible **Node.js (>= 18.11)** and the **Salesforce CLI
+> (`sf`)**. `first_config` reports their exact location, or what is missing.
 
 ## Usage
 
