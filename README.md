@@ -80,6 +80,12 @@ sfpp --help
 > file), so pressing Ctrl-C goes straight to the program — cmd.exe never shows
 > its "Terminate batch job (Y/N)?" prompt.
 
+> **`sfpp` not recognized after install?** This usually means the Python
+> `Scripts` folder is not on your `PATH`. See
+> [INSTALLATION.md](INSTALLATION.md) for a full step-by-step Windows guide
+> (including the GUI method that works in Constrained Language Mode), or use
+> `python -m prune_profile` as a PATH-independent fallback.
+
 ### From the repository
 
 One-time setup that installs the package + dependency, creates the `sfpp`
