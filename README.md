@@ -1,19 +1,22 @@
 # Profile Pruner
 
-Remove every reference to metadata that does **not** exist in a Salesforce org
-from a **Profile** `.profile-meta.xml` file.
+**The tool that finally lets you deploy Salesforce Profiles across
+environments without second thoughts.**
 
-Pruning is done with **dry-run deploys only** — the org is never modified
-unless you explicitly pass `--deploy-on-success`. The result is a **GOOD**
-package (a profile that deploys cleanly) and an **ERRORS** package (the list
-of everything that was removed / is missing).
+Profile Pruner removes every reference to metadata that does **not** exist in a
+target org from a **Profile** `.profile-meta.xml` file, so it deploys cleanly on
+the first try. It is **dry-run by default** — the org is never modified unless
+you explicitly pass `--deploy-on-success`. The result is a **GOOD** package (a
+profile that deploys cleanly) and an **ERRORS** package (the list of everything
+that was removed / is missing).
 
 ## Why it exists
 
 A profile exported from a source org (or a managed package org) often
-references objects, fields, tabs, classes, flows, layouts, record types, etc.
-that do not exist in the target org. Deploying such a profile fails. Profile
-Pruner finds those references one by one and strips them.
+references objects, fields, tabs, classes, flows, login flows, layouts, record
+types, agents, enhanced summaries, etc. that do not exist in the target org.
+Deploying such a profile fails. Profile Pruner finds those references one by
+one and strips them.
 
 It works great together with
 [`sf-profile-full`](https://github.com/Archallys-Inc/sf-profile-full):
@@ -58,7 +61,11 @@ references.
 5. GOOD/ and ERRORS/ are assembled from the surviving entries, keeping the
    original document order.
 6. As a final safety check, the tool runs one last **dry-run of the whole
-   assembled package**; only if it succeeds the outcome is `SUCCESS`.
+   assembled package**; only if it succeeds the outcome is `SUCCESS`. This final
+   gate is **self-healing**: if the full package surfaces a reference the
+   per-section pass missed — a login flow, or a brand-new metadata type — it
+   removes it and re-validates until clean, instead of aborting on the first
+   error.
 
 ## Requirements
 
@@ -153,6 +160,14 @@ python -m prune_profile \
   screen, marks the active threads "stopped by user", and reports `ABORTED`.
   The `sf` child is invoked as `node run.js` (not through the `cmd.exe` batch
   shim), so Ctrl-C can never trigger cmd's "Terminate batch job" prompt.
+- **Metadata API pre-pass**: before the dry-run loop, the tool enumerates the
+  metadata that actually exists in the target org (`sf org list metadata`) and
+  removes every dangling reference in one shot — login flows included. Disable
+  with `--no-prefetch`.
+- **Self-healing final gate**: the final full-package dry-run loops — any
+  residual reference (a login flow, or a metadata type not yet in the internal
+  map) is removed and the package re-validated until clean, rather than
+  aborting on the first error.
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
