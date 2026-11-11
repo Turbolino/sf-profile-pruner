@@ -152,6 +152,7 @@ class TestFindSf(unittest.TestCase):
         self.assertTrue(os.path.isfile(r) or r == 'sf', r)
 
 
+@unittest.skipUnless(os.name == 'nt', 'Windows-specific batch shim resolution')
 class TestSfInvocation(unittest.TestCase):
     def test_batch_shim_resolves_to_node_runjs(self):
         d = tempfile.mkdtemp()
