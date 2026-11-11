@@ -166,6 +166,23 @@ class TestFindNode(unittest.TestCase):
         self.assertGreaterEqual(v, (18, 11))
 
 
+class TestStatusBoard(unittest.TestCase):
+    def test_rows_update_per_thread(self):
+        b = pp.StatusBoard(3, quiet=True)  # quiet -> inactive render, rows still update
+        b.set(1, 'dry-run', 'tabVisibilities [InProgress]')
+        b.set(0, 'removing', 'classAccesses (2 errors)')
+        self.assertIn('[T1] dry-run', b.rows[1])
+        self.assertIn('tabVisibilities', b.rows[1])
+        self.assertIn('[T0] removing', b.rows[0])
+        # thread 2 still idle
+        self.assertIn('[idle]', b.rows[2])
+
+    def test_finish_idempotent(self):
+        b = pp.StatusBoard(2, quiet=True)
+        b.finish()
+        b.finish()
+
+
 class TestSectionHelpers(unittest.TestCase):
     def test_prunable_blocks(self):
         blocks = pp.prunable_blocks()
