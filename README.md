@@ -33,10 +33,6 @@ target org (for example `tabVisibilities` for tabs that are not available),
 which causes deploy errors. Profile Pruner cleans exactly those leftover
 references.
 
-(A similar plugin is
-[`sfdx-plugin-source-read`](https://github.com/amtrack/sfdx-plugin-source-read),
-with the `sf crud-mdapi read` command.)
-
 ## How it works
 
 1. The profile is split by its top-level sections (`classAccesses`,
