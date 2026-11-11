@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.9.0'
+__version__ = '1.10.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -128,18 +128,31 @@ class StatusBoard:
 
     Renders N thread lines + 1 summary line and redraws them in place on every
     update. Falls back to no-op when stdout is not a TTY (e.g. piped) or when
-    --quiet is set."""
+    --quiet is set.
+
+    Pause/stop lifecycle:
+      - freeze(): stop the live redraw and print the current frame statically
+        (so the rows stay visible instead of being wiped).
+      - resume(): clear the static frame + prompt and go back to live redraw.
+      - finalize_stopped(): mark non-idle rows "stopped by user", reprint the
+        static frame and leave it on screen.
+    """
+
+    COL_FMT = '%-7s %-9s %-28s %-22s remaining:%-9d deleted:%-9d initial:%-8d'
 
     def __init__(self, n_threads, quiet, progress=None, t0=None):
         self.n = n_threads
         self.progress = progress
         self.t0 = t0 if t0 is not None else time.time()
-        self.rows = [self._fmt_row(t, 'idle', '-', '-', 0, 0, 0) for t in range(n_threads)]
+        self.state = [dict(status='idle', tag='-', op='-', initial=0, remaining=0)
+                      for _ in range(n_threads)]
+        self.rows = [self._fmt_row(t, **self.state[t]) for t in range(n_threads)]
         self.lock = threading.Lock()
         self.lines_on_screen = 0
         self.active = (not quiet) and bool(getattr(sys.stdout, 'isatty', lambda: False)())
         if self.active and os.name == 'nt':
             self.active = self._enable_ansi()
+        self._was_active = self.active
 
     @staticmethod
     def _enable_ansi():
@@ -154,11 +167,10 @@ class StatusBoard:
         except Exception:
             return False
 
-    @staticmethod
-    def _fmt_row(tid, status, tag, op, remaining, removed, initial):
-        tid_lbl = '[T%d]' % tid
-        return '%-6s %-8s %-22s %-18s rem:%-6d del:%-6d ini:%-6d' % (
-            tid_lbl, status, tag or '-', op or '-', remaining, removed, initial)
+    def _fmt_row(self, tid, status, tag, op, initial, remaining):
+        removed = max(0, initial - remaining)
+        return self.COL_FMT % ('[T%d]' % tid, status, tag or '-', op or '-',
+                               remaining, removed, initial)
 
     @staticmethod
     def _fmt_elapsed(seconds):
@@ -167,8 +179,9 @@ class StatusBoard:
 
     def set(self, tid, status, tag='', op='', initial=0, remaining=0):
         with self.lock:
-            removed = max(0, initial - remaining)
-            self.rows[tid] = self._fmt_row(tid, status, tag, op, remaining, removed, initial)
+            self.state[tid] = dict(status=status, tag=tag, op=op,
+                                   initial=initial, remaining=remaining)
+            self.rows[tid] = self._fmt_row(tid, **self.state[tid])
             if self.active:
                 self._render()
 
@@ -176,8 +189,17 @@ class StatusBoard:
         elapsed = self._fmt_elapsed(time.time() - self.t0)
         if self.progress is None:
             return 'elapsed %s' % elapsed
-        done, running, todo, failed = self.progress.snapshot()
+        done, running, todo, _failed = self.progress.snapshot()
         return 'elapsed %s | done: %d | running: %d | todo: %d' % (elapsed, done, running, todo)
+
+    def _clear_above(self, n):
+        if n <= 0:
+            return
+        out = ['\x1b[%dA' % n]
+        for _ in range(n):
+            out.append('\x1b[2K\n')
+        sys.stdout.write(''.join(out))
+        sys.stdout.flush()
 
     def _render(self):
         out = []
@@ -190,18 +212,55 @@ class StatusBoard:
         sys.stdout.flush()
         self.lines_on_screen = self.n + 1
 
+    def freeze(self):
+        """Stop live redraw; the last rendered frame stays on screen."""
+        with self.lock:
+            self.active = False
+
+    def resume(self):
+        """Return to live redraw; the next frame is drawn fresh below."""
+        with self.lock:
+            self.active = self._was_active
+            self.lines_on_screen = 0
+
+    def finalize_stopped(self):
+        """Mark non-idle rows as 'stopped by user' and leave them on screen."""
+        with self.lock:
+            self._mark_stopped_locked()
+            self.active = False
+            self.lines_on_screen = 0
+            if self._was_active:
+                for row in self.rows:
+                    print(row)
+                print(self._summary())
+
+    def _mark_stopped_locked(self):
+        for tid, s in enumerate(self.state):
+            if s['status'] not in ('idle', 'stopped'):
+                s['status'] = 'stopped'
+                s['op'] = 'stopped by user'
+                self.rows[tid] = self._fmt_row(tid, **s)
+
+    def mark_stopped(self):
+        with self.lock:
+            self._mark_stopped_locked()
+
     def finish(self):
         if not self.active:
             return
         with self.lock:
             if self.lines_on_screen:
-                out = ['\x1b[%dA' % self.lines_on_screen]
-                for _ in range(self.lines_on_screen):
-                    out.append('\x1b[2K\n')
-                sys.stdout.write(''.join(out))
-                sys.stdout.flush()
-                self.lines_on_screen = 0
+                self._clear_above(self.lines_on_screen)
+            self.lines_on_screen = 0
             self.active = False
+
+
+class Control:
+    """Signals shared between the main thread and the workers for pause/stop."""
+
+    def __init__(self):
+        self.pause = threading.Event()
+        self.stop = threading.Event()
 
 
 class Progress:
@@ -329,9 +388,15 @@ def _run_sf(cmd, sf, what, cwd=None):
         # Prepend the compatible Node so the sf.cmd shim doesn't fall back to
         # an old node.exe on PATH (sf needs Node >= 18.11).
         env['PATH'] = os.path.dirname(os.path.abspath(good_node)) + os.pathsep + env.get('PATH', '')
+    kwargs = dict(capture_output=True, text=True, encoding='utf-8',
+                  errors='replace', env=env, cwd=cwd)
+    if os.name == 'nt':
+        # Put the child in its own process group so Ctrl-C reaches only us
+        # (not the cmd.exe batch shim), avoiding the "Terminate batch job"
+        # prompt and letting the run pause/resume cleanly.
+        kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace', env=env, cwd=cwd)
+        proc = subprocess.run(cmd, **kwargs)
     except FileNotFoundError:
         return None, ('sf executable not found: %s. Install the Salesforce CLI '
                       '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
@@ -371,11 +436,23 @@ def report_deploy(sf, job_id, org, cwd=None):
 
 
 def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
-                on_status=None):
+                on_status=None, control=None, on_pause=None, on_resume=None):
     """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error)."""
     deadline = time.time() + job_timeout * 60
     last_status = ''
     while time.time() < deadline:
+        if control and control.stop.is_set():
+            return None, 'stopped by user'
+        if control and control.pause.is_set():
+            if on_pause:
+                on_pause()
+            while control.pause.is_set() and not control.stop.is_set():
+                time.sleep(0.2)
+            if control.stop.is_set():
+                return None, 'stopped by user'
+            if on_resume:
+                on_resume()
+            continue
         res, err = report_deploy(sf, job_id, org, cwd=cwd)
         if res is None:
             return None, err
@@ -388,7 +465,16 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
                 on_status(status)
         if status in TERMINAL_STATUSES:
             return res, None
-        time.sleep(poll_interval)
+        if control:
+            # Interruptible sleep: wake early on pause/stop.
+            waited = 0.0
+            while waited < poll_interval:
+                if control.pause.is_set() or control.stop.is_set():
+                    break
+                time.sleep(0.2)
+                waited += 0.2
+        else:
+            time.sleep(poll_interval)
     return None, 'deploy job %s did not reach a terminal status within %d min (last status: %s)' % (
         job_id, job_timeout, last_status or '?')
 
@@ -490,13 +576,14 @@ def find_sf(default='sf'):
 
 
 def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
-            on_status=None):
+            on_status=None, control=None, on_pause=None, on_resume=None):
     """Start an async dry-run and poll to completion. Returns (result_dict_or_None, error)."""
     job_id, err = start_deploy(sf, manifest_path, org, dry_run=True, cwd=cwd)
     if err:
         return None, err
     return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger,
-                       cwd=cwd, on_status=on_status)
+                       cwd=cwd, on_status=on_status, control=control,
+                       on_pause=on_pause, on_resume=on_resume)
 
 
 def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
@@ -764,7 +851,7 @@ class SharedState:
 
 
 def process_section(tid, block, state, board, sf, org, poll_interval, job_timeout,
-                    profile_name, api_version, worker_proj, logger, max_iter):
+                    profile_name, api_version, worker_proj, logger, max_iter, control):
     """Prune a single section until its sub-profile dry-runs clean.
     Returns (ok, reason)."""
     manifest_path = os.path.join(worker_proj, 'manifest.xml')
@@ -781,6 +868,8 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
         guard += 1
         if guard > max_iter:
             return False, 'iteration cap %d reached' % max_iter
+        if control.stop.is_set():
+            return False, 'stopped by user'
         with state.lock:
             elements = list(state.groups.get(block, []))
         if not elements:
@@ -792,8 +881,15 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
         res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
                            logger, cwd=worker_proj,
                            on_status=lambda s: board.set(tid, 'dry-run', block, s,
-                                                         initial, len(elements)))
+                                                         initial, len(elements)),
+                           control=control,
+                           on_pause=lambda: board.set(tid, 'paused', block, 'paused by user',
+                                                      initial, len(elements)),
+                           on_resume=lambda: board.set(tid, 'dry-run', block, 'polling',
+                                                       initial, len(elements)))
         if res is None:
+            if err == 'stopped by user':
+                return False, 'stopped by user'
             return False, err or 'dry-run failed'
         result = res.get('result', {})
         if result.get('success') is True:
@@ -830,10 +926,14 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
         state.apply_and_record(block, new_elements, removals, tid)
 
 
-def worker(tid, state, queue, queue_lock, board, progress, sf, org, poll_interval,
-           job_timeout, profile_name, api_version, worker_proj, logger, max_iter):
+def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
+           poll_interval, job_timeout, profile_name, api_version, worker_proj,
+           logger, max_iter):
     """Consume one section at a time until the queue is empty."""
     while True:
+        if control.stop.is_set():
+            board.set(tid, 'stopped', '-', 'stopped by user')
+            return
         with queue_lock:
             if not queue:
                 board.set(tid, 'idle')
@@ -843,9 +943,12 @@ def worker(tid, state, queue, queue_lock, board, progress, sf, org, poll_interva
         board.set(tid, 'start', block, 'queued')
         ok, reason = process_section(tid, block, state, board, sf, org, poll_interval,
                                      job_timeout, profile_name, api_version,
-                                     worker_proj, logger, max_iter)
+                                     worker_proj, logger, max_iter, control)
         state.record_section(block, ok, reason)
         progress.finish(ok)
+        if control.stop.is_set():
+            board.set(tid, 'stopped', block, 'stopped by user')
+            return
         board.set(tid, 'ok' if ok else 'fail', block,
                   reason if not ok else 'clean', 0, 0)
         logger.log('[T%d][%s] %s' % (tid, block, ('DONE: ' + reason) if ok else ('FAILED: ' + reason)))
@@ -1041,6 +1144,7 @@ def main():
         workers_dir = os.path.join(work_dir, 'workers')
         queue_lock = threading.Lock()
         progress = Progress(total=len(queue))
+        control = Control()
         board = StatusBoard(args.thread_number, args.quiet, progress=progress, t0=t0)
         logger.console = False  # board owns the console during the parallel phase
         threads = []
@@ -1049,21 +1153,51 @@ def main():
             write_sfdx_project(wp, args.api_version)
             t = threading.Thread(
                 target=worker,
-                args=(tid, state, queue, queue_lock, board, progress, sf, args.org,
-                      args.poll_interval, args.job_timeout, profile_name,
-                      args.api_version, wp, logger, args.max_iter),
+                args=(tid, state, queue, queue_lock, board, progress, control,
+                      sf, args.org, args.poll_interval, args.job_timeout,
+                      profile_name, args.api_version, wp, logger, args.max_iter),
                 daemon=True)
             t.start()
             threads.append(t)
-        try:
-            for t in threads:
-                t.join()
-        except KeyboardInterrupt:
-            board.finish()
+
+        # ---------- join workers, handling Ctrl-C (pause / resume / stop) ----------
+        stopped = False
+        while True:
+            alive = [t for t in threads if t.is_alive()]
+            if not alive:
+                break
+            try:
+                for t in alive:
+                    t.join(timeout=0.5)
+            except KeyboardInterrupt:
+                control.pause.set()
+                time.sleep(0.4)  # let workers flip their rows to 'paused'
+                board.freeze()
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+                try:
+                    choice = input('Paused. Resume [N] / stop [S]? ').strip().lower()
+                except KeyboardInterrupt:
+                    choice = 's'
+                if choice == 's':
+                    control.stop.set()
+                    stopped = True
+                else:
+                    print('Resuming...')
+                    board.resume()
+                    control.pause.clear()
+                    continue
+            if stopped:
+                break
+
+        for t in threads:
+            t.join()
+
+        if stopped:
+            board.finalize_stopped()
             logger.console = not args.quiet
-            logger.log('Interrupted by user (Ctrl-C).')
             result_state = 'ABORTED'
-            result_reason = 'interrupted by user'
+            result_reason = 'stopped by user'
         else:
             board.finish()
             logger.console = not args.quiet
