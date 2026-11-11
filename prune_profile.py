@@ -4,8 +4,9 @@
 prune_profile.py
 
 Removes from a Salesforce Profile every reference to metadata that does NOT
-exist in the target org, using ONLY `sf project deploy start --dry-run`
-(never modifying the environment).
+exist in the target org. Pruning uses only `sf project deploy start --dry-run`
+and never modifies the org; with `--deploy-on-success` the cleaned profile is
+deployed at the end.
 
 Algorithm (per iteration):
   1. deploy dry-run of the profile
@@ -17,6 +18,8 @@ RESUME BEHAVIOUR
   - Default: RESUMES from where it left off (if errors_log.txt and the
     working copy exist). If there are no more errors, it removes nothing and
     leaves GOOD/ and ERRORS/ untouched.
+  - If the previous run ended with OUTCOME: SUCCESS, the tool exits
+    immediately with "profile already clean".
   - With --fresh: restarts from scratch, restoring the original and clearing
     the outputs.
 
@@ -42,7 +45,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -214,11 +217,45 @@ def find_sf(default='sf'):
     return default
 
 
+def deploy(sf, manifest_path, org):
+    """Real deploy (no --dry-run) of the manifest. Returns (ok, detail)."""
+    cmd = [sf, 'project', 'deploy', 'start',
+           '--manifest', manifest_path, '--target-org', org, '--json']
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    try:
+        res = json.loads(proc.stdout)
+    except Exception:
+        return False, 'unparseable deploy output'
+    result = res.get('result', {})
+    if result.get('success') is True:
+        return True, 'deployed successfully'
+    return False, 'deploy failed: %s' % json.dumps({
+        'status': res.get('status'),
+        'message': result.get('message'),
+        'errorMessage': result.get('errorMessage'),
+        'numberComponentErrors': result.get('numberComponentErrors'),
+    })[:800]
+
+
+def read_outcome(report):
+    """Reads the OUTCOME: line from a previous report, or None."""
+    try:
+        with open(report, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('OUTCOME:'):
+                    return line.split(':', 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
         description='Removes from a Salesforce Profile every reference to metadata that '
-                    'does not exist in the target org (dry-run only, the org is never modified).'
+                    'does not exist in the target org. Dry-run only by default; use '
+                    '--deploy-on-success to deploy the cleaned profile at the end.'
     )
     ap.add_argument('--profile-path', required=True,
                     help='path of the .profile-meta.xml file (original source)')
@@ -240,6 +277,9 @@ def main():
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--quiet', action='store_true',
                     help='suppress the progressive stdout output')
+    ap.add_argument('--deploy-on-success', action='store_true',
+                    help='deploy the cleaned profile to the org once the pruning succeeds '
+                         '(default: dry-run only, the org is never modified)')
     ap.add_argument('-V', '--version', action='version',
                     version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
     args = ap.parse_args()
@@ -298,6 +338,20 @@ def main():
 
     has_log = os.path.isfile(err_log) and _log_lines() > 0
 
+    # ---------- internal manifest (needed for dry-run and deploy) ----------
+    write_package_xml(manifest_path, {'Profile': [profile_name]}, args.api_version)
+
+    # ---------- already clean? ----------
+    prev_outcome = read_outcome(report)
+    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(work_path):
+        if args.deploy_on_success:
+            logger.log('Profile already clean; deploying the GOOD profile as requested...')
+            ok, detail = deploy(sf, manifest_path, args.org)
+            print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
+            sys.exit(0 if ok else 1)
+        print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % profile_name)
+        sys.exit(0)
+
     error_members = {}   # type -> set(member)
     start_iter = 0
 
@@ -352,9 +406,6 @@ def main():
             shutil.copyfile(profile_path, work_path)
         os.chmod(work_path, 0o666)
         logger.log('FIRST RUN: original copied.')
-
-    # ---------- internal manifest ----------
-    write_package_xml(manifest_path, {'Profile': [profile_name]}, args.api_version)
 
     os.chdir(project_dir)
     t0 = time.time()
@@ -455,6 +506,14 @@ def main():
     # ---------- ERRORS (cumulative, always refreshed) ----------
     write_package_xml(os.path.join(errors_dir, 'package.xml'), error_members, args.api_version)
 
+    # ---------- optional deploy (only with --deploy-on-success) ----------
+    deploy_detail = ''
+    if result_state == 'SUCCESS' and args.deploy_on_success:
+        logger.log('Deploying the cleaned profile to org %s...' % args.org)
+        ok, deploy_detail = deploy(sf, manifest_path, args.org)
+        if not ok:
+            result_state = 'DEPLOY_FAILED'
+
     # ---------- report ----------
     lines = []
     lines.append('OUTCOME: %s' % result_state)
@@ -464,6 +523,8 @@ def main():
     lines.append('METADATA REMOVED (total): %d' % sum(len(v) for v in error_members.values()))
     lines.append('NODES REMOVED (this run): %d' % removed_this_run)
     lines.append('TIME: %.1fs' % elapsed)
+    if deploy_detail:
+        lines.append('DEPLOY: %s' % deploy_detail)
     lines.append('')
     lines.append('Removed by type:')
     for t in sorted(error_members):

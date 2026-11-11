@@ -1,13 +1,26 @@
 # Profile Pruner
 
 Remove every reference to metadata that does **not** exist in a Salesforce org
-from a **Profile** `.profile-meta.xml` file — using **only** dry-run deploys.
-The target org is never modified.
+from a **Profile** `.profile-meta.xml` file.
 
-A common cause: a profile exported from a source org (or a managed package org)
+Pruning is done with **dry-run deploys only** — the org is never modified
+unless you explicitly pass `--deploy-on-success`. The result is a **GOOD**
+package (a profile that deploys cleanly) and an **ERRORS** package (the list
+of everything that was removed / is missing).
+
+## Why it exists
+
+A profile exported from a source org (or a managed package org) often
 references objects, fields, tabs, classes, flows, layouts, record types, etc.
-that do not exist in the target org. Deploying such a profile fails. This tool
-finds those references one by one and strips them.
+that do not exist in the target org. Deploying such a profile fails. Profile
+Pruner finds those references one by one and strips them.
+
+It works great together with
+[`sfdx-plugin-source-read`](https://github.com/amtrack/sfdx-plugin-source-read):
+that plugin's `sf crud-mdapi read` command retrieves a **"full"** profile, but
+the retrieved profile may contain `tabVisibilities` for tabs that are not
+available in the org (the plugin README itself warns about this). Profile
+Pruner cleans exactly those leftover references.
 
 ## How it works
 
@@ -16,25 +29,50 @@ finds those references one by one and strips them.
 3. Refresh a cumulative `package.xml` with the errored metadata.
 4. Repeat until the dry-run succeeds.
 
-The result is a **GOOD** package (a profile that deploys cleanly) and an
-**ERRORS** package (the list of everything that was removed / is missing).
-
 ## Requirements
 
 - Python 3.8+
-- `lxml` (`pip install lxml`)
+- `lxml`
 - Salesforce CLI (`sf`) on `PATH`, or pass `--sf <path>`
 - An authenticated org (alias or username) that the CLI can reach
 
 ## Installation
 
+Install the dependencies:
+
 ```bash
-git clone <repo-url>
-cd profile-pruner
-pip install lxml
+python install_dependencies.py
 ```
 
+One-time setup that installs the dependencies and makes the tool callable as
+`sfpp` from any terminal:
+
+```bash
+python first_config.py
+```
+
+Then open a **new** terminal and run:
+
+```bash
+sfpp --help
+```
+
+> `first_config` creates an `sfpp` launcher (`sfpp.cmd` on Windows) and adds
+> it to your user `PATH`. The launcher hardcodes the Python interpreter that
+> ran `first_config`, so it keeps working even if `lxml` is not installed in
+> your default `python`.
+
 ## Usage
+
+```bash
+sfpp \
+  --profile-path "path/to/My Profile.profile-meta.xml" \
+  --profile-name "My Profile" \
+  --out-dir "path/to/output" \
+  --org myorg
+```
+
+Or, without the `sfpp` launcher:
 
 ```bash
 python prune_profile.py \
@@ -44,9 +82,16 @@ python prune_profile.py \
   --org myorg
 ```
 
-The tool is resumable: if it stops (network hiccup, unexpected error), just run
-the exact same command again and it continues from the last error — nothing is
-redone. Use `--fresh` to restart from the original profile.
+## Behaviour
+
+- **Dry-run by default**: the org is never modified.
+- **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
+- **Resumable**: if it stops (network hiccup, unexpected error), run the exact
+  same command again and it continues from the last error — nothing is redone.
+- **Already clean**: if a previous run ended with `SUCCESS` and you launch it
+  again on the same output directory, it exits immediately with "profile
+  already clean".
+- **`--fresh`**: restart from the original profile, ignoring any previous state.
 
 ## Options
 
@@ -62,6 +107,7 @@ redone. Use `--fresh` to restart from the original profile.
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
 | `--fresh` | Ignore previous state and restart from the original. |
 | `--quiet` | Suppress progressive stdout output. |
+| `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |
 | `-V`, `--version` | Show version and author. |
 
 ## Output layout (`--out-dir`)
@@ -76,13 +122,13 @@ out-dir/
 │   └── package.xml                          # everything removed / missing
 ├── errors_log.txt                           # resumable line-by-line log
 ├── run.log                                  # progressive log copy
-├── report.txt                               # final summary
+├── report.txt                               # final summary (OUTCOME: SUCCESS/ABORTED)
 └── .work/manifest.xml                       # internal manifest (not a deliverable)
 ```
 
 ## Notes
 
-- The org is **never** modified: every check is a `--dry-run`.
+- The org is **never** modified unless you pass `--deploy-on-success`.
 - `--quiet` still writes `report.txt`, `errors_log.txt` and `run.log`.
 
 ## Author
