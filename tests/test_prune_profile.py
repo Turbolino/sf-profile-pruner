@@ -233,6 +233,13 @@ class TestStatusBoard(unittest.TestCase):
         self.assertIn('running: 1', b._summary())
         self.assertIn('todo: 8', b._summary())
 
+    def test_tick_and_finish_are_safe_when_inactive(self):
+        b = pp.StatusBoard(2, quiet=True)
+        b.tick()
+        b.finish()
+        b.freeze()
+        b.finalize_stopped()
+
 
 class TestControl(unittest.TestCase):
     def test_initial_state(self):
