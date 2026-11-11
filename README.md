@@ -51,7 +51,8 @@ with the `sf crud-mdapi read` command.)
 
 - Python 3.8+
 - `lxml`
-- Salesforce CLI (`sf`) on `PATH`, or pass `--sf <path>`
+- Salesforce CLI (`sf`) — auto-discovered from `PATH` and common install
+  locations, or pass `--sf <path>` explicitly
 - An authenticated org (alias or username) that the CLI can reach
 
 ## Installation

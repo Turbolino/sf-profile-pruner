@@ -47,7 +47,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.4.0'
+__version__ = '1.4.1'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -207,7 +207,8 @@ def _run_sf(cmd, sf, what):
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               encoding='utf-8', errors='replace')
     except FileNotFoundError:
-        return None, 'sf executable not found: %s (install the Salesforce CLI or pass --sf <path>)' % sf
+        return None, ('sf executable not found: %s. Install the Salesforce CLI '
+                      '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
     except OSError as e:
         return None, 'failed to run %s: %s' % (what, e)
     out = (proc.stdout or '').strip()
@@ -263,14 +264,54 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger):
         job_id, job_timeout, last_status or '?')
 
 
+def _candidate_dirs():
+    """User-agnostic directories where the Salesforce CLI may live."""
+    dirs = []
+    for var in ('APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'PROGRAMFILES', 'PROGRAMFILES(X86)'):
+        v = os.environ.get(var)
+        if v:
+            dirs.append(v)
+    home = os.path.expanduser('~')
+    dirs.append(home)
+    dirs.append(os.path.join(home, 'AppData', 'Roaming'))
+    dirs.append(os.path.join(home, 'AppData', 'Local'))
+    out = []
+    for d in dirs:
+        d = os.path.normpath(d)
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
 def find_sf(default='sf'):
-    """Returns an `sf` executable launchable from CreateProcess (sf.cmd/sf.exe)."""
+    """Locate the Salesforce CLI (sf.cmd/sf.exe/sfdx). Returns a path or the
+    fallback string if nothing is found."""
     if default and os.path.isfile(default):
         return default
-    for name in ('sf.cmd', 'sf.exe', 'sf.bat', 'sf'):
+
+    # 1) on PATH
+    for name in ('sf.cmd', 'sf.exe', 'sf.bat', 'sf', 'sfdx.cmd', 'sfdx.exe', 'sfdx'):
         found = shutil.which(name)
         if found:
             return found
+
+    # 2) common install locations + toolchain prefixes (account-agnostic glob)
+    import glob
+    subpaths = [
+        ('sfdx', 'client', 'bin', 'sf.cmd'),
+        ('sfdx', 'client', 'bin', 'sfdx.cmd'),
+        ('sf', 'client', 'bin', 'sf.cmd'),
+        ('Salesforce CLI', 'bin', 'sf.exe'),
+        ('Salesforce CLI', 'bin', 'sf.cmd'),
+        ('AutoClaw*', 'toolchain', 'node', 'prefix', 'sf.cmd'),
+        ('AutoClaw*', 'toolchain', 'node', 'prefix', 'sfdx.cmd'),
+    ]
+    for base in _candidate_dirs():
+        for parts in subpaths:
+            for hit in glob.glob(os.path.join(base, *parts)):
+                if os.path.isfile(hit):
+                    return hit
+
     return default
 
 
@@ -411,9 +452,21 @@ def prepare_work_copy(work_path, source_path, err_log, fresh):
 
 
 def remove_temp_project(project_dir, out_dir):
-    """Delete the temporary micro-project (Windows can't remove the CWD)."""
+    """Delete the temporary micro-project. Windows cannot remove the CWD, and a
+    just-finished CLI call can briefly hold a handle to the directory, so
+    retry a few times before giving up."""
     os.chdir(out_dir)
-    shutil.rmtree(project_dir, ignore_errors=True)
+    for _ in range(5):
+        try:
+            shutil.rmtree(project_dir)
+            return
+        except OSError:
+            time.sleep(0.6)
+    # Last resort: the tree is already gone, just drop the empty top folder.
+    try:
+        os.rmdir(project_dir)
+    except OSError:
+        pass
 
 
 def main():
