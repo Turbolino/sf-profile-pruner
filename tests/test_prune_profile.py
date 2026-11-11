@@ -156,5 +156,52 @@ class TestFindNode(unittest.TestCase):
         self.assertGreaterEqual(v, (18, 11))
 
 
+class TestSectionHelpers(unittest.TestCase):
+    def test_prunable_blocks(self):
+        blocks = pp.prunable_blocks()
+        for b in ('classAccesses', 'fieldPermissions', 'tabVisibilities', 'objectPermissions'):
+            self.assertIn(b, blocks)
+
+    def test_remove_from_list(self):
+        tree = pp.etree.fromstring(SYNTH.encode('utf-8'))
+        els = [c for c in tree if c.tag == pp.M + 'tabVisibilities']
+        kept, removed = pp.remove_from_list(els, 'tabVisibilities', 'NotARealTab')
+        self.assertEqual(removed, 1)
+        self.assertEqual(kept, [])
+
+    def test_build_subprofile(self):
+        tree = pp.etree.fromstring(SYNTH.encode('utf-8'))
+        els = [c for c in tree if c.tag == pp.M + 'classAccesses']
+        xml = pp.build_subprofile(els)
+        root = pp.etree.fromstring(xml)
+        self.assertEqual(root.tag, pp.M + 'Profile')
+        self.assertEqual([c.tag for c in root], [pp.M + 'classAccesses'])
+
+
+class TestSharedState(unittest.TestCase):
+    def test_write_outputs_preserves_order_and_drops_removed(self):
+        d = tempfile.mkdtemp()
+        try:
+            tree = pp.etree.fromstring(SYNTH.encode('utf-8'))
+            seq = [c for c in tree]
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for el in seq:
+                groups.setdefault(el.tag.split('}')[-1], []).append(el)
+            # drop the tabVisibilities entry
+            tab = groups['tabVisibilities']
+            groups['tabVisibilities'] = []
+            good = os.path.join(d, 'GOOD', 'profiles', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'ERRORS', 'package.xml')
+            goodpkg = os.path.join(d, 'GOOD', 'package.xml')
+            st = pp.SharedState(groups, seq, pp.Logger(True), os.path.join(d, 'e.txt'),
+                                good, goodpkg, errpkg, 'X', '68.0')
+            st._write_outputs_locked()
+            tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
+            self.assertEqual(tags, ['fieldPermissions', 'classAccesses', 'objectPermissions'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
