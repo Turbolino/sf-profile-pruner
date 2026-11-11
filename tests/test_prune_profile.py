@@ -116,6 +116,16 @@ class TestResolveError(unittest.TestCase):
         self.assertEqual(pp.resolve_error('In field: field - no CustomField named Missing__c.Foo__c found'),
                          ('CustomField', 'Missing__c.Foo__c'))
 
+    def test_custom_setting_error(self):
+        self.assertEqual(
+            pp.resolve_error('In field: customSetting - no CustomObject named genui__GenCanvas_Input_Settings__c found'),
+            ('CustomObject', 'genui__GenCanvas_Input_Settings__c'))
+
+    def test_service_presence_error(self):
+        self.assertEqual(
+            pp.resolve_error('In field: servicePresenceStatus - no ServicePresenceStatus named Available_Phone found'),
+            ('ServicePresenceStatus', 'Available_Phone'))
+
     def test_unknown(self):
         self.assertIsNone(pp.resolve_error('totally different error text'))
 
@@ -159,8 +169,13 @@ class TestFindNode(unittest.TestCase):
 class TestSectionHelpers(unittest.TestCase):
     def test_prunable_blocks(self):
         blocks = pp.prunable_blocks()
-        for b in ('classAccesses', 'fieldPermissions', 'tabVisibilities', 'objectPermissions'):
+        for b in ('classAccesses', 'fieldPermissions', 'tabVisibilities', 'objectPermissions',
+                  'customSettingAccesses', 'servicePresenceStatusAccesses'):
             self.assertIn(b, blocks)
+
+    def test_custom_setting_mapping(self):
+        cands = pp.BLOCK_MAP['CustomObject']
+        self.assertIn(('customSettingAccesses', 'name', 'exact'), cands)
 
     def test_remove_from_list(self):
         tree = pp.etree.fromstring(SYNTH.encode('utf-8'))

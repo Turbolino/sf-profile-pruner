@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.6.0'
+__version__ = '1.6.1'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -93,8 +93,11 @@ BLOCK_MAP = {
     'CustomObject':       [
         ('objectPermissions', 'object', 'exact'),
         ('fieldPermissions', 'field', 'prefix'),
+        ('customSettingAccesses', 'name', 'exact'),
     ],
     'StandardObject':     [('objectPermissions', 'object', 'exact')],
+    'ServicePresenceStatus': [('servicePresenceStatusAccesses', 'servicePresenceStatus', 'exact')],
+    'DataCategoryGroup':  [('categoryGroupVisibilities', 'dataCategoryGroup', 'exact')],
 }
 
 
