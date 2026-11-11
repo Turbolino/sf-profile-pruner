@@ -117,8 +117,11 @@ python prune_profile.py \
 - **Dry-run by default**: the org is never modified.
 - **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
 - **Live progress board**: during pruning, the console shows one
-  self-updating line per worker thread (status + what it is doing). The full
-  timestamped log still goes to `run.log`, and a summary is printed at the end.
+  self-updating line per worker thread with columns `[Tx] status | tag |
+  operation | rem/del/ini`, plus a summary line with the elapsed time
+  (hh:mm:ss) and the tag counters (done / running / todo). The full
+  timestamped log still goes to `run.log`, and a final summary is printed at
+  the end.
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
@@ -160,9 +163,7 @@ out-dir/
 ├── errors_log.txt                           # resumable line-by-line log
 ├── run.log                                  # progressive log copy
 ├── report.txt                               # final summary (OUTCOME: SUCCESS/ABORTED)
-└── .work/
-    ├── manifest.xml                         # internal manifest (not a deliverable)
-    └── project/                             # minimal temporary SFDX project (removed at the end)
+└── .work/                                   # internal temporary working area (removed at the end)
 ```
 
 > You don't need your own SFDX project. If `--project-dir` is omitted, the tool
@@ -176,7 +177,7 @@ out-dir/
 
 ## Author
 
-made with <3 by Lorenzo D'Aleo — turbolino.dev@proton.me
+Made with <3 by Lorenzo D'Aleo — turbolino.dev@proton.me
 
 ## License
 

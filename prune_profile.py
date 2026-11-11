@@ -8,21 +8,22 @@ exist in the target org. Pruning uses only `sf project deploy start --dry-run`
 and never modifies the org; with `--deploy-on-success` the cleaned profile is
 deployed at the end.
 
-Algorithm (per iteration):
-  1. start an async deploy dry-run (--dry-run --async) and poll its job
-     status via `sf project deploy report` until it is terminal
-  2. remove the XML block(s) that caused every reported error
-  3. refresh the cumulative package.xml with the errored metadata
-until the dry-run succeeds.
+Algorithm:
+  The profile is split by its top-level sections (`classAccesses`,
+  `fieldPermissions`, `tabVisibilities`, … — discovered dynamically from the
+  XML). Up to `--thread-number` workers run in parallel; each worker takes a
+  section and, in a loop, builds a sub-package with only that section, starts
+  an async deploy dry-run and polls its job via `sf project deploy report`
+  until terminal, then removes every offending entry. GOOD/ and ERRORS/ are
+  reassembled from the surviving entries in the original document order under
+  a mutex. A final dry-run of the whole assembled package gates `SUCCESS`.
 
 RESUME BEHAVIOUR
-  - Default: RESUMES from where it left off (if errors_log.txt and the
-    working copy exist). If there are no more errors, it removes nothing and
-    leaves GOOD/ and ERRORS/ untouched.
+  - Default: RESUMES from where it left off using `errors_log.txt`: the
+    cleaned profile is rebuilt from the original plus the recorded removals.
   - If the previous run ended with OUTCOME: SUCCESS, the tool exits
     immediately with "profile already clean".
-  - With --fresh: restarts from scratch, restoring the original and clearing
-    the outputs.
+  - With --fresh: restarts from scratch, clearing the previous outputs.
 
 OUTPUT (in --out-dir)
   ORIGINAL_<name>.profile-meta.xml   untouched copy of the original
@@ -31,8 +32,7 @@ OUTPUT (in --out-dir)
   errors_log.txt                     line-by-line log (resumable)
   run.log                            progressive log copy
   report.txt                         final outcome
-  .work/manifest.xml                 internal manifest (not a deliverable)
-  .work/project/                     minimal temporary SFDX project (removed at the end)
+  .work/                             internal temporary working area (removed at the end)
 """
 
 import argparse
@@ -51,10 +51,10 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.8.0'
+__version__ = '1.9.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
-AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
+AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
 
 APP_NAME = 'Profile Pruner'
 
@@ -123,15 +123,18 @@ class Logger:
 
 
 class StatusBoard:
-    """One live-updating line per worker thread on the console.
+    """One live-updating line per worker thread on the console, plus a summary
+    line with the elapsed time and the tag counters (done / running / todo).
 
-    Renders N lines (one per thread) and redraws them in place on every
-    update. Falls back to no-op when stdout is not a TTY (e.g. piped) or
-    when --quiet is set."""
+    Renders N thread lines + 1 summary line and redraws them in place on every
+    update. Falls back to no-op when stdout is not a TTY (e.g. piped) or when
+    --quiet is set."""
 
-    def __init__(self, n_threads, quiet):
+    def __init__(self, n_threads, quiet, progress=None, t0=None):
         self.n = n_threads
-        self.rows = ['[idle]'] * n_threads
+        self.progress = progress
+        self.t0 = t0 if t0 is not None else time.time()
+        self.rows = [self._fmt_row(t, 'idle', '-', '-', 0, 0, 0) for t in range(n_threads)]
         self.lock = threading.Lock()
         self.lines_on_screen = 0
         self.active = (not quiet) and bool(getattr(sys.stdout, 'isatty', lambda: False)())
@@ -151,11 +154,30 @@ class StatusBoard:
         except Exception:
             return False
 
-    def set(self, tid, status, detail=''):
+    @staticmethod
+    def _fmt_row(tid, status, tag, op, remaining, removed, initial):
+        tid_lbl = '[T%d]' % tid
+        return '%-6s %-8s %-22s %-18s rem:%-6d del:%-6d ini:%-6d' % (
+            tid_lbl, status, tag or '-', op or '-', remaining, removed, initial)
+
+    @staticmethod
+    def _fmt_elapsed(seconds):
+        s = max(0, int(seconds))
+        return '%02d:%02d:%02d' % (s // 3600, (s % 3600) // 60, s % 60)
+
+    def set(self, tid, status, tag='', op='', initial=0, remaining=0):
         with self.lock:
-            self.rows[tid] = '[T%d] %-14s %s' % (tid, status, detail)
+            removed = max(0, initial - remaining)
+            self.rows[tid] = self._fmt_row(tid, status, tag, op, remaining, removed, initial)
             if self.active:
                 self._render()
+
+    def _summary(self):
+        elapsed = self._fmt_elapsed(time.time() - self.t0)
+        if self.progress is None:
+            return 'elapsed %s' % elapsed
+        done, running, todo, failed = self.progress.snapshot()
+        return 'elapsed %s | done: %d | running: %d | todo: %d' % (elapsed, done, running, todo)
 
     def _render(self):
         out = []
@@ -163,9 +185,10 @@ class StatusBoard:
             out.append('\x1b[%dA' % self.lines_on_screen)
         for row in self.rows:
             out.append('\x1b[2K' + row + '\n')
+        out.append('\x1b[2K' + self._summary() + '\n')
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
-        self.lines_on_screen = self.n
+        self.lines_on_screen = self.n + 1
 
     def finish(self):
         if not self.active:
@@ -173,11 +196,40 @@ class StatusBoard:
         with self.lock:
             if self.lines_on_screen:
                 out = ['\x1b[%dA' % self.lines_on_screen]
-                for _ in range(self.n):
+                for _ in range(self.lines_on_screen):
                     out.append('\x1b[2K\n')
                 sys.stdout.write(''.join(out))
                 sys.stdout.flush()
                 self.lines_on_screen = 0
+            self.active = False
+
+
+class Progress:
+    """Thread-safe counters for the tag-level progress (done / running / todo)."""
+
+    def __init__(self, total):
+        self.lock = threading.Lock()
+        self.total = total
+        self.done = 0
+        self.failed = 0
+        self.running = 0
+
+    def start(self):
+        with self.lock:
+            self.running += 1
+
+    def finish(self, ok):
+        with self.lock:
+            self.running -= 1
+            if ok:
+                self.done += 1
+            else:
+                self.failed += 1
+
+    def snapshot(self):
+        with self.lock:
+            todo = self.total - self.done - self.failed - self.running
+            return self.done, self.running, todo, self.failed
 
 
 def resolve_error(problem):
@@ -673,6 +725,7 @@ class SharedState:
         self.removed_by_type = {}         # type -> set(member)
         self.seq = 0
         self.section_status = {}           # block -> (ok, reason)
+        self.initial_counts = {}           # block -> initial number of entries
 
     def record_section(self, block, ok, reason):
         with self.lock:
@@ -720,6 +773,9 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
     os.makedirs(os.path.dirname(profile_path), exist_ok=True)
     write_package_xml(manifest_path, {'Profile': [profile_name]}, api_version)
 
+    with state.lock:
+        initial = state.initial_counts.get(block, 0)
+
     guard = 0
     while True:
         guard += 1
@@ -732,10 +788,11 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
         with open(profile_path, 'wb') as f:
             f.write(build_subprofile(elements))
 
-        board.set(tid, 'dry-run', '%s (%d entries)' % (block, len(elements)))
+        board.set(tid, 'dry-run', block, 'polling', initial, len(elements))
         res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
                            logger, cwd=worker_proj,
-                           on_status=lambda s: board.set(tid, 'dry-run', '%s [%s]' % (block, s)))
+                           on_status=lambda s: board.set(tid, 'dry-run', block, s,
+                                                         initial, len(elements)))
         if res is None:
             return False, err or 'dry-run failed'
         result = res.get('result', {})
@@ -751,7 +808,8 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
                     'numberComponentErrors': result.get('numberComponentErrors')}
             return False, json.dumps(diag)[:400]
 
-        board.set(tid, 'removing', '%s (%d errors)' % (block, len(failures)))
+        board.set(tid, 'removing', block, '%d errors' % len(failures),
+                  initial, len(elements))
         removals = []
         for f in failures:
             problem = str(f.get('problem', ''))
@@ -772,22 +830,24 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
         state.apply_and_record(block, new_elements, removals, tid)
 
 
-def worker(tid, state, queue, queue_lock, board, sf, org, poll_interval, job_timeout,
-           profile_name, api_version, worker_proj, logger, max_iter):
+def worker(tid, state, queue, queue_lock, board, progress, sf, org, poll_interval,
+           job_timeout, profile_name, api_version, worker_proj, logger, max_iter):
     """Consume one section at a time until the queue is empty."""
     while True:
         with queue_lock:
             if not queue:
-                board.set(tid, 'idle', '')
+                board.set(tid, 'idle')
                 return
             block = queue.popleft()
-        board.set(tid, 'start', block)
+        progress.start()
+        board.set(tid, 'start', block, 'queued')
         ok, reason = process_section(tid, block, state, board, sf, org, poll_interval,
                                      job_timeout, profile_name, api_version,
                                      worker_proj, logger, max_iter)
         state.record_section(block, ok, reason)
-        board.set(tid, 'done' if ok else 'failed',
-                  block if ok else '%s - %s' % (block, reason))
+        progress.finish(ok)
+        board.set(tid, 'ok' if ok else 'fail', block,
+                  reason if not ok else 'clean', 0, 0)
         logger.log('[T%d][%s] %s' % (tid, block, ('DONE: ' + reason) if ok else ('FAILED: ' + reason)))
 
 
@@ -966,6 +1026,7 @@ def main():
     state = SharedState(groups, original_seq, logger, err_log, good_profile_path,
                         errors_pkg, profile_name, args.api_version)
     state.removed_by_type = removed_by_type
+    state.initial_counts = {block: len(els) for block, els in groups.items()}
     with state.lock:
         state._write_outputs_locked()
 
@@ -979,7 +1040,8 @@ def main():
         # ---------- launch workers ----------
         workers_dir = os.path.join(work_dir, 'workers')
         queue_lock = threading.Lock()
-        board = StatusBoard(args.thread_number, args.quiet)
+        progress = Progress(total=len(queue))
+        board = StatusBoard(args.thread_number, args.quiet, progress=progress, t0=t0)
         logger.console = False  # board owns the console during the parallel phase
         threads = []
         for tid in range(args.thread_number):
@@ -987,24 +1049,32 @@ def main():
             write_sfdx_project(wp, args.api_version)
             t = threading.Thread(
                 target=worker,
-                args=(tid, state, queue, queue_lock, board, sf, args.org,
+                args=(tid, state, queue, queue_lock, board, progress, sf, args.org,
                       args.poll_interval, args.job_timeout, profile_name,
                       args.api_version, wp, logger, args.max_iter),
                 daemon=True)
             t.start()
             threads.append(t)
-        for t in threads:
-            t.join()
-        board.finish()
-        logger.console = not args.quiet
-
-        # ---------- outcome ----------
-        failed = [(b, r) for b, (ok, r) in state.section_status.items() if not ok]
-        if failed:
+        try:
+            for t in threads:
+                t.join()
+        except KeyboardInterrupt:
+            board.finish()
+            logger.console = not args.quiet
+            logger.log('Interrupted by user (Ctrl-C).')
             result_state = 'ABORTED'
-            result_reason = '; '.join('%s: %s' % (b, r) for b, r in failed)
+            result_reason = 'interrupted by user'
         else:
-            result_state = 'SUCCESS'
+            board.finish()
+            logger.console = not args.quiet
+
+            # ---------- outcome ----------
+            failed = [(b, r) for b, (ok, r) in state.section_status.items() if not ok]
+            if failed:
+                result_state = 'ABORTED'
+                result_reason = '; '.join('%s: %s' % (b, r) for b, r in failed)
+            else:
+                result_state = 'SUCCESS'
 
     elapsed = time.time() - t0
 
