@@ -87,7 +87,10 @@ def main():
     python = sys.executable
 
     print('Installing Profile Pruner (package + sfpp command)...')
-    rc = run(python, '-m', 'pip', 'install', '-e', here)
+    # Regular (non-editable) install: copies the module into site-packages so
+    # the `sfpp` console script resolves it reliably, independent of the repo
+    # path or any editable-install finder.
+    rc = run(python, '-m', 'pip', 'install', here)
     if rc != 0:
         print('ERROR: pip install failed (exit code %d).' % rc)
         sys.exit(rc)

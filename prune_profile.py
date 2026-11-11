@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.10.4'
+__version__ = '1.10.5'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -152,6 +152,31 @@ class StatusBoard:
         if self.active and os.name == 'nt':
             self.active = self._enable_ansi()
         self._was_active = self.active
+        # A background ticker re-renders the board once a second so the
+        # `elapsed` clock keeps moving even when no worker posts an update.
+        self._stop_ticker = threading.Event()
+        self._ticker = None
+        if self.active:
+            self._start_ticker()
+
+    def _start_ticker(self):
+        if self._ticker is not None:
+            return
+        self._ticker = threading.Thread(target=self._ticker_loop, daemon=True)
+        self._ticker.start()
+
+    def _stop_ticker_thread(self):
+        self._stop_ticker.set()
+
+    def _ticker_loop(self):
+        while not self._stop_ticker.wait(1.0):
+            self.tick()
+
+    def tick(self):
+        """Re-render the board (clock keeps ticking between worker updates)."""
+        with self.lock:
+            if self.active and self.lines_on_screen:
+                self._render()
 
     @staticmethod
     def _enable_ansi():
@@ -214,11 +239,13 @@ class StatusBoard:
     def freeze(self):
         """Stop live redraw; the last rendered frame stays on screen."""
         with self.lock:
+            self._stop_ticker_thread()
             self.active = False
 
     def finalize_stopped(self):
         """Mark non-idle rows 'stopped by user' and redraw them in place."""
         with self.lock:
+            self._stop_ticker_thread()
             self._mark_stopped_locked()
             if self._was_active and self.lines_on_screen:
                 self._render()
@@ -237,6 +264,7 @@ class StatusBoard:
             self._mark_stopped_locked()
 
     def finish(self):
+        self._stop_ticker_thread()
         if not self.active:
             return
         with self.lock:
@@ -999,7 +1027,8 @@ def main():
     ap.add_argument('--job-timeout', type=int, default=30,
                     help='minutes to wait for a deploy job to finish before aborting (default: 30)')
     ap.add_argument('--thread-number', type=int, default=8, metavar='X',
-                    help='number of parallel section jobs, 1..64 (default: 8)')
+                    help='max parallel section jobs, 1..64 (default: 8); capped to '
+                         'the number of sections to prune')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--quiet', action='store_true',
@@ -1159,15 +1188,17 @@ def main():
         result_state = 'SUCCESS'
         logger.log('Nothing to prune: all sections already clean.')
     else:
-        # ---------- launch workers ----------
+        # ---------- launch workers (one per workable section, capped) ----------
         workers_dir = os.path.join(work_dir, 'workers')
         queue_lock = threading.Lock()
         progress = Progress(total=len(queue))
         control = Control()
-        board = StatusBoard(args.thread_number, args.quiet, progress=progress, t0=t0)
+        # Never spawn more threads than there are sections to prune.
+        n_workers = min(args.thread_number, len(queue))
+        board = StatusBoard(n_workers, args.quiet, progress=progress, t0=t0)
         logger.console = False  # board owns the console during the parallel phase
         threads = []
-        for tid in range(args.thread_number):
+        for tid in range(n_workers):
             wp = os.path.join(workers_dir, 'w%d' % tid)
             write_sfdx_project(wp, args.api_version)
             t = threading.Thread(

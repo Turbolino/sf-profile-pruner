@@ -38,8 +38,8 @@ references.
 1. The profile is split by its top-level sections (`classAccesses`,
    `fieldPermissions`, `tabVisibilities`, `layoutAssignments`, …) — the sections
    are discovered dynamically from the XML, not hardcoded.
-2. Up to `--thread-number` workers run in parallel; each worker takes one
-   section and, in a loop:
+2. Up to `--thread-number` workers run in parallel (capped to the number of
+   sections to prune); each worker takes one section and, in a loop:
    - builds a sub-package containing only that section,
    - starts an async dry-run (`sf project deploy start --dry-run --async`)
      and polls `sf project deploy report` until terminal,
@@ -87,11 +87,12 @@ Then open a **new** terminal and run:
 sfpp --help
 ```
 
-> `first_config` runs `pip install -e .`, which installs the package and its
-> dependency, creates a real `sfpp` **executable** (not a `.cmd` batch file),
-> and adds it to your user `PATH`. Because `sfpp` is a console-script `.exe`,
-> pressing Ctrl-C goes straight to the program — cmd.exe never shows its
-> "Terminate batch job (Y/N)?" prompt.
+> `first_config` runs `pip install .`, which installs the package and its
+> dependency (`lxml`), creates a real `sfpp` **executable** (not a `.cmd` batch
+> file), and adds it to your user `PATH`. Because `sfpp` is a console-script
+> `.exe`, pressing Ctrl-C goes straight to the program — cmd.exe never shows
+> its "Terminate batch job (Y/N)?" prompt. Re-run `first_config` after updating
+> the tool to refresh the installed copy.
 
 ## Usage
 
@@ -120,7 +121,8 @@ python prune_profile.py \
 - **Live progress board**: during pruning, the console shows one
   self-updating line per worker thread with columns `[Tx] status | tag |
   operation | remaining/deleted/initial`, plus a summary line with the elapsed
-  time (hh:mm:ss) and the tag counters (done / running / todo). The full
+  time (hh:mm:ss) and the tag counters (done / running / todo). The elapsed
+  clock ticks every second even while the workers are just polling. The full
   timestamped log still goes to `run.log`, and a final summary is printed at
   the end.
 - **Ctrl-C stops cleanly**: the run prints `Saving pending work...`, saves all
@@ -151,7 +153,7 @@ python prune_profile.py \
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
 | `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
 | `--job-timeout` | Minutes to wait for a deploy job to finish before aborting. Default: `30`. |
-| `--thread-number` | Number of parallel section jobs, `1`–`64`. Default: `8`. |
+| `--thread-number` | Max parallel section jobs, `1`–`64`; capped to the number of sections to prune. Default: `8`. |
 | `--fresh` | Ignore previous state and restart from the original. |
 | `--quiet` | Suppress progressive stdout output. |
 | `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |

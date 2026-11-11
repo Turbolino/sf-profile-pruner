@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.5] - 2026-11-11
+
+### Fixed
+
+- `sfpp` could fail at startup with `ModuleNotFoundError: No module named
+  'prune_profile'` because the editable install's finder was unreliable in
+  multi-Python environments. The tool is now installed non-editable (the module
+  is copied into site-packages), so `sfpp` resolves it deterministically.
+- The `elapsed` clock on the live board only advanced when a worker posted an
+  update; a background ticker now redraws it every second.
+- Spawning more worker threads than there are sections to prune; the thread
+  count is now capped to the number of sections.
+
+### Changed
+
+- `first_config.py` now performs a regular `pip install .` (refresh by
+  re-running it after updates).
+
 ## [1.10.4] - 2026-11-11
 
 ### Fixed
