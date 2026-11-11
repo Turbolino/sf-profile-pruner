@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.10.1'
+__version__ = '1.10.2'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -1134,15 +1134,26 @@ def main():
             threads.append(t)
 
         # ---------- join workers; Ctrl-C stops gracefully (as if 'S') ----------
+        # Bounded joins: a join() without timeout blocks the main thread in a
+        # native wait that never checks the Ctrl-C interrupt flag on Windows,
+        # so the interrupt is only raised when the join returns. Polling with a
+        # short timeout keeps KeyboardInterrupt responsive.
         stopped = False
         try:
-            for t in threads:
-                t.join()
+            while any(t.is_alive() for t in threads):
+                for t in threads:
+                    t.join(timeout=0.5)
         except KeyboardInterrupt:
             control.stop.set()
             board.freeze()
-            for t in threads:
-                t.join()
+            # Wait (still bounded, so a second Ctrl-C is not ignored) for the
+            # workers to acknowledge the stop at their next checkpoint.
+            try:
+                while any(t.is_alive() for t in threads):
+                    for t in threads:
+                        t.join(timeout=0.5)
+            except KeyboardInterrupt:
+                pass
             stopped = True
 
         if stopped:
