@@ -158,8 +158,7 @@ python prune_profile.py \
 out-dir/
 ├── ORIGINAL_<name>.profile-meta.xml   # untouched copy of the original
 ├── GOOD/
-│   ├── package.xml
-│   └── profiles/<name>.profile-meta.xml   # clean, deployable profile
+│   └── <name>.profile-meta.xml          # clean, deployable profile (the only GOOD artifact)
 ├── ERRORS/
 │   └── package.xml                          # everything removed / missing
 ├── errors_log.txt                           # resumable line-by-line log

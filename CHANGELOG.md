@@ -1,0 +1,100 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.8.0] - 2026-11-11
+
+### Changed
+
+- `GOOD/` now contains only the cleaned profile (`GOOD/<name>.profile-meta.xml`);
+  the `profiles/` subfolder and the GOOD `package.xml` are no longer produced.
+- Updated the "already clean" early exit and `--fresh` cleanup to match the new
+  GOOD layout.
+
+## [1.7.0] - 2026-11-11
+
+### Added
+
+- Live progress board: one self-updating line per worker thread (status + current
+  activity) during pruning, with a summary printed at the end.
+
+### Removed
+
+- Per-metadata `removed '...'` console/run.log lines.
+
+## [1.6.1] - 2026-11-11
+
+### Added
+
+- Mapping for `customSettingAccesses`, `servicePresenceStatusAccesses` and
+  `categoryGroupVisibilities` blocks (previously left untouched).
+
+## [1.6.0] - 2026-11-11
+
+### Added
+
+- Final dry-run of the whole assembled package as a safety gate before `SUCCESS`.
+
+## [1.5.0] - 2026-11-11
+
+### Added
+
+- Parallel pruning: profile split by top-level sections (discovered dynamically),
+  processed by up to `--thread-number` workers (default 8, range 1-64).
+- Mutex-protected writes to the GOOD profile, ERRORS package and error log.
+
+## [1.4.2] - 2026-11-11
+
+### Added
+
+- Auto-detection of a compatible Node.js (>= 18.11), prepended to `PATH` so the
+  Salesforce CLI works even when an old Node is the system default.
+
+## [1.4.1] - 2026-11-11
+
+### Added
+
+- Auto-discovery of the Salesforce CLI from `PATH` and common install locations
+  (including toolchain prefixes).
+
+## [1.4.0] - 2026-11-11
+
+### Added
+
+- Self-contained temporary micro-project (single `sfdx-project.json`), created
+  inside the output dir and removed at the end, so no external SFDX project is
+  required (`--project-dir` is now optional).
+- Reconstruction of the working copy from `errors_log.txt` on resume.
+
+## [1.3.0] - 2026-11-11
+
+### Added
+
+- Async deploy + job polling (`deploy start --async` + `deploy report`) replacing
+  the blocking `--wait`; new `--poll-interval` and `--job-timeout` options.
+
+## [1.2.0] - 2026-11-11
+
+### Added
+
+- Batch removal of every failure reported by a single deploy.
+- Robust error capture for unparseable/empty CLI output.
+
+## [1.1.0] - 2026-11-11
+
+### Added
+
+- `--deploy-on-success` (default remains dry-run only).
+- Early exit when a previous run already ended with `SUCCESS`.
+- `sfpp` launcher via `first_config.py`; dependency installer.
+
+## [1.0.0] - 2026-11-11
+
+### Added
+
+- Initial release: iterative dry-run pruning of a Salesforce Profile, producing
+  a deployable GOOD profile and an ERRORS package of removed references.
+- AGPL-3.0 licensing, ASCII banner, author metadata.
