@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.3] - 2026-11-11
+
+### Fixed
+
+- Salesforce deploy statuses are now shown lower-case with spaces on the live
+  board (`InProgress` -> `in progress`, `Pending` -> `pending`).
+- Ctrl-C no longer produces a traceback: the temporary work area is removed
+  with an error-tolerant cleanup, and a second Ctrl-C during shutdown is
+  ignored so the workers release their temp directories before cleanup.
+- Resume now keeps the original section sizes, so the board shows the true
+  cumulative `initial`/`deleted` instead of resetting them, and the error-log
+  sequence continues instead of restarting at 1.
+
 ## [1.10.2] - 2026-11-11
 
 ### Fixed

@@ -214,6 +214,23 @@ class TestControl(unittest.TestCase):
         self.assertFalse(c.stop.is_set())
 
 
+class TestHumanizeStatus(unittest.TestCase):
+    def test_camel_case(self):
+        self.assertEqual(pp.humanize_status('InProgress'), 'in progress')
+        self.assertEqual(pp.humanize_status('SucceededPartial'), 'succeeded partial')
+
+    def test_plain_lowercase(self):
+        self.assertEqual(pp.humanize_status('Pending'), 'pending')
+        self.assertEqual(pp.humanize_status('Queued'), 'queued')
+
+    def test_already_spaced(self):
+        self.assertEqual(pp.humanize_status('In Progress'), 'in progress')
+
+    def test_empty(self):
+        self.assertEqual(pp.humanize_status(''), '')
+        self.assertEqual(pp.humanize_status(None), '')
+
+
 class TestProgress(unittest.TestCase):
     def test_counters(self):
         p = pp.Progress(total=5)

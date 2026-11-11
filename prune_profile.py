@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.10.2'
+__version__ = '1.10.3'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -296,6 +296,21 @@ def resolve_error(problem):
     return None
 
 
+def humanize_status(status):
+    """Turn a Salesforce deploy status into readable, lower-case words with
+    spaces (e.g. 'InProgress' -> 'in progress', 'Pending' -> 'pending')."""
+    s = (status or '').strip()
+    if not s:
+        return s
+    # CamelCase -> spaced words: 'InProgress' -> 'In Progress';
+    # 'SucceededPartial' -> 'Succeeded Partial'.
+    s = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', s)
+    s = re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', s)
+    s = s.replace('_', ' ').replace('-', ' ')
+    s = re.sub(r'\s+', ' ', s).strip().lower()
+    return s
+
+
 def remove_block(work_path, member, candidates):
     tree = etree.parse(work_path)
     root = tree.getroot()
@@ -442,7 +457,7 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
             logger.log('  [job %s] status: %s' % (job_id, status))
             last_status = status
             if on_status:
-                on_status(status)
+                on_status(humanize_status(status))
         if status in TERMINAL_STATUSES:
             return res, None
         if control:
@@ -698,15 +713,29 @@ def prepare_work_copy(work_path, source_path, err_log, fresh):
 def remove_temp_project(project_dir, out_dir):
     """Delete the temporary micro-project. Windows cannot remove the CWD, and a
     just-finished CLI call can briefly hold a handle to the directory, so
-    retry a few times before giving up."""
-    os.chdir(out_dir)
-    for _ in range(5):
+    retry a few times and skip files that stay locked. Never raises: the temp
+    area is throwaway and a leftover folder is harmless."""
+    def _onerror(func, path, exc_info):
         try:
-            shutil.rmtree(project_dir)
+            os.chmod(path, 0o777)
+            func(path)
+        except OSError:
+            pass
+    try:
+        os.chdir(out_dir)
+    except OSError:
+        pass
+    for _ in range(8):
+        try:
+            shutil.rmtree(project_dir, onerror=_onerror)
+            return
+        except KeyboardInterrupt:
             return
         except OSError:
-            time.sleep(0.6)
-    # Last resort: the tree is already gone, just drop the empty top folder.
+            try:
+                time.sleep(0.5)
+            except KeyboardInterrupt:
+                return
     try:
         os.rmdir(project_dir)
     except OSError:
@@ -1073,6 +1102,9 @@ def main():
         groups.setdefault(block, []).append(el)
 
     # ---------- apply recorded removals (resume) ----------
+    # Capture the true original section sizes first, so the board keeps showing
+    # cumulative deleted/initial across resumptions instead of resetting.
+    original_counts = {block: len(els) for block, els in groups.items()}
     removed_by_type = {}
     for typ, member in load_log_entries(err_log):
         removed_by_type.setdefault(typ, set()).add(member)
@@ -1102,7 +1134,8 @@ def main():
     state = SharedState(groups, original_seq, logger, err_log, good_profile_path,
                         errors_pkg, profile_name, args.api_version)
     state.removed_by_type = removed_by_type
-    state.initial_counts = {block: len(els) for block, els in groups.items()}
+    state.initial_counts = original_counts
+    state.seq = total_resumed  # continue the error-log sequence on resume
     with state.lock:
         state._write_outputs_locked()
 
@@ -1146,15 +1179,18 @@ def main():
         except KeyboardInterrupt:
             control.stop.set()
             board.freeze()
-            # Wait (still bounded, so a second Ctrl-C is not ignored) for the
-            # workers to acknowledge the stop at their next checkpoint.
-            try:
-                while any(t.is_alive() for t in threads):
+            stopped = True
+
+        # Wait for the workers to acknowledge the stop at their next checkpoint.
+        # A second Ctrl-C while shutting down must not abort this wait, or the
+        # workers would be left holding their temp dirs and cleanup would fail.
+        if stopped:
+            while any(t.is_alive() for t in threads):
+                try:
                     for t in threads:
                         t.join(timeout=0.5)
-            except KeyboardInterrupt:
-                pass
-            stopped = True
+                except KeyboardInterrupt:
+                    pass
 
         if stopped:
             board.finalize_stopped()
