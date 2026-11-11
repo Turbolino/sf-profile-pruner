@@ -1,123 +1,122 @@
-# Guida all'installazione di Profile Pruner (Windows)
+# Installing Profile Pruner (Windows)
 
-Questa guida spiega come installare **Profile Pruner** in modo pulito su un PC
-Windows e come rendere disponibile il comando `sfpp` da terminale.
+This guide walks through a clean install of **Profile Pruner** on Windows and
+how to make the `sfpp` command available from a terminal.
 
-Il pacchetto si chiama **`sf-profile-pruner`**; `sfpp` è il *comando* che il
-pacchetto installa.
+The package is named **`sf-profile-pruner`**; `sfpp` is the *command* the
+package installs.
 
-> **Sintomo più comune**: dopo `pip install sf-profile-pruner`, il comando
-> `sfpp` non viene riconosciuto (`impossibile trovare il file`). Non è un
-> errore del pacchetto: l'eseguibile `sfpp.exe` è installato, ma la cartella
-> `Scripts` del Python non è nel `PATH`. La FASE 4 sotto risolve il problema.
+> **Most common symptom**: after `pip install sf-profile-pruner`, `sfpp` is
+> "not recognized" (`could not find the file`). This is not a package bug: the
+> `sfpp.exe` executable is installed, but the Python `Scripts` folder is not on
+> your `PATH`. STEP 4 below fixes it.
 
 ---
 
-## FASE 1 — Installare Python correttamente
+## STEP 1 — Install Python correctly
 
-1. Scarica l'ultima **Python 3.x** da <https://www.python.org/downloads/>
-   (installer *Windows 64-bit*).
-2. Esegui l'installer e — **passo fondamentale** — spunta:
+1. Download the latest **Python 3.x** from <https://www.python.org/downloads/>
+   (Windows 64-bit installer).
+2. Run the installer and — **the key step** — check:
    - ☑ **Add python.exe to PATH**
-   - ☑ **Install launcher for all users** (consigliato)
-3. Clicca **Install Now**.
-4. **Chiudi e riapri il terminale**, poi verifica:
+   - ☑ **Install launcher for all users** (recommended)
+3. Click **Install Now**.
+4. **Close and reopen the terminal**, then verify:
 
    ```powershell
    python --version
    ```
 
-   Deve stampare qualcosa come `Python 3.13.x`.
+   It should print something like `Python 3.13.x`.
 
-> Se apre il **Microsoft Store** o il percorso contiene `WindowsApps`, stai
-> usando il Python dello Store. Disinstallalo e rifai la FASE 1 con l'installer
-> di python.org (quello con la spunta PATH).
+> If it opens the **Microsoft Store**, or the path contains `WindowsApps`, you
+> are using the Store Python. Uninstall it and redo STEP 1 with the python.org
+> installer (the one with the PATH checkbox).
 
 ---
 
-## FASE 2 — Installare Profile Pruner
+## STEP 2 — Install Profile Pruner
 
-Usa sempre `python -m pip` (così usi *esattamente* il Python appena installato):
+Always use `python -m pip` (so you use *exactly* the Python you just installed):
 
 ```powershell
 python -m pip install --upgrade sf-profile-pruner
 ```
 
-Attendi la riga `Successfully installed sf-profile-pruner-...`.
+Wait for the line `Successfully installed sf-profile-pruner-...`.
 
-> Il messaggio `Requirement already satisfied` (a un secondo tentativo) è
-> normale: significa che il pacchetto è già installato. Non c'entra con il PATH.
+> `Requirement already satisfied` (on a second attempt) is normal: it means the
+> package is already installed. It has nothing to do with the `PATH`.
 
 ---
 
-## FASE 3 — Trovare la cartella `Scripts`
+## STEP 3 — Find the `Scripts` folder
 
 ```powershell
 python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 ```
 
-**Copia** il percorso stampato (es.
-`C:\Users\tuo\AppData\Local\Programs\Python\Python313\Scripts`). Verifica che
-`sfpp.exe` sia lì:
+**Copy** the printed path (e.g.
+`C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts`). Confirm that
+`sfpp.exe` is there:
 
 ```powershell
 Get-ChildItem (python -c "import sysconfig; print(sysconfig.get_path('scripts'))") -Filter "sfpp*"
 ```
 
-Se vedi `sfpp.exe`, il pacchetto è installato: manca solo il `PATH`.
+If you see `sfpp.exe`, the package is installed: only the `PATH` is missing.
 
 ---
 
-## FASE 4 — Aggiungere la cartella `Scripts` al `PATH` utente
+## STEP 4 — Add the `Scripts` folder to the user `PATH`
 
-### Metodo A — tramite interfaccia (funziona sempre)
+### Method A — via the GUI (always works)
 
-Questo metodo funziona anche quando PowerShell è in **Constrained Language
-Mode** (che blocca i metodi .NET come `[Environment]::SetEnvironmentVariable`).
+This method also works when PowerShell is in **Constrained Language Mode**
+(which blocks .NET methods such as `[Environment]::SetEnvironmentVariable`).
 
-1. Premi **Win + R**.
-2. Digita **`sysdm.cpl`** e premi **Invio**.
-3. Vai alla scheda **Avanzate**.
-4. Clicca **Variabili d'ambiente...**.
-5. Nella parte alta (*Variabili utente per `<tuo nome>`*), seleziona **`Path`**.
-6. Clicca **Modifica...**.
-7. Clicca **Nuovo**.
-8. **Incolla** la cartella `Scripts` copiata nella FASE 3.
-9. Clicca **OK** su tutte le finestre.
+1. Press **Win + R**.
+2. Type **`sysdm.cpl`** and press **Enter**.
+3. Go to the **Advanced** tab.
+4. Click **Environment Variables...**.
+5. In the upper section (*User variables for `<your name>`*), select **`Path`**.
+6. Click **Edit...**.
+7. Click **New**.
+8. **Paste** the `Scripts` folder you copied in STEP 3.
+9. Click **OK** on every open dialog.
 
-### Metodo B — da PowerShell (solo se non sei in modalità ristretta)
+### Method B — from PowerShell (only if not in constrained mode)
 
-Sostituisci `<CARTELLA>` con il percorso della FASE 3:
+Replace `<FOLDER>` with the path from STEP 3:
 
 ```powershell
 [Environment]::SetEnvironmentVariable(
   'Path',
-  [Environment]::GetEnvironmentVariable('Path','User') + ';<CARTELLA>',
+  [Environment]::GetEnvironmentVariable('Path','User') + ';<FOLDER>',
   'User'
 )
 ```
 
-Esempio:
+Example:
 
 ```powershell
-[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';C:\Users\tuo\AppData\Local\Programs\Python\Python313\Scripts', 'User')
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts', 'User')
 ```
 
-> Se ricevi *«Impossibile richiamare il metodo... è supportato solo per i tipi
-> di base»*, sei in Constrained Language Mode: usa il **Metodo A**.
+> If you get *"Unable to call the method... it is supported only for base
+> types"*, you are in Constrained Language Mode: use **Method A**.
 
 ---
 
-## FASE 5 — Riaprire il terminale e verificare
+## STEP 5 — Reopen the terminal and verify
 
-Il `PATH` si aggiorna **solo in una nuova finestra**. Chiudi il terminale,
-riaprilo e:
+The `PATH` only updates in a **new window**. Close the terminal, reopen it, and:
 
 ```powershell
 sfpp --version
 ```
 
-Deve stampare:
+It should print:
 
 ```
 Profile Pruner v1.10.9 - Made with <3 by Lorenzo D'Aleo
@@ -126,31 +125,31 @@ Profile Pruner v1.10.9 - Made with <3 by Lorenzo D'Aleo
 
 ---
 
-## Fallback senza toccare il `PATH`
+## Fallback without touching the `PATH`
 
-Il tool funziona anche come modulo Python, quindi è utilizzabile **sempre**,
-anche se `sfpp` non è nel `PATH`:
+The tool also runs as a Python module, so it always works even when `sfpp` is
+not on the `PATH`:
 
 ```powershell
 python -m prune_profile --version
 python -m prune_profile --help
 ```
 
-## Test rapido (solo sessione corrente)
+## Quick test (current session only)
 
-Se vuoi provare subito senza modificare nulla (sparisce alla chiusura del
-terminale), sostituisci `<CARTELLA>` e digita:
+To try it right now without changing anything (it disappears when the terminal
+closes), replace `<FOLDER>` and run:
 
 ```powershell
-$env:Path += ";<CARTELLA>"
+$env:Path += ";<FOLDER>"
 sfpp --version
 ```
 
 ---
 
-## Diagnosi
+## Troubleshooting
 
-Se `sfpp` non funziona ancora, esegui e riporta l'output di:
+If `sfpp` still does not work, run and report the output of:
 
 ```powershell
 python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
@@ -158,10 +157,10 @@ where.exe sfpp
 Get-ChildItem (python -c "import sysconfig; print(sysconfig.get_path('scripts'))") -Filter "sfpp*"
 ```
 
-Per verificare se PowerShell è in modalità ristretta:
+To check whether PowerShell is in constrained mode:
 
 ```powershell
 $ExecutionContext.SessionState.LanguageMode
 ```
 
-Se stampa `ConstrainedLanguage`, usa il **Metodo A** della FASE 4.
+If it prints `ConstrainedLanguage`, use **Method A** in STEP 4.
