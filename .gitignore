@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tool outputs
+.work/
+GOOD/
+ERRORS/
+errors_log.txt
+run.log
+report.txt
+ORIGINAL_*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
