@@ -211,7 +211,6 @@ class TestStatusBoard(unittest.TestCase):
 class TestControl(unittest.TestCase):
     def test_initial_state(self):
         c = pp.Control()
-        self.assertFalse(c.pause.is_set())
         self.assertFalse(c.stop.is_set())
 
 

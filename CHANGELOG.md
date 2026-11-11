@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] - 2026-11-11
+
+### Changed
+
+- Ctrl-C no longer prompts for resume/stop: it now stops the run automatically
+  (as if "S" were pressed), saves all pending work, keeps the board rows on
+  screen, and marks the active threads "stopped by user".
+
 ## [1.10.0] - 2026-11-11
 
 ### Added

@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.10.0'
+__version__ = '1.10.1'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -130,12 +130,11 @@ class StatusBoard:
     update. Falls back to no-op when stdout is not a TTY (e.g. piped) or when
     --quiet is set.
 
-    Pause/stop lifecycle:
-      - freeze(): stop the live redraw and print the current frame statically
-        (so the rows stay visible instead of being wiped).
-      - resume(): clear the static frame + prompt and go back to live redraw.
-      - finalize_stopped(): mark non-idle rows "stopped by user", reprint the
-        static frame and leave it on screen.
+    Stop lifecycle:
+      - freeze(): stop the live redraw, leaving the current frame on screen
+        (the rows stay visible instead of being wiped).
+      - finalize_stopped(): mark non-idle rows "stopped by user" and redraw the
+        frame in place, then leave it on screen.
     """
 
     COL_FMT = '%-7s %-9s %-28s %-22s remaining:%-9d deleted:%-9d initial:%-8d'
@@ -217,22 +216,14 @@ class StatusBoard:
         with self.lock:
             self.active = False
 
-    def resume(self):
-        """Return to live redraw; the next frame is drawn fresh below."""
-        with self.lock:
-            self.active = self._was_active
-            self.lines_on_screen = 0
-
     def finalize_stopped(self):
-        """Mark non-idle rows as 'stopped by user' and leave them on screen."""
+        """Mark non-idle rows 'stopped by user' and redraw them in place."""
         with self.lock:
             self._mark_stopped_locked()
+            if self._was_active and self.lines_on_screen:
+                self._render()
             self.active = False
             self.lines_on_screen = 0
-            if self._was_active:
-                for row in self.rows:
-                    print(row)
-                print(self._summary())
 
     def _mark_stopped_locked(self):
         for tid, s in enumerate(self.state):
@@ -256,10 +247,9 @@ class StatusBoard:
 
 
 class Control:
-    """Signals shared between the main thread and the workers for pause/stop."""
+    """Stop signal shared between the main thread and the workers."""
 
     def __init__(self):
-        self.pause = threading.Event()
         self.stop = threading.Event()
 
 
@@ -393,7 +383,7 @@ def _run_sf(cmd, sf, what, cwd=None):
     if os.name == 'nt':
         # Put the child in its own process group so Ctrl-C reaches only us
         # (not the cmd.exe batch shim), avoiding the "Terminate batch job"
-        # prompt and letting the run pause/resume cleanly.
+        # prompt and letting the run stop cleanly.
         kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
     try:
         proc = subprocess.run(cmd, **kwargs)
@@ -436,23 +426,13 @@ def report_deploy(sf, job_id, org, cwd=None):
 
 
 def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
-                on_status=None, control=None, on_pause=None, on_resume=None):
+                on_status=None, control=None):
     """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error)."""
     deadline = time.time() + job_timeout * 60
     last_status = ''
     while time.time() < deadline:
         if control and control.stop.is_set():
             return None, 'stopped by user'
-        if control and control.pause.is_set():
-            if on_pause:
-                on_pause()
-            while control.pause.is_set() and not control.stop.is_set():
-                time.sleep(0.2)
-            if control.stop.is_set():
-                return None, 'stopped by user'
-            if on_resume:
-                on_resume()
-            continue
         res, err = report_deploy(sf, job_id, org, cwd=cwd)
         if res is None:
             return None, err
@@ -466,10 +446,10 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
         if status in TERMINAL_STATUSES:
             return res, None
         if control:
-            # Interruptible sleep: wake early on pause/stop.
+            # Interruptible sleep: wake early on stop.
             waited = 0.0
             while waited < poll_interval:
-                if control.pause.is_set() or control.stop.is_set():
+                if control.stop.is_set():
                     break
                 time.sleep(0.2)
                 waited += 0.2
@@ -576,14 +556,13 @@ def find_sf(default='sf'):
 
 
 def dry_run(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
-            on_status=None, control=None, on_pause=None, on_resume=None):
+            on_status=None, control=None):
     """Start an async dry-run and poll to completion. Returns (result_dict_or_None, error)."""
     job_id, err = start_deploy(sf, manifest_path, org, dry_run=True, cwd=cwd)
     if err:
         return None, err
     return poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger,
-                       cwd=cwd, on_status=on_status, control=control,
-                       on_pause=on_pause, on_resume=on_resume)
+                       cwd=cwd, on_status=on_status, control=control)
 
 
 def deploy(sf, manifest_path, org, poll_interval, job_timeout, logger, cwd=None,
@@ -882,11 +861,7 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
                            logger, cwd=worker_proj,
                            on_status=lambda s: board.set(tid, 'dry-run', block, s,
                                                          initial, len(elements)),
-                           control=control,
-                           on_pause=lambda: board.set(tid, 'paused', block, 'paused by user',
-                                                      initial, len(elements)),
-                           on_resume=lambda: board.set(tid, 'dry-run', block, 'polling',
-                                                       initial, len(elements)))
+                           control=control)
         if res is None:
             if err == 'stopped by user':
                 return False, 'stopped by user'
@@ -932,7 +907,6 @@ def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
     """Consume one section at a time until the queue is empty."""
     while True:
         if control.stop.is_set():
-            board.set(tid, 'stopped', '-', 'stopped by user')
             return
         with queue_lock:
             if not queue:
@@ -947,7 +921,6 @@ def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
         state.record_section(block, ok, reason)
         progress.finish(ok)
         if control.stop.is_set():
-            board.set(tid, 'stopped', block, 'stopped by user')
             return
         board.set(tid, 'ok' if ok else 'fail', block,
                   reason if not ok else 'clean', 0, 0)
@@ -1160,38 +1133,17 @@ def main():
             t.start()
             threads.append(t)
 
-        # ---------- join workers, handling Ctrl-C (pause / resume / stop) ----------
+        # ---------- join workers; Ctrl-C stops gracefully (as if 'S') ----------
         stopped = False
-        while True:
-            alive = [t for t in threads if t.is_alive()]
-            if not alive:
-                break
-            try:
-                for t in alive:
-                    t.join(timeout=0.5)
-            except KeyboardInterrupt:
-                control.pause.set()
-                time.sleep(0.4)  # let workers flip their rows to 'paused'
-                board.freeze()
-                sys.stdout.write('\n')
-                sys.stdout.flush()
-                try:
-                    choice = input('Paused. Resume [N] / stop [S]? ').strip().lower()
-                except KeyboardInterrupt:
-                    choice = 's'
-                if choice == 's':
-                    control.stop.set()
-                    stopped = True
-                else:
-                    print('Resuming...')
-                    board.resume()
-                    control.pause.clear()
-                    continue
-            if stopped:
-                break
-
-        for t in threads:
-            t.join()
+        try:
+            for t in threads:
+                t.join()
+        except KeyboardInterrupt:
+            control.stop.set()
+            board.freeze()
+            for t in threads:
+                t.join()
+            stopped = True
 
         if stopped:
             board.finalize_stopped()
