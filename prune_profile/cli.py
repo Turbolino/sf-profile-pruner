@@ -30,7 +30,7 @@ from lxml import etree
 
 from .board import Control, Logger, Progress, StatusBoard
 from .constants import APP_NAME, AUTHOR_NOTE, BANNER, BLOCK_MAP, __version__
-from .engine import worker
+from .engine import prefetch_dangling, worker
 from .sfcli import deploy, dry_run, find_sf
 from .state import SharedState
 from .xmlio import (
@@ -79,6 +79,9 @@ def main():
                          'the number of sections to prune')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
+    ap.add_argument('--no-prefetch', action='store_true',
+                    help='skip the Metadata API pre-pass that removes dangling '
+                         'references by listing existing org metadata (dry-run only)')
     ap.add_argument('--quiet', action='store_true',
                     help='suppress the progressive stdout output')
     ap.add_argument('--deploy-on-success', action='store_true',
@@ -211,13 +214,6 @@ def main():
     else:
         logger.log('FIRST RUN.')
 
-    # ---------- queue of prunable sections that still have entries ----------
-    queue = deque()
-    for block in groups:
-        if block in prunable_blocks() and groups[block]:
-            queue.append(block)
-    logger.log('Sections to prune: %s' % (', '.join(queue) if queue else '(none)'))
-
     # ---------- shared state + initial outputs ----------
     good_profile_path = os.path.join(good_dir, '%s.profile-meta.xml' % profile_name)
     errors_pkg = os.path.join(errors_dir, 'package.xml')
@@ -228,6 +224,27 @@ def main():
     state.seq = total_resumed  # continue the error-log sequence on resume
     with state.lock:
         state._write_outputs_locked()
+
+    # ---------- Metadata API pre-pass: prune dangling references fast ----------
+    # Enumerates existing metadata per type (`sf org list metadata`) and removes
+    # every reference that has no matching component, before the dry-run loop.
+    # This catches login flows, the newest Profile sections (agentAccesses,
+    # genComputingSummaryDefAccesses) and any other listable type in one shot.
+    if not args.no_prefetch:
+        pref = prefetch_dangling(sf, args.org, state.groups, args.api_version, logger)
+        if pref:
+            n = state.apply_global_removals(pref, problem='missing in org (pre-fetch)')
+            logger.log('PREFETCH: removed %d dangling reference(s) via listMetadata.' % n)
+        else:
+            logger.log('PREFETCH: no dangling references found via listMetadata.')
+
+    # ---------- queue of prunable sections that still have entries ----------
+    queue = deque()
+    with state.lock:
+        for block in state.groups:
+            if block in prunable_blocks() and state.groups[block]:
+                queue.append(block)
+    logger.log('Sections to prune: %s' % (', '.join(queue) if queue else '(none)'))
 
     t0 = time.time()
     result_reason = ''

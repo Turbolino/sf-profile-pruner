@@ -4,8 +4,49 @@
 import json
 import os
 
-from .sfcli import dry_run
-from .xmlio import build_subprofile, remove_from_list, resolve_error, write_package_xml
+from .constants import LISTABLE, MIN_API, version_ge
+from .sfcli import dry_run, list_metadata
+from .xmlio import (
+    build_subprofile,
+    dangling_members,
+    remove_from_list,
+    resolve_error,
+    write_package_xml,
+)
+
+
+def prefetch_dangling(sf, org, groups, api_version, logger):
+    """Detect dangling references by listing existing org metadata per type.
+
+    Returns a deduplicated list of (type, member) pairs to remove. Each `type`
+    is a BLOCK_MAP key, so the removals are applied and re-applied (on resume)
+    through the exact same code path as dry-run findings."""
+    removals = []
+    seen = set()
+    for mdtype, mappings in LISTABLE.items():
+        minv = MIN_API.get(mdtype)
+        if minv and not version_ge(api_version, minv):
+            continue
+        blocks = [(b, c) for b, c in mappings if groups.get(b)]
+        if not blocks:
+            continue
+        names, err = list_metadata(sf, org, mdtype)
+        if names is None:
+            logger.log('PREFETCH %s: skipped (%s)' % (mdtype, err))
+            continue
+        if not names:
+            # An empty list is almost always a permissions/feature problem, not
+            # a genuinely empty org; removing everything would be destructive.
+            logger.log('PREFETCH %s: org returned zero members; skipping.' % mdtype)
+            continue
+        existing = set(names)
+        for block, child in blocks:
+            for member in dangling_members(groups[block], child, existing):
+                key = (mdtype, member)
+                if key not in seen:
+                    seen.add(key)
+                    removals.append(key)
+    return removals
 
 
 def process_section(tid, block, state, board, sf, org, poll_interval, job_timeout,

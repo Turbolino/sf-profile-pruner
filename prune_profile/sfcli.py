@@ -94,6 +94,25 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
             what, e, (err or '').strip()[:300], out[:300])
 
 
+def list_metadata(sf, org, metadata_type, cwd=None, control=None):
+    """List the `fullName` of every component of `metadata_type` in the org.
+    Returns (list_of_names_or_None, error)."""
+    cmd = [sf, 'org', 'list', 'metadata', '--metadata-type', metadata_type,
+           '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'list metadata %s' % metadata_type,
+                       cwd=cwd, control=control)
+    if err:
+        return None, err
+    result = res.get('result')
+    if not isinstance(result, list):
+        return None, 'unexpected list metadata result: %s' % json.dumps(res)[:200]
+    names = []
+    for item in result:
+        if isinstance(item, dict) and item.get('fullName'):
+            names.append(str(item['fullName']))
+    return names, None
+
+
 def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None, control=None):
     """Start an async deploy. Returns (job_id, error)."""
     cmd = [sf, 'project', 'deploy', 'start', '--async']

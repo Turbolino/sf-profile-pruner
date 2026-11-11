@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-11-11
+
+### Added
+
+- **Metadata API pre-pass**: before the dry-run loop, the tool now enumerates the
+  metadata that exists in the target org with `sf org list metadata` (one call
+  per listable type) and removes every dangling reference in one shot — flows,
+  login flows, layouts, record types, apps, tabs, permissions, custom metadata,
+  external data sources, data category groups, presence statuses and more. It is
+  version-aware: the newest Profile sections (`agentAccesses` API 63.0,
+  `genComputingSummaryDefAccesses` API 66.0) are fetched only when the manifest
+  API version includes them. Custom fields and custom/standard objects are left
+  to the authoritative dry-run (listMetadata does not return standard fields/objects).
+- New `--no-prefetch` flag to disable the pre-pass.
+- `AgentDefinition` (agentAccesses) and `GenComputingSummaryDefinition`
+  (genComputingSummaryDefAccesses) added to the section map.
+
 ## [1.10.12] - 2026-11-11
 
 ### Fixed

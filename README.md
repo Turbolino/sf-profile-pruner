@@ -38,18 +38,26 @@ references.
 1. The profile is split by its top-level sections (`classAccesses`,
    `fieldPermissions`, `tabVisibilities`, `layoutAssignments`, …) — the sections
    are discovered dynamically from the XML, not hardcoded.
-2. Up to `--thread-number` workers run in parallel (capped to the number of
+2. **Metadata API pre-pass (new in 1.11):** before anything is deployed, the
+   tool enumerates the metadata that actually exists in the target org with
+   `sf org list metadata` (one call per type) and removes every reference that
+   has no matching component — login flows, agent access, enhanced summaries,
+   flows, layouts, record types, and every other listable type — in one shot.
+   This is much faster than discovering each missing reference through dry-runs
+   and covers the newest Profile sections automatically. The per-section dry-run
+   below remains the authoritative fallback.
+3. Up to `--thread-number` workers run in parallel (capped to the number of
    sections to prune); each worker takes one section and, in a loop:
    - builds a sub-package containing only that section,
    - starts an async dry-run (`sf project deploy start --dry-run --async`)
      and polls `sf project deploy report` until terminal,
    - removes every offending entry and, under a mutex, writes the cleaned
      entries and the removed ones back in their original order.
-3. The worker repeats until its section dry-runs clean, then takes the next
+4. The worker repeats until its section dry-runs clean, then takes the next
    section from the queue.
-4. GOOD/ and ERRORS/ are assembled from the surviving entries, keeping the
+5. GOOD/ and ERRORS/ are assembled from the surviving entries, keeping the
    original document order.
-5. As a final safety check, the tool runs one last **dry-run of the whole
+6. As a final safety check, the tool runs one last **dry-run of the whole
    assembled package**; only if it succeeds the outcome is `SUCCESS`.
 
 ## Requirements
@@ -170,6 +178,7 @@ python -m prune_profile \
 | `--job-timeout` | Minutes to wait for a deploy job to finish before aborting. Default: `30`. |
 | `--thread-number` | Max parallel section jobs, `1`–`64`; capped to the number of sections to prune. Default: `8`. |
 | `--fresh` | Ignore previous state and restart from the original. |
+| `--no-prefetch` | Skip the Metadata API pre-pass (`sf org list metadata`) and rely only on dry-run discovery. |
 | `--quiet` | Suppress progressive stdout output. |
 | `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |
 | `-V`, `--version` | Show version and author. |
@@ -214,6 +223,11 @@ prune_profile/
 
 - The org is **never** modified unless you pass `--deploy-on-success`.
 - `--quiet` still writes `report.txt`, `errors_log.txt` and `run.log`.
+- The Metadata API pre-pass needs the connecting user to be able to **see** the
+  metadata it lists (System Administrator recommended). Custom fields and
+  custom/standard objects are intentionally *not* enumerated (listMetadata does
+  not return standard fields/objects), so those are still discovered and pruned
+  by the authoritative dry-run. Use `--no-prefetch` to disable the pre-pass.
 
 ## Author
 
