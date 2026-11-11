@@ -50,22 +50,26 @@ with the `sf crud-mdapi read` command.)
 ## Requirements
 
 - Python 3.8+
-- `lxml`
+- `lxml` (installed automatically by the scripts below)
 - Salesforce CLI (`sf`) — auto-discovered from `PATH` and common install
   locations, or pass `--sf <path>` explicitly
-- A compatible Node.js (>= 18.11) — auto-detected and prepended to `PATH`,
-  so the CLI works even when an old Node is the system default
+- Node.js >= 18.11 — auto-detected and prepended to `PATH`, so the CLI works
+  even when an old Node is the system default
 - An authenticated org (alias or username) that the CLI can reach
 
 ## Installation
 
-Install the dependencies:
+Install the Python dependencies and **check Node.js and the Salesforce CLI**:
 
 ```bash
 python install_dependencies.py
 ```
 
-One-time setup that installs the dependencies and makes the tool callable as
+It installs `lxml` via pip, then verifies that a compatible Node.js (>= 18.11)
+and the `sf` CLI are present (it reports their exact location, or what is
+missing).
+
+One-time setup that does the same check and also makes the tool callable as
 `sfpp` from any terminal:
 
 ```bash
