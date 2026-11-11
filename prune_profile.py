@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.5.0'
+__version__ = '1.6.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -942,6 +942,33 @@ def main():
         state._write_outputs_locked()
     total_removed = state.totals()
 
+    # ---------- final full dry-run of the assembled package ----------
+    final_detail = ''
+    if result_state == 'SUCCESS':
+        logger.log('Final dry-run of the full package...')
+        final_proj = os.path.join(work_dir, 'final')
+        write_sfdx_project(final_proj, args.api_version)
+        fmanifest = os.path.join(final_proj, 'manifest.xml')
+        write_package_xml(fmanifest, {'Profile': [profile_name]}, args.api_version)
+        fprofile = os.path.join(final_proj, 'force-app', 'main', 'default', 'profiles',
+                                '%s.profile-meta.xml' % profile_name)
+        os.makedirs(os.path.dirname(fprofile), exist_ok=True)
+        shutil.copyfile(good_profile_path, fprofile)
+        res, err = dry_run(sf, fmanifest, args.org, args.poll_interval,
+                           args.job_timeout, logger, cwd=final_proj)
+        if res is None:
+            result_state = 'ABORTED'
+            result_reason = 'final dry-run failed: %s' % (err or 'unparseable output')
+        else:
+            r = res.get('result', {})
+            if r.get('success') is True:
+                final_detail = 'clean'
+            else:
+                cf = (r.get('details', {}) or {}).get('componentFailures') or []
+                probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
+                result_state = 'ABORTED'
+                result_reason = 'final dry-run reported %d failure(s): %s' % (len(cf), probs)
+
     # ---------- optional deploy (only with --deploy-on-success) ----------
     deploy_detail = ''
     if result_state == 'SUCCESS' and args.deploy_on_success:
@@ -960,6 +987,8 @@ def main():
         lines.append('REASON: %s' % result_reason)
     lines.append('METADATA REMOVED (total): %d' % total_removed)
     lines.append('TIME: %.1fs' % elapsed)
+    if final_detail:
+        lines.append('FINAL DRY-RUN: %s' % final_detail)
     if deploy_detail:
         lines.append('DEPLOY: %s' % deploy_detail)
     lines.append('')
