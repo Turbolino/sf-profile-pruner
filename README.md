@@ -122,9 +122,9 @@ python prune_profile.py \
   time (hh:mm:ss) and the tag counters (done / running / todo). The full
   timestamped log still goes to `run.log`, and a final summary is printed at
   the end.
-- **Ctrl-C pauses the run**: the threads are marked `paused`, and a prompt
-  asks `Resume [N] / stop [S]`. `N` resumes the workers; `S` marks the active
-  threads "stopped by user" and prints the summary.
+- **Ctrl-C stops cleanly**: the run is interrupted immediately, all pending
+  work is saved (the removals applied so far are kept), the board rows stay on
+  screen, and the active threads are marked "stopped by user".
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
