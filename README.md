@@ -87,10 +87,11 @@ Then open a **new** terminal and run:
 sfpp --help
 ```
 
-> `first_config` creates an `sfpp` launcher (`sfpp.cmd` on Windows) and adds
-> it to your user `PATH`. The launcher hardcodes the Python interpreter that
-> ran `first_config`, so it keeps working even if `lxml` is not installed in
-> your default `python`.
+> `first_config` runs `pip install -e .`, which installs the package and its
+> dependency, creates a real `sfpp` **executable** (not a `.cmd` batch file),
+> and adds it to your user `PATH`. Because `sfpp` is a console-script `.exe`,
+> pressing Ctrl-C goes straight to the program — cmd.exe never shows its
+> "Terminate batch job (Y/N)?" prompt.
 
 ## Usage
 
@@ -122,9 +123,11 @@ python prune_profile.py \
   time (hh:mm:ss) and the tag counters (done / running / todo). The full
   timestamped log still goes to `run.log`, and a final summary is printed at
   the end.
-- **Ctrl-C stops cleanly**: the run is interrupted immediately, all pending
-  work is saved (the removals applied so far are kept), the board rows stay on
-  screen, and the active threads are marked "stopped by user".
+- **Ctrl-C stops cleanly**: the run prints `Saving pending work...`, saves all
+  pending work (the removals applied so far are kept), keeps the board rows on
+  screen, marks the active threads "stopped by user", and reports `ABORTED`.
+  The `sf` child is invoked as `node run.js` (not through the `cmd.exe` batch
+  shim), so Ctrl-C can never trigger cmd's "Terminate batch job" prompt.
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact

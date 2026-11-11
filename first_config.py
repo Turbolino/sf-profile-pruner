@@ -3,83 +3,59 @@
 """
 first_config - one-time setup for Profile Pruner.
 
-Installs the Python dependencies, checks Node.js and the Salesforce CLI, and
-makes `prune_profile.py` callable as `sfpp` from any terminal.
+Installs the package (dependencies + the `sfpp` command), checks Node.js and the
+Salesforce CLI, and puts `sfpp` on the PATH.
 
-Run once:
+Run once, from the project directory:
     python first_config.py
 Then open a NEW terminal and use:
     sfpp --help
+
+The `sfpp` command is a real console-script executable (created by pip), NOT a
+.cmd batch file, so Ctrl-C reaches the program directly and never shows
+cmd.exe's "Terminate batch job (Y/N)?" prompt.
 """
-import importlib.util
+import glob
 import os
+import shutil
 import subprocess
 import sys
-
-REQUIREMENTS = ['lxml>=4.9']
-NODE_MIN = (18, 11)
+import sysconfig
 
 
-def load_profile_pruner(here):
-    spec = importlib.util.spec_from_file_location(
-        'profile_pruner', os.path.join(here, 'prune_profile.py'))
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+def run(python, *args):
+    return subprocess.call([python] + list(args))
 
 
-def install_dependencies(python):
-    print('Installing dependencies (lxml)...')
-    return subprocess.call([python, '-m', 'pip', 'install', '--upgrade'] + REQUIREMENTS)
+def scripts_dirs(python):
+    """Candidate directories where pip may have put the `sfpp` console script."""
+    dirs = []
+    s = sysconfig.get_path('scripts')
+    if s:
+        dirs.append(s)
+    # Some managed/vendor Python installs redirect pip to a different
+    # interpreter; scan the interpreter tree for a Scripts folder as a fallback.
+    root = os.path.dirname(os.path.dirname(python))
+    for hit in glob.glob(os.path.join(root, '**', 'Scripts'), recursive=True):
+        if hit not in dirs:
+            dirs.append(hit)
+    return dirs
 
 
-def check_runtime(pp):
-    print('')
-    print('Checking runtime dependencies...')
-    ok = True
-    node = pp.find_node(NODE_MIN)
-    if node:
-        print('  Node.js      : OK  (%s)' % node)
-    else:
-        ok = False
-        print('  Node.js      : MISSING  (need >= 18.11; install Node.js LTS '
-              'or point PATH to a newer node.exe)')
-    sf = pp.find_sf('sf')
-    if os.path.isfile(sf):
-        print('  Salesforce   : OK  (%s)' % sf)
-    else:
-        ok = False
-        print('  Salesforce   : MISSING  (install `sf` from developer.salesforce.com '
-              'or pass --sf <path>)')
-    return ok
+def find_sfpp(python):
+    """Return the absolute path of the installed `sfpp` executable, or None."""
+    for d in scripts_dirs(python):
+        for name in ('sfpp.exe', 'sfpp'):
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                return p
+    return None
 
 
-def main():
-    here = os.path.dirname(os.path.abspath(__file__))
-    script = os.path.join(here, 'prune_profile.py')
-    python = sys.executable
-
-    if not os.path.isfile(script):
-        print('ERROR: prune_profile.py not found next to this script.')
-        sys.exit(2)
-
-    rc = install_dependencies(python)
-    if rc != 0:
-        print('ERROR: dependency installation failed (exit code %d).' % rc)
-        sys.exit(rc)
-
-    pp = load_profile_pruner(here)
-    check_runtime(pp)
-
+def add_to_path(dirpath, remove_old=('ProfilePruner',)):
+    """Append dirpath to the user PATH (registry on Windows), without
+    duplicates, and drop entries that point at the old launcher folder."""
     if os.name == 'nt':
-        bin_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
-                               'ProfilePruner', 'bin')
-        os.makedirs(bin_dir, exist_ok=True)
-        wrapper = os.path.join(bin_dir, 'sfpp.cmd')
-        with open(wrapper, 'w', encoding='utf-8', newline='\r\n') as f:
-            f.write('@echo off\r\n')
-            f.write('"%s" "%s" %%*\r\n' % (python, script))
-        # Add bin_dir to the user PATH (registry), without duplicates.
         import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment',
                              0, winreg.KEY_READ | winreg.KEY_SET_VALUE)
@@ -88,22 +64,55 @@ def main():
         except FileNotFoundError:
             path = ''
         entries = [p for p in path.split(';') if p]
-        if bin_dir not in entries:
-            entries.append(bin_dir)
-            winreg.SetValueEx(key, 'Path', 0, winreg.REG_EXPAND_SZ, ';'.join(entries))
+        entries = [p for p in entries if not any(r in p for r in remove_old)]
+        if dirpath not in entries:
+            entries.append(dirpath)
+        winreg.SetValueEx(key, 'Path', 0, winreg.REG_EXPAND_SZ, ';'.join(entries))
         winreg.CloseKey(key)
     else:
-        bin_dir = os.path.join(os.path.expanduser('~'), '.local', 'bin')
-        os.makedirs(bin_dir, exist_ok=True)
-        wrapper = os.path.join(bin_dir, 'sfpp')
-        with open(wrapper, 'w', encoding='utf-8') as f:
-            f.write('#!/bin/sh\n')
-            f.write('exec "%s" "%s" "$@"\n' % (python, script))
-        os.chmod(wrapper, 0o755)
+        profile = os.path.expanduser('~/.profile')
+        line = 'export PATH="%s:$PATH"' % dirpath
+        if os.path.isfile(profile):
+            with open(profile, encoding='utf-8') as f:
+                content = f.read()
+            if line not in content:
+                with open(profile, 'a', encoding='utf-8') as f:
+                    f.write('\n' + line + '\n')
+        print('Add this line to your shell profile:')
+        print('  ' + line)
 
+
+def main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    python = sys.executable
+
+    print('Installing Profile Pruner (package + sfpp command)...')
+    rc = run(python, '-m', 'pip', 'install', '-e', here)
+    if rc != 0:
+        print('ERROR: pip install failed (exit code %d).' % rc)
+        sys.exit(rc)
+
+    exe = find_sfpp(python)
+    if exe is None:
+        print('WARNING: could not locate the `sfpp` script. It may be under a')
+        print('different interpreter. Run `pip show -f sf-profile-pruner` to find it.')
+    else:
+        add_to_path(os.path.dirname(exe))
+        print('sfpp installed at: %s' % exe)
+        print('Added its folder to PATH.')
+
+    # Runtime checks (non-fatal: the pruner also auto-discovers these).
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'profile_pruner', os.path.join(here, 'prune_profile.py'))
+    pp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pp)
     print('')
-    print('Created launcher: %s' % wrapper)
-    print('Added to PATH:    %s' % bin_dir)
+    node = pp.find_node((18, 11))
+    print('  Node.js      : %s' % (node if node else 'MISSING (need >= 18.11)'))
+    sf = pp.find_sf('sf')
+    print('  Salesforce   : %s' % (sf if os.path.isfile(sf) else 'MISSING'))
+
     print('')
     print('Open a NEW terminal and run:  sfpp --help')
 

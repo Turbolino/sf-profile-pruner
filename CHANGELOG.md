@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.4] - 2026-11-11
+
+### Fixed
+
+- Ctrl-C was effectively ignored on Windows because the `sf` CLI is a
+  `cmd.exe` batch shim: the console Ctrl-C also hit that cmd.exe, raised its
+  "Terminate batch job (Y/N)?" prompt, and blocked the worker polling it. The
+  `sf` command is now invoked directly as `node run.js` (bypassing the batch),
+  so Ctrl-C reaches the program and stops it cleanly.
+- On Ctrl-C the program now prints `Saving pending work...` before finalizing
+  the state.
+
+### Added
+
+- `pyproject.toml` with a `sfpp` console-script entry point, so the tool can
+  be installed with `pip install .` (and published to PyPI).
+
+### Changed
+
+- `first_config.py` now installs the package via `pip install -e .` and puts
+  the real `sfpp.exe` (not a `.cmd` batch) on the PATH.
+
 ## [1.10.3] - 2026-11-11
 
 ### Fixed

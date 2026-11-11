@@ -51,7 +51,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.10.3'
+__version__ = '1.10.4'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -385,23 +385,36 @@ def strip_blank_lines(path):
 TERMINAL_STATUSES = {'Succeeded', 'SucceededPartial', 'Failed', 'Canceled'}
 
 
+def _sf_invocation(cmd, node):
+    """Return the argv to actually run.
+
+    The Salesforce CLI ships `sf.cmd`, a cmd.exe batch shim. If that batch
+    shares our console, a Ctrl-C also hits its cmd.exe and raises ITS
+    "Terminate batch job (Y/N)?" prompt, which blocks the worker polling it and
+    deadlocks our own shutdown. So on Windows we invoke node + run.js directly
+    (exactly what sf.ps1 does), bypassing the batch entirely. Falls back to the
+    original argv when run.js is not found next to the shim."""
+    sf = cmd[0]
+    if os.name == 'nt' and node and sf.lower().endswith(('.cmd', '.bat')):
+        base = os.path.dirname(os.path.abspath(sf))
+        run_js = os.path.join(base, 'node_modules', '@salesforce', 'cli', 'bin', 'run.js')
+        if os.path.isfile(run_js):
+            return [node, '--no-deprecation', run_js] + list(cmd[1:])
+    return cmd
+
+
 def _run_sf(cmd, sf, what, cwd=None):
     """Run an sf command and parse its JSON. Returns (data_or_None, error)."""
     env = os.environ.copy()
     good_node = find_node()
     if good_node:
-        # Prepend the compatible Node so the sf.cmd shim doesn't fall back to
-        # an old node.exe on PATH (sf needs Node >= 18.11).
+        # Prepend the compatible Node so any `node` lookup on PATH resolves to a
+        # version sf supports (sf needs Node >= 18.11).
         env['PATH'] = os.path.dirname(os.path.abspath(good_node)) + os.pathsep + env.get('PATH', '')
-    kwargs = dict(capture_output=True, text=True, encoding='utf-8',
-                  errors='replace', env=env, cwd=cwd)
-    if os.name == 'nt':
-        # Put the child in its own process group so Ctrl-C reaches only us
-        # (not the cmd.exe batch shim), avoiding the "Terminate batch job"
-        # prompt and letting the run stop cleanly.
-        kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+    run_cmd = _sf_invocation(cmd, good_node)
     try:
-        proc = subprocess.run(cmd, **kwargs)
+        proc = subprocess.run(run_cmd, capture_output=True, text=True,
+                              encoding='utf-8', errors='replace', env=env, cwd=cwd)
     except FileNotFoundError:
         return None, ('sf executable not found: %s. Install the Salesforce CLI '
                       '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
@@ -1179,6 +1192,8 @@ def main():
         except KeyboardInterrupt:
             control.stop.set()
             board.freeze()
+            sys.stdout.write('Saving pending work...\n')
+            sys.stdout.flush()
             stopped = True
 
         # Wait for the workers to acknowledge the stop at their next checkpoint.

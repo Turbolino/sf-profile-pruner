@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sf-profile-pruner"
+version = "1.10.4"
+description = "Salesforce Profile dry-run pruner: removes every reference to metadata that does not exist in the target org, without ever modifying the org unless --deploy-on-success."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Lorenzo D'Aleo", email = "turbolino.dev@proton.me" }]
+keywords = ["salesforce", "sf", "profile", "metadata", "pruner", "dry-run"]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = ["lxml>=4.9"]
+
+[project.scripts]
+sfpp = "prune_profile:main"
+
+[tool.setuptools]
+py-modules = ["prune_profile"]
