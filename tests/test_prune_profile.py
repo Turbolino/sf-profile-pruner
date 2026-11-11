@@ -126,6 +126,12 @@ class TestResolveError(unittest.TestCase):
             pp.resolve_error('In field: servicePresenceStatus - no ServicePresenceStatus named Available_Phone found'),
             ('ServicePresenceStatus', 'Available_Phone'))
 
+    def test_login_flow_error(self):
+        # Post-login flow referenced from <loginFlows>, not <flowAccesses>.
+        self.assertEqual(
+            pp.resolve_error('In field: Flow - no FlowDefinition named PostLoginClearUserAppInfo found'),
+            ('FlowDefinition', 'PostLoginClearUserAppInfo'))
+
     def test_unknown(self):
         self.assertIsNone(pp.resolve_error('totally different error text'))
 
@@ -297,6 +303,16 @@ class TestSectionHelpers(unittest.TestCase):
         cands = pp.BLOCK_MAP['CustomObject']
         self.assertIn(('customSettingAccesses', 'name', 'exact'), cands)
 
+    def test_login_flow_mapping(self):
+        # Login flows reference a Flow (VisualWorkflow) or an ApexPage
+        # (VisualForce); both must be prunable, not just flowAccesses.
+        self.assertIn(('loginFlows', 'flow', 'exact'), pp.BLOCK_MAP['Flow'])
+        self.assertIn(('loginFlows', 'flow', 'exact'), pp.BLOCK_MAP['FlowDefinition'])
+        self.assertIn(('loginFlows', 'visualForcePage', 'exact'), pp.BLOCK_MAP['ApexPage'])
+        # and loginFlows must now be a prunable section
+        self.assertIn('loginFlows', pp.prunable_blocks())
+
+
     def test_remove_from_list(self):
         tree = pp.etree.fromstring(SYNTH.encode('utf-8'))
         els = [c for c in tree if c.tag == pp.M + 'tabVisibilities']
@@ -335,6 +351,34 @@ class TestSharedState(unittest.TestCase):
             self.assertEqual(tags, ['fieldPermissions', 'classAccesses', 'objectPermissions'])
             # no package.xml in GOOD
             self.assertFalse(os.path.isfile(os.path.join(d, 'GOOD', 'package.xml')))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_apply_global_removals_removes_login_flow(self):
+        d = tempfile.mkdtemp()
+        try:
+            xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                   '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+                   '  <loginFlows><flow>PostLoginClearUserAppInfo</flow>'
+                   '<friendlyName>x</friendlyName><type>UI</type>'
+                   '<uiLoginFlowType>VisualWorkflow</uiLoginFlowType></loginFlows>\n'
+                   '  <classAccesses><apexClass>Keep</apexClass><enabled>true</enabled></classAccesses>\n'
+                   '</Profile>\n')
+            tree = pp.etree.fromstring(xml.encode('utf-8'))
+            seq = [c for c in tree]
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for el in seq:
+                groups.setdefault(el.tag.split('}')[-1], []).append(el)
+            good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'ERRORS', 'package.xml')
+            errlog = os.path.join(d, 'errors_log.txt')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+            n = st.apply_global_removals([('FlowDefinition', 'PostLoginClearUserAppInfo')])
+            self.assertEqual(n, 1)
+            tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
+            self.assertEqual(tags, ['classAccesses'])
+            self.assertIn('FlowDefinition|PostLoginClearUserAppInfo', read_text(errlog))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

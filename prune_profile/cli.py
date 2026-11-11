@@ -39,6 +39,7 @@ from .xmlio import (
     read_outcome,
     remove_from_list,
     remove_temp_project,
+    resolve_error,
     write_package_xml,
     write_sfdx_project,
 )
@@ -307,9 +308,11 @@ def main():
     # ---------- final GOOD/ERRORS ----------
     with state.lock:
         state._write_outputs_locked()
-    total_removed = state.totals()
 
     # ---------- final full dry-run of the assembled package ----------
+    # Loop it: when the full-package validation surfaces a reference the
+    # per-section pass missed (e.g. login flows), resolve + remove it and
+    # re-validate until clean (or until no further progress is possible).
     final_detail = ''
     if result_state == 'SUCCESS':
         logger.log('Final dry-run of the full package...')
@@ -320,21 +323,52 @@ def main():
         fprofile = os.path.join(final_proj, 'force-app', 'main', 'default', 'profiles',
                                 '%s.profile-meta.xml' % profile_name)
         os.makedirs(os.path.dirname(fprofile), exist_ok=True)
-        shutil.copyfile(good_profile_path, fprofile)
-        res, err = dry_run(sf, fmanifest, args.org, args.poll_interval,
-                           args.job_timeout, logger, cwd=final_proj)
-        if res is None:
-            result_state = 'ABORTED'
-            result_reason = 'final dry-run failed: %s' % (err or 'unparseable output')
-        else:
+
+        guard = 0
+        while True:
+            guard += 1
+            if guard > args.max_iter:
+                result_state = 'ABORTED'
+                result_reason = 'final dry-run did not converge within %d iterations' % args.max_iter
+                break
+            shutil.copyfile(good_profile_path, fprofile)
+            res, err = dry_run(sf, fmanifest, args.org, args.poll_interval,
+                               args.job_timeout, logger, cwd=final_proj)
+            if res is None:
+                result_state = 'ABORTED'
+                result_reason = 'final dry-run failed: %s' % (err or 'unparseable output')
+                break
             r = res.get('result', {})
             if r.get('success') is True:
                 final_detail = 'clean'
-            else:
-                cf = (r.get('details', {}) or {}).get('componentFailures') or []
+                break
+            cf = (r.get('details', {}) or {}).get('componentFailures') or []
+            if not cf:
+                result_state = 'ABORTED'
+                result_reason = 'final dry-run reported a failed deploy with no componentFailures'
+                break
+            removals = []
+            for f in cf:
+                problem = str(f.get('problem', ''))
+                rr = resolve_error(problem)
+                if rr is None:
+                    logger.log('Final gate: unmappable problem, skipped: %s' % problem)
+                    continue
+                removals.append((rr[0], rr[1]))
+            if not removals:
                 probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
                 result_state = 'ABORTED'
-                result_reason = 'final dry-run reported %d failure(s): %s' % (len(cf), probs)
+                result_reason = 'final dry-run reported %d failure(s), none mappable: %s' % (len(cf), probs)
+                break
+            removed = state.apply_global_removals(removals)
+            if removed == 0:
+                probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
+                result_state = 'ABORTED'
+                result_reason = 'final dry-run: no progress removing %d failure(s): %s' % (len(cf), probs)
+                break
+            logger.log('Final gate: removed %d entry(ies); re-running full dry-run...' % removed)
+
+    total_removed = state.totals()
 
     # ---------- optional deploy (only with --deploy-on-success) ----------
     deploy_detail = ''

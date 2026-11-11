@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.12] - 2026-11-11
+
+### Fixed
+
+- `In field: Flow - no FlowDefinition named X found` from a **login flow** was
+  not pruned: `Flow`/`FlowDefinition` were mapped only to `flowAccesses`, not
+  to `loginFlows`. Both now also remove `loginFlows` (and `ApexPage` removes
+  Visualforce-type `loginFlows`), so post-login flows whose flow is missing are
+  stripped correctly.
+
+### Added
+
+- The final full-package dry-run is now a **self-healing loop**: when it
+  surfaces a reference the per-section pass missed, it resolves and removes it
+  and re-validates until clean (or until no progress is possible), instead of
+  aborting on the first residual error.
+
 ## [1.10.11] - 2026-11-11
 
 ### Fixed
