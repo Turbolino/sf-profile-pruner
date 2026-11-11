@@ -32,6 +32,7 @@ OUTPUT (in --out-dir)
   run.log                             progressive log copy
   report.txt                          final outcome
   .work/manifest.xml                  internal manifest (not a deliverable)
+  .work/project/                      minimal temporary SFDX project (removed at the end)
 """
 
 import argparse
@@ -46,7 +47,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.3.0'
+__version__ = '1.4.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -313,6 +314,108 @@ def read_outcome(report):
     return None
 
 
+def write_sfdx_project(project_dir, api_version):
+    """Write a minimal sfdx-project.json (all `sf project deploy` needs)."""
+    os.makedirs(project_dir, exist_ok=True)
+    data = {
+        'packageDirectories': [{'path': 'force-app', 'default': True}],
+        'namespace': '',
+        'sfdcLoginUrl': 'https://login.salesforce.com',
+        'sourceApiVersion': api_version,
+    }
+    with open(os.path.join(project_dir, 'sfdx-project.json'), 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+
+def load_log_entries(err_log):
+    """Ordered, deduplicated (type, member) pairs from errors_log.txt."""
+    entries = []
+    seen = set()
+    try:
+        with open(err_log, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split('|')
+                if len(parts) >= 3:
+                    key = (parts[1], parts[2])
+                    if key not in seen:
+                        seen.add(key)
+                        entries.append(key)
+    except OSError:
+        pass
+    return entries
+
+
+def apply_removals_batch(work_path, removals):
+    """Remove many blocks from the working profile in a single parse/write.
+    removals = list of (member, candidates)."""
+    tree = etree.parse(work_path)
+    root = tree.getroot()
+    removed_total = 0
+    for member, candidates in removals:
+        found = False
+        for block, child, mode in candidates:
+            to_remove = []
+            for el in root.iter(M + block):
+                child_el = el.find(M + child)
+                if child_el is None or child_el.text is None:
+                    continue
+                val = child_el.text.strip()
+                if mode == 'exact' and val == member:
+                    to_remove.append(el)
+                elif mode == 'prefix' and val.startswith(member + '.'):
+                    to_remove.append(el)
+                elif mode == 'suffix' and val.endswith('-' + member):
+                    to_remove.append(el)
+            if to_remove:
+                for el in to_remove:
+                    el.getparent().remove(el)
+                    removed_total += 1
+                found = True
+                break
+        if not found:
+            # Generic fallback: leaf whose exact text == member.
+            for leaf in list(root.iter()):
+                if leaf.text is not None and leaf.text.strip() == member:
+                    block = leaf
+                    parent = block.getparent()
+                    while parent is not None and parent.tag != M + 'Profile':
+                        block = parent
+                        parent = block.getparent()
+                    if parent is not None:
+                        parent.remove(block)
+                        removed_total += 1
+                    break
+    tree.write(work_path, encoding='utf-8', xml_declaration=True)
+    return removed_total
+
+
+def prepare_work_copy(work_path, source_path, err_log, fresh):
+    """(Re)build the working profile: copy the source, then re-apply every
+    removal already recorded in errors_log.txt (unless fresh)."""
+    os.makedirs(os.path.dirname(work_path), exist_ok=True)
+    if os.path.abspath(source_path) != os.path.abspath(work_path):
+        shutil.copyfile(source_path, work_path)
+    os.chmod(work_path, 0o666)
+    if fresh:
+        return
+    removals = []
+    for t, m in load_log_entries(err_log):
+        candidates = BLOCK_MAP.get(t)
+        if candidates:
+            removals.append((m, candidates))
+    if removals:
+        apply_removals_batch(work_path, removals)
+
+
+def remove_temp_project(project_dir, out_dir):
+    """Delete the temporary micro-project (Windows can't remove the CWD)."""
+    os.chdir(out_dir)
+    shutil.rmtree(project_dir, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
@@ -328,8 +431,10 @@ def main():
                     help="alias or username of the org used for the dry-run")
     ap.add_argument('--profile-name', default=None,
                     help='name of the Profile (package member); default: derived from the file name')
-    ap.add_argument('--project-dir', default=os.path.dirname(os.path.abspath(__file__)),
-                    help='root of the SFDX project (default: directory of this script)')
+    ap.add_argument('--project-dir', default=None,
+                    help='root of an existing SFDX project. If omitted, a minimal '
+                         'temporary project is created inside --out-dir and removed '
+                         'at the end')
     ap.add_argument('--api-version', default='68.0',
                     help='API version of the manifest (default: 68.0)')
     ap.add_argument('--max-iter', type=int, default=5000,
@@ -357,7 +462,6 @@ def main():
         print(AUTHOR_NOTE, flush=True)
         print('', flush=True)
 
-    project_dir = os.path.abspath(args.project_dir)
     profile_path = os.path.abspath(args.profile_path)
     out_dir = os.path.abspath(args.out_dir)
 
@@ -379,12 +483,30 @@ def main():
     manifest_path = os.path.join(work_dir, 'manifest.xml')
     original_copy = os.path.join(out_dir, 'ORIGINAL_%s.profile-meta.xml' % profile_name)
 
-    # Working copy inside the package directory of the project.
+    # Project root: the user's own project, or a minimal temporary micro-project.
+    user_project = args.project_dir is not None
+    if user_project:
+        project_dir = os.path.abspath(args.project_dir)
+    else:
+        project_dir = os.path.join(work_dir, 'project')
+
+    # Working copy inside the package directory of the (micro-)project.
     work_path = os.path.join(project_dir, 'force-app', 'main', 'default', 'profiles',
                              '%s.profile-meta.xml' % profile_name)
 
     for d in (out_dir, good_dir, errors_dir, work_dir):
         os.makedirs(d, exist_ok=True)
+
+    # Untouched copy of the source (kept for reconstruction on resume).
+    if os.path.abspath(profile_path) != os.path.abspath(original_copy):
+        shutil.copyfile(profile_path, original_copy)
+
+    # Minimal project scaffolding (a single sfdx-project.json is enough).
+    if not user_project and not os.path.isfile(os.path.join(project_dir, 'sfdx-project.json')):
+        write_sfdx_project(project_dir, args.api_version)
+
+    # Internal manifest used by the dry-runs and the optional deploy.
+    write_package_xml(manifest_path, {'Profile': [profile_name]}, args.api_version)
 
     logger = Logger(args.quiet, run_log)
     logger.log('Profile     : %s' % profile_path)
@@ -395,88 +517,66 @@ def main():
     logger.log('API version : %s' % args.api_version)
     logger.log('sf          : %s' % sf)
 
-    # ---------- RESUME vs CLEAN RUN ----------
-    def _log_lines():
-        try:
-            with open(err_log, encoding='utf-8', errors='replace') as f:
-                return sum(1 for l in f if l.strip())
-        except OSError:
-            return 0
-
-    has_log = os.path.isfile(err_log) and _log_lines() > 0
-
-    # ---------- internal manifest (needed for dry-run and deploy) ----------
-    write_package_xml(manifest_path, {'Profile': [profile_name]}, args.api_version)
-
     # ---------- already clean? ----------
     prev_outcome = read_outcome(report)
-    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(work_path):
+    good_pkg = os.path.join(good_dir, 'package.xml')
+    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(good_pkg):
         if args.deploy_on_success:
+            good_profile = os.path.join(good_dir, 'profiles', '%s.profile-meta.xml' % profile_name)
+            os.makedirs(os.path.dirname(work_path), exist_ok=True)
+            shutil.copyfile(good_profile, work_path)
+            os.chdir(project_dir)
             logger.log('Profile already clean; deploying the GOOD profile as requested...')
             ok, detail = deploy(sf, manifest_path, args.org, args.poll_interval, args.job_timeout, logger)
+            if not user_project:
+                remove_temp_project(project_dir, out_dir)
             print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
             sys.exit(0 if ok else 1)
+        if not user_project:
+            remove_temp_project(project_dir, out_dir)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % profile_name)
         sys.exit(0)
 
-    error_members = {}   # type -> set(member)
-    start_iter = 0
-
+    # ---------- clean run (--fresh): clear previous outputs ----------
     if args.fresh:
-        # --- clean run: restore the original and clear the outputs ---
-        if os.path.abspath(profile_path) != os.path.abspath(original_copy):
-            shutil.copyfile(profile_path, original_copy)
-        os.makedirs(os.path.dirname(work_path), exist_ok=True)
-        if os.path.abspath(profile_path) != os.path.abspath(work_path):
-            shutil.copyfile(profile_path, work_path)
-        os.chmod(work_path, 0o666)
         for p in (err_log, report, run_log):
             if os.path.exists(p):
                 os.remove(p)
         good_profiles = os.path.join(good_dir, 'profiles')
         if os.path.isdir(good_profiles):
             shutil.rmtree(good_profiles, ignore_errors=True)
-        good_pkg = os.path.join(good_dir, 'package.xml')
         if os.path.exists(good_pkg):
             os.remove(good_pkg)
         err_pkg = os.path.join(errors_dir, 'package.xml')
         if os.path.exists(err_pkg):
             os.remove(err_pkg)
-        logger.log('CLEAN RUN (--fresh): original restored and outputs cleared.')
+        logger.log('CLEAN RUN (--fresh): outputs cleared.')
 
-    elif has_log and os.path.isfile(work_path):
-        # --- resume ---
+    # ---------- rebuild the working profile (original + recorded removals) ----------
+    prepare_work_copy(work_path, original_copy, err_log, fresh=args.fresh)
+
+    # ---------- seed the cumulative state from the log ----------
+    error_members = {}   # type -> set(member)
+    start_iter = 0
+    try:
         for line in open(err_log, encoding='utf-8', errors='replace'):
             line = line.strip()
             if not line:
                 continue
             parts = line.split('|')
             if len(parts) >= 3:
-                t, m = parts[1], parts[2]
-                error_members.setdefault(t, set()).add(m)
+                error_members.setdefault(parts[1], set()).add(parts[2])
                 try:
                     start_iter = max(start_iter, int(parts[0]))
                 except ValueError:
                     pass
-        logger.log('RESUME: %d metadata already removed (last iteration %d), continuing from the next error.'
+    except OSError:
+        pass
+    if start_iter:
+        logger.log('RESUME: %d metadata already removed (last iteration %d).'
                    % (sum(len(v) for v in error_members.values()), start_iter))
-
-    elif has_log:
-        # Log present but the working copy is missing: inconsistent state, do not destroy anything.
-        print('ERROR: errors_log.txt exists but the working copy is missing:')
-        print('  %s' % work_path)
-        print('Pass --project-dir pointing to the correct SFDX project root, or use --fresh to restart.')
-        sys.exit(3)
-
     else:
-        # --- first run: no previous state ---
-        if os.path.abspath(profile_path) != os.path.abspath(original_copy):
-            shutil.copyfile(profile_path, original_copy)
-        os.makedirs(os.path.dirname(work_path), exist_ok=True)
-        if os.path.abspath(profile_path) != os.path.abspath(work_path):
-            shutil.copyfile(profile_path, work_path)
-        os.chmod(work_path, 0o666)
-        logger.log('FIRST RUN: original copied.')
+        logger.log('FIRST RUN.')
 
     os.chdir(project_dir)
     t0 = time.time()
@@ -601,6 +701,11 @@ def main():
     lines.append('  report : %s' % report)
     with open(report, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
+
+    # ---------- throw away the temporary micro-project ----------
+    if not user_project:
+        remove_temp_project(project_dir, out_dir)
+        logger.log('Temporary project removed: %s' % project_dir)
 
     # ---------- final output ----------
     logger.log('')

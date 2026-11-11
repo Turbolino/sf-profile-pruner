@@ -115,7 +115,7 @@ python prune_profile.py \
 | `--out-dir` | Output directory (report, packages, logs). |
 | `--org` | Alias or username of the org used for the dry-run. |
 | `--profile-name` | Profile name (package member). Default: derived from the file name. |
-| `--project-dir` | Root of the SFDX project. Default: directory of this script. |
+| `--project-dir` | Root of an existing SFDX project. If omitted, a minimal temporary project is created inside `--out-dir` and removed at the end. |
 | `--api-version` | Manifest API version. Default: `68.0`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
@@ -139,8 +139,14 @@ out-dir/
 ├── errors_log.txt                           # resumable line-by-line log
 ├── run.log                                  # progressive log copy
 ├── report.txt                               # final summary (OUTCOME: SUCCESS/ABORTED)
-└── .work/manifest.xml                       # internal manifest (not a deliverable)
+└── .work/
+    ├── manifest.xml                         # internal manifest (not a deliverable)
+    └── project/                             # minimal temporary SFDX project (removed at the end)
 ```
+
+> You don't need your own SFDX project. If `--project-dir` is omitted, the tool
+> creates a minimal one (`sfdx-project.json` only) under `.work/project/`, uses
+> it for the deploy commands, and deletes it when finished.
 
 ## Notes
 
