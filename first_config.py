@@ -3,24 +3,55 @@
 """
 first_config - one-time setup for Profile Pruner.
 
-Installs the dependencies and makes `prune_profile.py` callable as `sfpp`
-from any terminal.
+Installs the Python dependencies, checks Node.js and the Salesforce CLI, and
+makes `prune_profile.py` callable as `sfpp` from any terminal.
 
 Run once:
     python first_config.py
 Then open a NEW terminal and use:
     sfpp --help
 """
+import importlib.util
 import os
 import subprocess
 import sys
 
 REQUIREMENTS = ['lxml>=4.9']
+NODE_MIN = (18, 11)
+
+
+def load_profile_pruner(here):
+    spec = importlib.util.spec_from_file_location(
+        'profile_pruner', os.path.join(here, 'prune_profile.py'))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
 
 
 def install_dependencies(python):
     print('Installing dependencies (lxml)...')
     return subprocess.call([python, '-m', 'pip', 'install', '--upgrade'] + REQUIREMENTS)
+
+
+def check_runtime(pp):
+    print('')
+    print('Checking runtime dependencies...')
+    ok = True
+    node = pp.find_node(NODE_MIN)
+    if node:
+        print('  Node.js      : OK  (%s)' % node)
+    else:
+        ok = False
+        print('  Node.js      : MISSING  (need >= 18.11; install Node.js LTS '
+              'or point PATH to a newer node.exe)')
+    sf = pp.find_sf('sf')
+    if os.path.isfile(sf):
+        print('  Salesforce   : OK  (%s)' % sf)
+    else:
+        ok = False
+        print('  Salesforce   : MISSING  (install `sf` from developer.salesforce.com '
+              'or pass --sf <path>)')
+    return ok
 
 
 def main():
@@ -36,6 +67,9 @@ def main():
     if rc != 0:
         print('ERROR: dependency installation failed (exit code %d).' % rc)
         sys.exit(rc)
+
+    pp = load_profile_pruner(here)
+    check_runtime(pp)
 
     if os.name == 'nt':
         bin_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
