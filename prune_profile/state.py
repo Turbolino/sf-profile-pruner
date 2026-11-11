@@ -7,8 +7,8 @@ from copy import deepcopy
 
 from lxml import etree
 
-from .constants import M, NS
-from .xmlio import write_package_xml
+from .constants import BLOCK_MAP, M, NS
+from .xmlio import remove_from_list, write_package_xml
 
 
 class SharedState:
@@ -45,6 +45,38 @@ class SharedState:
                 with open(self.err_log, 'a', encoding='utf-8') as f:
                     f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
             self._write_outputs_locked()
+
+    def apply_global_removals(self, removals, problem='final dry-run'):
+        """Remove (type, member) pairs across every mapped block, record them
+        in the error log, and rewrite outputs. Used by the final full-package
+        gate when it surfaces references the per-section pass missed (e.g.
+        login flows). Returns the number of entries removed.
+
+        `removals` is a list of (type, member) tuples."""
+        with self.lock:
+            total = 0
+            recorded = []
+            for typ, member in removals:
+                removed_any = False
+                for block, child, mode in BLOCK_MAP.get(typ, []):
+                    g = self.groups.get(block)
+                    if g is None:
+                        continue
+                    new, n = remove_from_list(g, block, member)
+                    if n:
+                        self.groups[block] = new
+                        total += n
+                        removed_any = True
+                if removed_any:
+                    self.removed_by_type.setdefault(typ, set()).add(member)
+                    recorded.append((typ, member))
+            for typ, member in recorded:
+                self.seq += 1
+                with open(self.err_log, 'a', encoding='utf-8') as f:
+                    f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
+            if total:
+                self._write_outputs_locked()
+            return total
 
     def _write_outputs_locked(self):
         surviving = set()

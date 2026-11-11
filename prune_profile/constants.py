@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '1.10.11'
+__version__ = '1.10.12'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -35,10 +35,23 @@ BLOCK_MAP = {
         ('tabVisibilities', 'tab', 'suffix'),
     ],
     'ApexClass':          [('classAccesses', 'apexClass', 'exact')],
-    'ApexPage':           [('pageAccesses', 'apexPage', 'exact')],
+    'ApexPage':           [
+        ('pageAccesses', 'apexPage', 'exact'),
+        # Visualforce-type login flows also reference an ApexPage.
+        ('loginFlows', 'visualForcePage', 'exact'),
+    ],
     'CustomApplication':  [('applicationVisibilities', 'application', 'exact')],
-    'Flow':               [('flowAccesses', 'flow', 'exact')],
-    'FlowDefinition':     [('flowAccesses', 'flow', 'exact')],
+    'Flow':               [
+        ('flowAccesses', 'flow', 'exact'),
+        # VisualWorkflow-type login flows reference the flow by name too.
+        ('loginFlows', 'flow', 'exact'),
+    ],
+    'FlowDefinition':     [
+        ('flowAccesses', 'flow', 'exact'),
+        # "no FlowDefinition named X found" can come from a login flow whose
+        # flow doesn't exist in the target org.
+        ('loginFlows', 'flow', 'exact'),
+    ],
     'Layout':             [('layoutAssignments', 'layout', 'exact')],
     'RecordType':         [
         ('recordTypeVisibilities', 'recordType', 'exact'),
