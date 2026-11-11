@@ -36,6 +36,7 @@ OUTPUT (in --out-dir)
 """
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -47,7 +48,7 @@ from datetime import datetime
 
 from lxml import etree
 
-__version__ = '1.4.1'
+__version__ = '1.4.2'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "made with <3 by %s (%s)" % (__author__, __email__)
@@ -203,9 +204,15 @@ TERMINAL_STATUSES = {'Succeeded', 'SucceededPartial', 'Failed', 'Canceled'}
 
 def _run_sf(cmd, sf, what):
     """Run an sf command and parse its JSON. Returns (data_or_None, error)."""
+    env = os.environ.copy()
+    good_node = find_node()
+    if good_node:
+        # Prepend the compatible Node so the sf.cmd shim doesn't fall back to
+        # an old node.exe on PATH (sf needs Node >= 18.11).
+        env['PATH'] = os.path.dirname(os.path.abspath(good_node)) + os.pathsep + env.get('PATH', '')
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace')
+                              encoding='utf-8', errors='replace', env=env)
     except FileNotFoundError:
         return None, ('sf executable not found: %s. Install the Salesforce CLI '
                       '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
@@ -281,6 +288,51 @@ def _candidate_dirs():
         if d and d not in out:
             out.append(d)
     return out
+
+
+def _node_version(node_path):
+    """Return (major, minor) of a Node.js executable, or None."""
+    try:
+        proc = subprocess.run([node_path, '--version'], capture_output=True,
+                              text=True, encoding='utf-8', errors='replace', timeout=15)
+    except Exception:
+        return None
+    raw = (proc.stdout or '').strip().lstrip('v')
+    nums = []
+    for part in raw.split('.')[:2]:
+        digit = part.split('-')[0]
+        nums.append(int(digit) if digit.isdigit() else 0)
+    if not nums:
+        return None
+    return (nums[0], nums[1] if len(nums) > 1 else 0)
+
+
+@functools.lru_cache(maxsize=1)
+def find_node(min_version=(18, 11)):
+    """Locate a Node.js executable >= min_version. The Salesforce CLI needs
+    Node >= 18.11 (the `constants` export of `node:fs/promises`)."""
+    import glob
+    candidates = []
+    for name in ('node.exe', 'node'):
+        w = shutil.which(name)
+        if w and w not in candidates:
+            candidates.append(w)
+    subpaths = [
+        ('Programs', 'AutoClaw*', 'resources', 'vendor', 'node', 'node.exe'),
+        ('AutoClaw*', 'resources', 'vendor', 'node', 'node.exe'),
+        ('nodejs', 'node.exe'),
+        ('Programs', 'nodejs', 'node.exe'),
+    ]
+    for base in _candidate_dirs():
+        for parts in subpaths:
+            for hit in glob.glob(os.path.join(base, *parts)):
+                if os.path.isfile(hit) and hit not in candidates:
+                    candidates.append(hit)
+    for c in candidates:
+        v = _node_version(c)
+        if v is not None and v >= min_version:
+            return c
+    return None
 
 
 def find_sf(default='sf'):

@@ -53,6 +53,8 @@ with the `sf crud-mdapi read` command.)
 - `lxml`
 - Salesforce CLI (`sf`) — auto-discovered from `PATH` and common install
   locations, or pass `--sf <path>` explicitly
+- A compatible Node.js (>= 18.11) — auto-detected and prepended to `PATH`,
+  so the CLI works even when an old Node is the system default
 - An authenticated org (alias or username) that the CLI can reach
 
 ## Installation

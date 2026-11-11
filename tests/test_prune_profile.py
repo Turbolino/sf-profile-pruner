@@ -142,5 +142,19 @@ class TestFindSf(unittest.TestCase):
         self.assertTrue(os.path.isfile(r) or r == 'sf', r)
 
 
+class TestFindNode(unittest.TestCase):
+    def test_version_none_for_missing(self):
+        self.assertIsNone(pp._node_version(r'C:\__missing__\node.exe'))
+
+    def test_find_node_compatible_or_none(self):
+        n = pp.find_node()
+        if n is None:
+            return
+        self.assertTrue(os.path.isfile(n), n)
+        v = pp._node_version(n)
+        self.assertIsNotNone(v)
+        self.assertGreaterEqual(v, (18, 11))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
