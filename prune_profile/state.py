@@ -67,6 +67,15 @@ class SharedState:
                         self.groups[block] = new
                         total += n
                         removed_any = True
+                if not removed_any:
+                    # Fallback for a brand-new metadata type (not yet in
+                    # BLOCK_MAP): remove any section entry whose descendant
+                    # leaf equals `member`. Same semantics as the generic
+                    # fallback used when re-applying the error log on resume.
+                    n = self._generic_remove(member)
+                    if n:
+                        total += n
+                        removed_any = True
                 if removed_any:
                     self.removed_by_type.setdefault(typ, set()).add(member)
                     recorded.append((typ, member))
@@ -77,6 +86,24 @@ class SharedState:
             if total:
                 self._write_outputs_locked()
             return total
+
+    def _generic_remove(self, member):
+        """Remove, from any section, entries whose descendant leaf text equals
+        `member` exactly. Returns the number of entries removed."""
+        removed = 0
+        for block, elements in list(self.groups.items()):
+            kept = []
+            dropped = 0
+            for el in elements:
+                if any((ch.text or '').strip() == member
+                       for ch in el.iter() if ch.text):
+                    dropped += 1
+                else:
+                    kept.append(el)
+            if dropped:
+                self.groups[block] = kept
+                removed += dropped
+        return removed
 
     def _write_outputs_locked(self):
         surviving = set()

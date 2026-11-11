@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] - 2026-11-11
+
+### Fixed
+
+- A **brand-new metadata type** (not yet in the section map) no longer forces
+  `ABORTED` at the final gate: `apply_global_removals` now falls back to a
+  generic removal by exact member name, so the reference is removed and the
+  package is re-validated. This makes the final gate self-healing for future
+  Profile sections whose deploy error uses the standard
+  `In field: X - no Y named Z found` form.
+
 ## [1.11.0] - 2026-11-11
 
 ### Added

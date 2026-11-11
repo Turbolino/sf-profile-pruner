@@ -382,6 +382,34 @@ class TestSharedState(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_apply_global_removals_generic_fallback_unknown_type(self):
+        d = tempfile.mkdtemp()
+        try:
+            # A brand-new Profile section whose metadata type is NOT in BLOCK_MAP
+            # must still be removable by exact member name.
+            xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+                   '<someNewAccesses><someThing>BrandNewMember</someThing>'
+                   '<enabled>true</enabled></someNewAccesses>'
+                   '<classAccesses><apexClass>Keep</apexClass><enabled>true</enabled></classAccesses>'
+                   '</Profile>')
+            tree = pp.etree.fromstring(xml.encode('utf-8'))
+            seq = [c for c in tree]
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for el in seq:
+                groups.setdefault(el.tag.split('}')[-1], []).append(el)
+            good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'ERRORS', 'package.xml')
+            errlog = os.path.join(d, 'errors_log.txt')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+            n = st.apply_global_removals([('BrandNewType', 'BrandNewMember')])
+            self.assertEqual(n, 1)
+            tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
+            self.assertEqual(tags, ['classAccesses'])
+            self.assertIn('BrandNewType|BrandNewMember', read_text(errlog))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 class TestPrefetch(unittest.TestCase):
     def test_dangling_members(self):
