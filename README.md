@@ -16,11 +16,20 @@ that do not exist in the target org. Deploying such a profile fails. Profile
 Pruner finds those references one by one and strips them.
 
 It works great together with
-[`sfdx-plugin-source-read`](https://github.com/amtrack/sfdx-plugin-source-read):
-that plugin's `sf crud-mdapi read` command retrieves a **"full"** profile, but
-the retrieved profile may contain `tabVisibilities` for tabs that are not
-available in the org (the plugin README itself warns about this). Profile
-Pruner cleans exactly those leftover references.
+[`sf-profile-full`](https://github.com/Archallys-Inc/sf-profile-full):
+install it with `sf plugins install @archallysinc/sf-profile-full` and run
+`sf profile retrieve full --name <Profile> --target-org <org>` to retrieve the
+**complete** profile — all field-level security, layout assignments, class
+access, page access and tab visibility.
+
+The retrieved profile may still reference metadata that does not exist in the
+target org (for example `tabVisibilities` for tabs that are not available),
+which causes deploy errors. Profile Pruner cleans exactly those leftover
+references.
+
+(A similar plugin is
+[`sfdx-plugin-source-read`](https://github.com/amtrack/sfdx-plugin-source-read),
+with the `sf crud-mdapi read` command.)
 
 ## How it works
 
