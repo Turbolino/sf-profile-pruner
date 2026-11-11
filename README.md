@@ -18,9 +18,15 @@ Pruner finds those references one by one and strips them.
 It works great together with
 [`sf-profile-full`](https://github.com/Archallys-Inc/sf-profile-full):
 install it with `sf plugins install @archallysinc/sf-profile-full` and run
-`sf profile retrieve full --name <Profile> --target-org <org>` to retrieve the
-**complete** profile — all field-level security, layout assignments, class
-access, page access and tab visibility.
+
+```bash
+sf profile retrieve full --name <Profile> --target-org <org> --clean
+```
+
+to retrieve the **complete** profile — all field-level security, layout
+assignments, class access, page access and tab visibility. The `--clean` flag
+already strips the org-specific, non-portable elements (`<loginIpRanges>`,
+`<loginHours>`, `<userLicense>`) that differ between sandbox and production.
 
 The retrieved profile may still reference metadata that does not exist in the
 target org (for example `tabVisibilities` for tabs that are not available),
