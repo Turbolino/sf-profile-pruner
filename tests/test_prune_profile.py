@@ -169,18 +169,46 @@ class TestFindNode(unittest.TestCase):
 class TestStatusBoard(unittest.TestCase):
     def test_rows_update_per_thread(self):
         b = pp.StatusBoard(3, quiet=True)  # quiet -> inactive render, rows still update
-        b.set(1, 'dry-run', 'tabVisibilities [InProgress]')
-        b.set(0, 'removing', 'classAccesses (2 errors)')
-        self.assertIn('[T1] dry-run', b.rows[1])
+        b.set(1, 'dry-run', 'tabVisibilities', 'polling', 10, 5)
+        b.set(0, 'removing', 'classAccesses', '2 errors', 20, 18)
+        self.assertIn('[T1]', b.rows[1])
+        self.assertIn('dry-run', b.rows[1])
         self.assertIn('tabVisibilities', b.rows[1])
-        self.assertIn('[T0] removing', b.rows[0])
+        self.assertIn('rem:5', b.rows[1])
+        self.assertIn('del:5', b.rows[1])
+        self.assertIn('ini:10', b.rows[1])
+        self.assertIn('removing', b.rows[0])
+        self.assertIn('classAccesses', b.rows[0])
         # thread 2 still idle
-        self.assertIn('[idle]', b.rows[2])
+        self.assertIn('idle', b.rows[2])
 
     def test_finish_idempotent(self):
         b = pp.StatusBoard(2, quiet=True)
         b.finish()
         b.finish()
+
+    def test_summary_uses_progress(self):
+        p = pp.Progress(total=10)
+        p.start()
+        p.start()
+        p.finish(True)
+        b = pp.StatusBoard(2, quiet=True, progress=p)
+        self.assertIn('done: 1', b._summary())
+        self.assertIn('running: 1', b._summary())
+        self.assertIn('todo: 8', b._summary())
+
+
+class TestProgress(unittest.TestCase):
+    def test_counters(self):
+        p = pp.Progress(total=5)
+        self.assertEqual(p.snapshot(), (0, 0, 5, 0))
+        p.start()
+        self.assertEqual(p.snapshot(), (0, 1, 4, 0))
+        p.finish(True)
+        self.assertEqual(p.snapshot(), (1, 0, 4, 0))
+        p.start()
+        p.finish(False)
+        self.assertEqual(p.snapshot(), (1, 0, 3, 1))
 
 
 class TestSectionHelpers(unittest.TestCase):
