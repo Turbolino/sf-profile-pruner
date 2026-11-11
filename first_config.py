@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-first_config - one-time setup for Profile Pruner.
+first_config - one-time setup for Profile Pruner (installs everything).
 
-Installs the package (dependencies + the `sfpp` command), checks Node.js and the
-Salesforce CLI, and puts `sfpp` on the PATH.
+Installs the package (its dependency `lxml` + the `sfpp` command), checks
+Node.js and the Salesforce CLI, and puts `sfpp` on the PATH.
 
 Run once, from the project directory:
     python first_config.py
 Then open a NEW terminal and use:
     sfpp --help
 
+This replaces the old `install_dependencies.py` script: a single setup now
+covers dependencies, runtime checks and the `sfpp` launcher.
+
 The `sfpp` command is a real console-script executable (created by pip), NOT a
 .cmd batch file, so Ctrl-C reaches the program directly and never shows
 cmd.exe's "Terminate batch job (Y/N)?" prompt.
 """
-import importlib.util
 import os
 import subprocess
 import sys
@@ -29,7 +31,7 @@ def run(python, *args):
 
 
 def scripts_dir():
-    """The interpreter's Scripts dir — exactly where pip put the `sfpp` script.
+    """The interpreter's Scripts dir - exactly where pip put the `sfpp` script.
 
     We deliberately avoid globbing the whole drive: with a bare Python install
     (e.g. C:\\Python310) a recursive `C:\\**\\Scripts` scan never returns."""
@@ -80,10 +82,10 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     python = sys.executable
 
-    print('Installing Profile Pruner (package + sfpp command)...')
+    print('Installing Profile Pruner (package + dependencies + sfpp command)...')
     # Regular (non-editable) install: copies the package into site-packages so
     # the `sfpp` console script resolves it reliably, independent of the repo
-    # path or any editable-install finder.
+    # path or any editable-install finder. `lxml` is installed as a dependency.
     rc = run(python, '-m', 'pip', 'install', here)
     if rc != 0:
         print('ERROR: pip install failed (exit code %d).' % rc)

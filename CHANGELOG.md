@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.7] - 2026-11-11
+
+### Added
+
+- Trusted Publishing release workflow (`.github/workflows/publish.yml`):
+  pushing a `v*` tag runs the tests, builds the sdist/wheel and publishes to
+  PyPI via OpenID Connect (no PyPI token stored anywhere).
+
+### Changed
+
+- Merged `install_dependencies.py` into `first_config.py`: a single setup now
+  installs the package + `lxml`, checks Node.js/`sf`, and puts `sfpp` on the
+  PATH. The old script was removed.
+- README now documents the PyPI install path (`pip install sf-profile-pruner`)
+  as the recommended way to get the tool.
+
 ## [1.10.6] - 2026-11-11
 
 ### Fixed
