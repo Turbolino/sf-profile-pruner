@@ -45,13 +45,13 @@ class StatusBoard:
         frame in place, then leave it on screen.
     """
 
-    COL_FMT = '%-7s %-9s %-28s %-22s remaining:%-9d deleted:%-9d initial:%-8d'
+    COL_FMT = '%-7s %-9s %-28s %-22s fetched:%-9d deleted:%-9d initial:%-8d'
 
     def __init__(self, n_threads, quiet, progress=None, t0=None):
         self.n = n_threads
         self.progress = progress
         self.t0 = t0 if t0 is not None else time.time()
-        self.state = [dict(status='idle', tag='-', op='-', initial=0, remaining=0)
+        self.state = [dict(status='idle', tag='-', op='-', initial=0, fetched=0)
                       for _ in range(n_threads)]
         self.rows = [self._fmt_row(t, **self.state[t]) for t in range(n_threads)]
         self.lock = threading.Lock()
@@ -131,20 +131,20 @@ class StatusBoard:
             return text[:self.width - 1]
         return text
 
-    def _fmt_row(self, tid, status, tag, op, initial, remaining):
-        removed = max(0, initial - remaining)
+    def _fmt_row(self, tid, status, tag, op, initial, fetched):
+        removed = max(0, initial - fetched)
         return self.COL_FMT % ('[T%d]' % tid, status, tag or '-', op or '-',
-                               remaining, removed, initial)
+                               fetched, removed, initial)
 
     @staticmethod
     def _fmt_elapsed(seconds):
         s = max(0, int(seconds))
         return '%02d:%02d:%02d' % (s // 3600, (s % 3600) // 60, s % 60)
 
-    def set(self, tid, status, tag='', op='', initial=0, remaining=0):
+    def set(self, tid, status, tag='', op='', initial=0, fetched=0):
         with self.lock:
             self.state[tid] = dict(status=status, tag=tag, op=op,
-                                   initial=initial, remaining=remaining)
+                                   initial=initial, fetched=fetched)
             self.rows[tid] = self._fmt_row(tid, **self.state[tid])
             if self.active:
                 self._render()

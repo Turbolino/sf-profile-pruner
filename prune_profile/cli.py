@@ -177,8 +177,11 @@ def _main():
     ap.add_argument('--job-timeout', type=int, default=30,
                     help='minutes to wait for a deploy job to finish before aborting (default: 30)')
     ap.add_argument('--thread-number', type=int, default=8, metavar='X',
-                    help='max parallel section jobs, 1..64 (default: 8); capped to '
-                         'the number of sections to prune')
+                    help='max parallel worker threads, 1..64 (default: 8); capped to '
+                         'the number of work items (chunks) to prune')
+    ap.add_argument('--max-elem-per-section', type=int, default=500, metavar='N',
+                    help='split a section into parallel chunks when it holds more than N '
+                         'entries (default: 500); 0 disables splitting (one worker per section)')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--no-prefetch', action='store_true',
@@ -195,6 +198,10 @@ def _main():
 
     if not (1 <= args.thread_number <= 64):
         print('ERROR: --thread-number must be between 1 and 64 (got %d).' % args.thread_number)
+        sys.exit(2)
+
+    if args.max_elem_per_section < 0:
+        print('ERROR: --max-elem-per-section must be >= 0 (got %d).' % args.max_elem_per_section)
         sys.exit(2)
 
     if not args.quiet:
@@ -387,13 +394,18 @@ def _main():
         else:
             logger.log('PREFETCH: no dangling references found via listMetadata.')
 
-    # ---------- queue of prunable sections that still have entries ----------
+    # ---------- queue of prunable chunks (sections split into chunks) ----------
+    # No workers are running yet, so reading `state.groups` is safe here; each
+    # split_chunks() call takes the state lock itself.
     queue = deque()
-    with state.lock:
-        for block in state.groups:
-            if block in prunable_blocks() and state.groups[block]:
-                queue.append(block)
-    logger.log('Sections to prune: %s' % (', '.join(queue) if queue else '(none)'))
+    section_count = 0
+    for block in state.groups:
+        if block in prunable_blocks() and state.groups[block]:
+            section_count += 1
+            n_chunks = state.split_chunks(block, args.max_elem_per_section)
+            for chunk_id in range(n_chunks):
+                queue.append((block, chunk_id))
+    logger.log('Sections to prune: %d (split into %d work item(s))' % (section_count, len(queue)))
 
     t0 = time.time()
     result_reason = ''
@@ -407,9 +419,9 @@ def _main():
         queue_lock = threading.Lock()
         progress = Progress(total=len(queue))
         control = Control()
-        # Never spawn more threads than there are sections to prune.
+        # Never spawn more threads than there are work items to prune.
         n_workers = min(args.thread_number, len(queue))
-        logger.log('Launching %d worker(s) across %d section(s)...' % (n_workers, len(queue)))
+        logger.log('Launching %d worker(s) across %d work item(s)...' % (n_workers, len(queue)))
         board = StatusBoard(n_workers, args.quiet, progress=progress, t0=t0)
         logger.console = False  # board owns the console during the parallel phase
         threads = []

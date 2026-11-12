@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-11-12
+
+### Added
+
+- `--max-elem-per-section` (default `500`): sections holding more than `N`
+  entries are now split into independent chunks, each pruned by its own worker
+  in parallel, so a huge section (e.g. thousands of `fieldPermissions`) no
+  longer serializes the whole run behind a single worker. `0` keeps the old
+  behavior (one worker per section).
+- The live board column `remaining` is now `fetched`: it shows how many entries
+  the worker is currently evaluating, regardless of whether they end up kept
+  or discarded.
+
 ## [1.13.3] - 2026-11-12
 
 ### Added

@@ -191,7 +191,8 @@ python -m prune_profile \
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
 | `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
 | `--job-timeout` | Minutes to wait for a deploy job to finish before aborting. Default: `30`. |
-| `--thread-number` | Max parallel section jobs, `1`–`64`; capped to the number of sections to prune. Default: `8`. |
+| `--thread-number` | Max parallel worker threads, `1`–`64`; capped to the number of work items (chunks) to prune. Default: `8`. |
+| `--max-elem-per-section` | Split a section into parallel chunks when it holds more than `N` entries. Default: `500`; `0` disables splitting (one worker per section). |
 | `--fresh` | Ignore previous state and restart from the original. |
 | `--no-prefetch` | Skip the Metadata API pre-pass (`sf org list metadata`) and rely only on dry-run discovery. |
 | `--quiet` | Suppress progressive stdout output. |

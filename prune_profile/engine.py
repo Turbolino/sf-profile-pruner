@@ -73,10 +73,11 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
     return removals
 
 
-def process_section(tid, block, state, board, sf, org, poll_interval, job_timeout,
-                    profile_name, api_version, worker_proj, logger, max_iter, control):
-    """Prune a single section until its sub-profile dry-runs clean.
-    Returns (ok, reason)."""
+def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
+                    job_timeout, profile_name, api_version, worker_proj, logger,
+                    max_iter, control):
+    """Prune a single chunk (a slice of a section) until its sub-profile
+    dry-runs clean. Returns (ok, reason)."""
     manifest_path = os.path.join(worker_proj, 'manifest.xml')
     profile_path = os.path.join(worker_proj, 'force-app', 'main', 'default',
                                 'profiles', '%s.profile-meta.xml' % profile_name)
@@ -84,7 +85,7 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
     write_package_xml(manifest_path, {'Profile': [profile_name]}, api_version)
 
     with state.lock:
-        initial = state.initial_counts.get(block, 0)
+        initial = state.chunk_initials.get(block, [0])[chunk_id]
 
     guard = 0
     while True:
@@ -94,7 +95,7 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
         if control.stop.is_set():
             return False, 'stopped by user'
         with state.lock:
-            elements = list(state.groups.get(block, []))
+            elements = list(state.chunks[block][chunk_id])
         if not elements:
             return True, 'no entries left'
         with open(profile_path, 'wb') as f:
@@ -142,13 +143,13 @@ def process_section(tid, block, state, board, sf, org, poll_interval, job_timeou
             new_elements, _n = remove_from_list(new_elements, block, member)
         if len(new_elements) == len(elements):
             return False, 'no progress: reported member(s) not found in section %s' % block
-        state.apply_and_record(block, new_elements, removals, tid)
+        state.apply_chunk_removals(block, chunk_id, new_elements, removals, tid)
 
 
 def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
            poll_interval, job_timeout, profile_name, api_version, worker_proj,
            logger, max_iter):
-    """Consume one section at a time until the queue is empty."""
+    """Consume one chunk at a time until the queue is empty."""
     while True:
         if control.stop.is_set():
             return
@@ -156,13 +157,14 @@ def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
             if not queue:
                 board.set(tid, 'completed', '', 'no more work', 0, 0)
                 return
-            block = queue.popleft()
+            block, chunk_id = queue.popleft()
         progress.start()
         board.set(tid, 'start', block, 'queued')
-        ok, reason = process_section(tid, block, state, board, sf, org, poll_interval,
-                                     job_timeout, profile_name, api_version,
-                                     worker_proj, logger, max_iter, control)
-        state.record_section(block, ok, reason)
+        ok, reason = process_section(tid, block, chunk_id, state, board, sf, org,
+                                     poll_interval, job_timeout, profile_name,
+                                     api_version, worker_proj, logger, max_iter,
+                                     control)
+        state.record_chunk(block, chunk_id, ok, reason)
         progress.finish(ok)
         if control.stop.is_set():
             return
