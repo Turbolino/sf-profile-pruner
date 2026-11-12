@@ -29,10 +29,61 @@ class SharedState:
         self.seq = 0
         self.section_status = {}           # block -> (ok, reason)
         self.initial_counts = {}           # block -> initial number of entries
+        self.chunks = {}                   # block -> [list-of-elements, ...]
+        self.chunk_initials = {}           # block -> [initial count per chunk]
+        self._chunk_results = {}           # block -> {chunk_id: (ok, reason)}
 
     def record_section(self, block, ok, reason):
         with self.lock:
             self.section_status[block] = (ok, reason)
+
+    def split_chunks(self, block, max_elem):
+        """Split `groups[block]` into independent chunks for parallel pruning.
+
+        With `max_elem > 0`, a section holding more than `max_elem` entries is
+        sliced into chunks of `max_elem` (the last one may be smaller); with
+        `max_elem == 0` the whole section is kept as a single chunk. Returns the
+        number of chunks created.
+        """
+        with self.lock:
+            flat = list(self.groups.get(block, []))
+            if max_elem and len(flat) > max_elem:
+                chunks = [flat[i:i + max_elem] for i in range(0, len(flat), max_elem)]
+            else:
+                chunks = [flat]
+            self.chunks[block] = chunks
+            self.chunk_initials[block] = [len(c) for c in chunks]
+            self._chunk_results.setdefault(block, {})
+            return len(chunks)
+
+    def record_chunk(self, block, chunk_id, ok, reason):
+        """Record one chunk's result and aggregate the section status: a
+        section is clean only when every one of its chunks is clean."""
+        with self.lock:
+            self._chunk_results.setdefault(block, {})[chunk_id] = (ok, reason)
+            results = self._chunk_results[block]
+            if all(ok_ for ok_, _r in results.values()):
+                self.section_status[block] = (True, 'clean')
+            else:
+                for ok_, r in results.values():
+                    if not ok_:
+                        self.section_status[block] = (False, r)
+                        break
+
+    def apply_chunk_removals(self, block, chunk_id, new_elements, removals, tid):
+        """Replace one chunk's surviving elements, rebuild the block's flat
+        list, append the error log and rewrite the outputs. Only the chunk at
+        `chunk_id` is replaced; the other chunks of the same block are left
+        untouched, so parallel workers never clobber each other."""
+        with self.lock:
+            self.chunks[block][chunk_id] = new_elements
+            self.groups[block] = [el for chunk in self.chunks[block] for el in chunk]
+            for typ, member, problem in removals:
+                self.removed_by_type.setdefault(typ, set()).add(member)
+                self.seq += 1
+                with open(self.err_log, 'a', encoding='utf-8') as f:
+                    f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
+            self._write_outputs_locked()
 
     def apply_and_record(self, block, new_elements, removals, tid):
         """Under the mutex: update the section, append the error log, and

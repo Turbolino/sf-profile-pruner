@@ -340,7 +340,7 @@ class TestStatusBoard(unittest.TestCase):
         self.assertIn('[T1]', b.rows[1])
         self.assertIn('dry-run', b.rows[1])
         self.assertIn('tabVisibilities', b.rows[1])
-        self.assertIn('remaining:5', b.rows[1])
+        self.assertIn('fetched:5', b.rows[1])
         self.assertIn('deleted:5', b.rows[1])
         self.assertIn('initial:10', b.rows[1])
         self.assertIn('removing', b.rows[0])
@@ -650,6 +650,82 @@ class TestPrefetch(unittest.TestCase):
                                             pp.Logger(True), status=messages.append)
         self.assertEqual(removals, [])
         self.assertTrue(any('skipped' in m for m in messages))
+
+
+class TestChunking(unittest.TestCase):
+    def _state(self, d, n_class=6):
+        parts = ['<Profile xmlns="http://soap.sforce.com/2006/04/metadata">']
+        for i in range(n_class):
+            parts.append('<classAccesses><apexClass>K%d</apexClass><enabled>true</enabled></classAccesses>' % i)
+        parts.append('</Profile>')
+        tree = pp.etree.fromstring(''.join(parts).encode('utf-8'))
+        seq = [c for c in tree]
+        from collections import OrderedDict
+        groups = OrderedDict()
+        for el in seq:
+            groups.setdefault(el.tag.split('}')[-1], []).append(el)
+        good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
+        errpkg = os.path.join(d, 'ERRORS', 'package.xml')
+        errlog = os.path.join(d, 'errors_log.txt')
+        return pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+
+    def test_split_chunks(self):
+        d = tempfile.mkdtemp()
+        try:
+            st = self._state(d, n_class=7)
+            n = st.split_chunks('classAccesses', 3)
+            self.assertEqual(n, 3)
+            self.assertEqual([len(c) for c in st.chunks['classAccesses']], [3, 3, 1])
+            self.assertEqual(st.chunk_initials['classAccesses'], [3, 3, 1])
+            # the flat block list is untouched by splitting
+            self.assertEqual(len(st.groups['classAccesses']), 7)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_split_chunks_zero_means_single(self):
+        d = tempfile.mkdtemp()
+        try:
+            st = self._state(d, n_class=7)
+            self.assertEqual(st.split_chunks('classAccesses', 0), 1)
+            self.assertEqual([len(c) for c in st.chunks['classAccesses']], [7])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_split_chunks_small_block_single(self):
+        d = tempfile.mkdtemp()
+        try:
+            st = self._state(d, n_class=2)
+            self.assertEqual(st.split_chunks('classAccesses', 500), 1)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_apply_chunk_removals_rebuilds_flat(self):
+        d = tempfile.mkdtemp()
+        try:
+            st = self._state(d, n_class=5)
+            st.split_chunks('classAccesses', 3)  # chunks [K0,K1,K2] + [K3,K4]
+            chunk1 = list(st.chunks['classAccesses'][1])
+            new1 = [chunk1[1]]  # keep K4, drop K3
+            st.apply_chunk_removals('classAccesses', 1, new1,
+                                    [('ApexClass', 'K3', 'no ApexClass named K3 found')], 0)
+            self.assertEqual(len(st.groups['classAccesses']), 4)
+            self.assertEqual(len(st.chunks['classAccesses'][1]), 1)
+            self.assertIn('ApexClass|K3', read_text(os.path.join(d, 'errors_log.txt')))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_record_chunk_aggregates(self):
+        d = tempfile.mkdtemp()
+        try:
+            st = self._state(d, n_class=4)
+            st.split_chunks('classAccesses', 2)  # two chunks
+            st.record_chunk('classAccesses', 0, True, 'clean')
+            st.record_chunk('classAccesses', 1, False, 'no progress')
+            ok, reason = st.section_status['classAccesses']
+            self.assertFalse(ok)
+            self.assertEqual(reason, 'no progress')
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == '__main__':
