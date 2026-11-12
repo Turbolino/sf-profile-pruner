@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.2] - 2026-11-12
+
+### Changed
+
+- Restored the `deleted` column on the live board. It now shows four counters:
+  `fetched` (processed so far), `deleted` (discarded so far), `remaining` (still
+  to process) and `initial` (chunk total). While a chunk is in flight `fetched`
+  and `deleted` are equal (an entry leaves the working set only when discarded).
+
 ## [1.14.1] - 2026-11-12
 
 ### Changed
