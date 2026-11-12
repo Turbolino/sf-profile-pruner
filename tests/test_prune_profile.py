@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
+from prune_profile.cli import _repair_mangled_argv  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
          '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
@@ -134,6 +135,41 @@ class TestResolveError(unittest.TestCase):
 
     def test_unknown(self):
         self.assertIsNone(pp.resolve_error('totally different error text'))
+
+
+class TestRepairMangledArgv(unittest.TestCase):
+    def test_swallowed_trailing_flags_recovered(self):
+        # Case A: --out-dir ends in backslash+quote, so the closing quote became
+        # a literal `"` and swallowed `--org Test` + `Org`.
+        argv = ['--profile-path', 'C:\p\X.profile-meta.xml',
+                '--out-dir', '.\salesforce\src Test\dest Test" --org Test', 'Org']
+        out, note = _repair_mangled_argv(argv)
+        self.assertTrue(note)
+        self.assertNotIn('"', ' '.join(out))
+        self.assertEqual(out, ['--profile-path', 'C:\p\X.profile-meta.xml',
+                               '--out-dir', '.\salesforce\src Test\dest Test',
+                               '--org', 'Test Org'])
+
+    def test_trailing_quote_stripped(self):
+        # Case B: --org first; --out-dir kept a literal trailing `"`.
+        argv = ['--org', 'Test Org', '--profile-path', 'C:\p\X.profile-meta.xml',
+                '--out-dir', '.\salesforce\src Test\dest Test"']
+        out, note = _repair_mangled_argv(argv)
+        self.assertTrue(note)
+        self.assertEqual(out, ['--org', 'Test Org', '--profile-path',
+                               'C:\p\X.profile-meta.xml',
+                               '--out-dir', '.\salesforce\src Test\dest Test'])
+
+    def test_no_quote_is_untouched(self):
+        argv = ['--org', 'Test Org', '--out-dir', '.\dest']
+        out, note = _repair_mangled_argv(argv)
+        self.assertEqual(note, '')
+        self.assertEqual(out, argv)
+
+    def test_repair_never_leaves_literal_quote(self):
+        argv = ['--out-dir', 'a" --org X', 'Y']
+        out, _ = _repair_mangled_argv(argv)
+        self.assertFalse(any('"' in t for t in out))
 
 
 class TestOrgApiVersion(unittest.TestCase):
