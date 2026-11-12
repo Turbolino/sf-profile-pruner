@@ -203,6 +203,27 @@ class StatusBoard:
         with self.lock:
             self._mark_stopped_locked()
 
+    def _mark_completed_locked(self):
+        for tid, s in enumerate(self.state):
+            if s['status'] in ('idle', 'running', 'start'):
+                s['status'] = 'completed'
+                s['op'] = 'no more work'
+                self.rows[tid] = self._fmt_row(tid, **s)
+
+    def finalize_finished(self):
+        """Leave the final frame on screen after a successful run.
+
+        Stops the elapsed ticker, marks any still-idle/running rows as
+        'completed', renders one last frame and keeps it visible (rows +
+        summary with the frozen elapsed clock) instead of wiping it."""
+        with self.lock:
+            self._stop_ticker_thread()
+            self._mark_completed_locked()
+            if self._was_active and self.lines_on_screen:
+                self._render()
+            self.active = False
+            self.lines_on_screen = 0
+
     def finish(self):
         self._stop_ticker_thread()
         if not self.active:

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.3] - 2026-11-12
+
+### Fixed
+
+- The Metadata API pre-pass no longer removes `standard-*` tab references
+  (e.g. `standard-Account`, `standard-Case`): those are standard tabs, which
+  `sf org list metadata --metadata-type CustomTab` cannot enumerate, so they
+  were wrongly reported as dangling even when the profile came from the same
+  org.
+- The live board now keeps its frame at the end of a successful run: workers
+  that finish because the queue is empty are marked `completed` (instead of
+  `idle`) and the elapsed/clock summary line stays visible and frozen instead
+  of being wiped.
+
 ## [1.12.2] - 2026-11-12
 
 ### Changed

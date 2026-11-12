@@ -397,7 +397,7 @@ def main():
             result_state = 'ABORTED'
             result_reason = 'stopped by user'
         else:
-            board.finish()
+            board.finalize_finished()
             logger.console = not args.quiet
 
             # ---------- outcome ----------
