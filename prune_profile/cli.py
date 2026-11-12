@@ -12,7 +12,7 @@ Algorithm:
   XML). Up to `--thread-number` workers run in parallel; each worker takes a
   section and, in a loop, builds a sub-package with only that section, starts
   an async deploy dry-run and polls its job via `sf project deploy report`
-  until terminal, then removes every offending entry. GOOD/ and ERRORS/ are
+  until terminal, then removes every offending entry. COMMON/ and MISSING/ are
   reassembled from the surviving entries in the original document order under
   a mutex. A final dry-run of the whole assembled package gates `SUCCESS`.
 """
@@ -220,10 +220,10 @@ def _main():
     base = os.path.basename(profile_path)
     profile_name = args.profile_name or re.sub(r'\.profile-meta\.xml$', '', base)
 
-    good_dir = os.path.join(out_dir, 'GOOD')
-    errors_dir = os.path.join(out_dir, 'ERRORS')
+    common_dir = os.path.join(out_dir, 'COMMON')
+    missing_dir = os.path.join(out_dir, 'MISSING')
     work_dir = os.path.join(out_dir, '.work')
-    err_log = os.path.join(out_dir, 'errors_log.txt')
+    missing_log = os.path.join(out_dir, 'missing_log.txt')
     report = os.path.join(out_dir, 'report.txt')
     run_log = os.path.join(out_dir, 'run.log')
     manifest_path = os.path.join(work_dir, 'manifest.xml')
@@ -241,7 +241,7 @@ def _main():
                              '%s.profile-meta.xml' % profile_name)
 
     # Early logger: created before any slow step so the startup is never silent.
-    for d in (out_dir, good_dir, errors_dir, work_dir):
+    for d in (out_dir, common_dir, missing_dir, work_dir):
         try:
             os.makedirs(d, exist_ok=True)
         except OSError as e:
@@ -297,12 +297,12 @@ def _main():
 
     # ---------- already clean? ----------
     prev_outcome = read_outcome(report)
-    good_profile = os.path.join(good_dir, '%s.profile-meta.xml' % profile_name)
-    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(good_profile):
+    common_profile = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
+    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(common_profile):
         if args.deploy_on_success:
             os.makedirs(os.path.dirname(work_path), exist_ok=True)
-            shutil.copyfile(good_profile, work_path)
-            logger.log('Profile already clean; deploying the GOOD profile as requested...')
+            shutil.copyfile(common_profile, work_path)
+            logger.log('Profile already clean; deploying the COMMON profile as requested...')
             ok, detail = deploy(sf, manifest_path, args.org, args.poll_interval,
                                 args.job_timeout, logger, cwd=project_dir)
             remove_temp_project(work_dir, out_dir)
@@ -314,14 +314,17 @@ def _main():
 
     # ---------- clean run (--fresh): clear previous outputs ----------
     if args.fresh:
-        for p in (err_log, report, run_log):
+        for p in (missing_log, report, run_log):
             if os.path.exists(p):
                 os.remove(p)
-        if os.path.exists(good_profile):
-            os.remove(good_profile)
-        err_pkg = os.path.join(errors_dir, 'package.xml')
-        if os.path.exists(err_pkg):
-            os.remove(err_pkg)
+        if os.path.exists(common_profile):
+            os.remove(common_profile)
+        missing_pkg = os.path.join(missing_dir, 'package.xml')
+        if os.path.exists(missing_pkg):
+            os.remove(missing_pkg)
+        todeploy = os.path.join(common_dir, 'toDeploy.xml')
+        if os.path.exists(todeploy):
+            os.remove(todeploy)
         logger.log('CLEAN RUN (--fresh): outputs cleared.')
 
     # ---------- load original, split into per-section groups ----------
@@ -340,7 +343,7 @@ def _main():
     # cumulative deleted/initial across resumptions instead of resetting.
     original_counts = {block: len(els) for block, els in groups.items()}
     removed_by_type = {}
-    for typ, member in load_log_entries(err_log):
+    for typ, member in load_log_entries(missing_log):
         removed_by_type.setdefault(typ, set()).add(member)
         for block, child, mode in BLOCK_MAP.get(typ, []):
             g = groups.get(block)
@@ -356,11 +359,12 @@ def _main():
         logger.log('FIRST RUN.')
 
     # ---------- shared state + initial outputs ----------
-    logger.log('Writing the initial GOOD/ERRORS outputs...')
-    good_profile_path = os.path.join(good_dir, '%s.profile-meta.xml' % profile_name)
-    errors_pkg = os.path.join(errors_dir, 'package.xml')
-    state = SharedState(groups, original_seq, logger, err_log, good_profile_path,
-                        errors_pkg, profile_name, args.api_version)
+    logger.log('Writing the initial COMMON/MISSING outputs...')
+    common_profile_path = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
+    missing_pkg = os.path.join(missing_dir, 'package.xml')
+    todeploy_pkg = os.path.join(common_dir, 'toDeploy.xml')
+    state = SharedState(groups, original_seq, logger, missing_log, common_profile_path,
+                        missing_pkg, todeploy_pkg, profile_name, args.api_version)
     state.removed_by_type = removed_by_type
     state.initial_counts = original_counts
     state.seq = total_resumed  # continue the error-log sequence on resume
@@ -484,8 +488,8 @@ def _main():
 
     elapsed = time.time() - t0
 
-    # ---------- final GOOD/ERRORS ----------
-    logger.log('Writing the final GOOD/ERRORS outputs...')
+    # ---------- final COMMON/MISSING ----------
+    logger.log('Writing the final COMMON/MISSING outputs...')
     with state.lock:
         state._write_outputs_locked()
 
@@ -511,7 +515,7 @@ def _main():
                 result_state = 'ABORTED'
                 result_reason = 'final dry-run did not converge within %d iterations' % args.max_iter
                 break
-            shutil.copyfile(good_profile_path, fprofile)
+            shutil.copyfile(common_profile_path, fprofile)
             res, err = dry_run(sf, fmanifest, args.org, args.poll_interval,
                                args.job_timeout, logger, cwd=final_proj)
             if res is None:
@@ -555,7 +559,7 @@ def _main():
     if result_state == 'SUCCESS' and args.deploy_on_success:
         logger.log('Deploying the cleaned profile to org %s...' % args.org)
         os.makedirs(os.path.dirname(work_path), exist_ok=True)
-        shutil.copyfile(good_profile_path, work_path)
+        shutil.copyfile(common_profile_path, work_path)
         ok, deploy_detail = deploy(sf, manifest_path, args.org, args.poll_interval,
                                    args.job_timeout, logger, cwd=project_dir)
         if not ok:
@@ -579,8 +583,9 @@ def _main():
         lines.append('  %s : %d' % (t, len(removed_by_type[t])))
     lines.append('')
     lines.append('Output:')
-    lines.append('  GOOD   : %s' % good_dir)
-    lines.append('  ERRORS : %s' % errors_dir)
+    lines.append('  COMMON  : %s' % common_dir)
+    lines.append('  MISSING : %s' % missing_dir)
+    lines.append('  toDeploy: %s' % todeploy_pkg)
     lines.append('  report : %s' % report)
     with open(report, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')

@@ -6,9 +6,10 @@ environments without second thoughts.**
 Profile Pruner removes every reference to metadata that does **not** exist in a
 target org from a **Profile** `.profile-meta.xml` file, so it deploys cleanly on
 the first try. It is **dry-run by default** — the org is never modified unless
-you explicitly pass `--deploy-on-success`. The result is a **GOOD** package (a
-profile that deploys cleanly) and an **ERRORS** package (the list of everything
-that was removed / is missing).
+you explicitly pass `--deploy-on-success`. The result is a **COMMON** package (a
+profile that deploys cleanly, plus a `toDeploy.xml` manifest of the deployable
+members) and a **MISSING** package (the list of everything that was removed /
+is missing).
 
 ## Why it exists
 
@@ -58,7 +59,7 @@ references.
      entries and the removed ones back in their original order.
 4. The worker repeats until its section dry-runs clean, then takes the next
    section from the queue.
-5. GOOD/ and ERRORS/ are assembled from the surviving entries, keeping the
+5. COMMON/ and MISSING/ are assembled from the surviving entries, keeping the
    original document order.
 6. As a final safety check, the tool runs one last **dry-run of the whole
    assembled package**; only if it succeeds the outcome is `SUCCESS`. This final
@@ -204,11 +205,12 @@ python -m prune_profile \
 ```
 out-dir/
 ├── ORIGINAL_<name>.profile-meta.xml   # untouched copy of the original
-├── GOOD/
-│   └── <name>.profile-meta.xml          # clean, deployable profile (the only GOOD artifact)
-├── ERRORS/
+├── COMMON/
+│   ├── <name>.profile-meta.xml          # clean, deployable profile
+│   └── toDeploy.xml                     # manifest of the deployable (COMMON) members
+├── MISSING/
 │   └── package.xml                          # everything removed / missing
-├── errors_log.txt                           # resumable line-by-line log
+├── missing_log.txt                           # resumable line-by-line log
 ├── run.log                                  # progressive log copy
 ├── report.txt                               # final summary (OUTCOME: SUCCESS/ABORTED)
 └── .work/                                   # internal temporary working area (removed at the end)
@@ -238,7 +240,7 @@ prune_profile/
 ## Notes
 
 - The org is **never** modified unless you pass `--deploy-on-success`.
-- `--quiet` still writes `report.txt`, `errors_log.txt` and `run.log`.
+- `--quiet` still writes `report.txt`, `missing_log.txt` and `run.log`.
 - The manifest API version is detected automatically from the target org
   (`sf org display`, latest supported) unless you pass `--api-version`
   explicitly.

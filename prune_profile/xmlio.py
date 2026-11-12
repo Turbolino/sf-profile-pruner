@@ -2,7 +2,7 @@
 """Profile XML manipulation and package/manifest file I/O.
 
 Everything that reads or writes the .profile-meta.xml, package.xml,
-sfdx-project.json, the resumable errors_log.txt and the throwaway working
+sfdx-project.json, the resumable missing_log.txt and the throwaway working
 area. No CLI/console logic here.
 """
 
@@ -145,12 +145,12 @@ def read_outcome(report):
     return None
 
 
-def load_log_entries(err_log):
-    """Ordered, deduplicated (type, member) pairs from errors_log.txt."""
+def load_log_entries(missing_log):
+    """Ordered, deduplicated (type, member) pairs from missing_log.txt."""
     entries = []
     seen = set()
     try:
-        with open(err_log, encoding='utf-8', errors='replace') as f:
+        with open(missing_log, encoding='utf-8', errors='replace') as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -210,9 +210,9 @@ def apply_removals_batch(work_path, removals):
     return removed_total
 
 
-def prepare_work_copy(work_path, source_path, err_log, fresh):
+def prepare_work_copy(work_path, source_path, missing_log, fresh):
     """(Re)build the working profile: copy the source, then re-apply every
-    removal already recorded in errors_log.txt (unless fresh)."""
+    removal already recorded in missing_log.txt (unless fresh)."""
     os.makedirs(os.path.dirname(work_path), exist_ok=True)
     if os.path.abspath(source_path) != os.path.abspath(work_path):
         shutil.copyfile(source_path, work_path)
@@ -220,7 +220,7 @@ def prepare_work_copy(work_path, source_path, err_log, fresh):
     if fresh:
         return
     removals = []
-    for t, m in load_log_entries(err_log):
+    for t, m in load_log_entries(missing_log):
         candidates = BLOCK_MAP.get(t)
         if candidates:
             removals.append((m, candidates))
@@ -334,3 +334,92 @@ def build_subprofile(elements):
     for el in elements:
         root.append(deepcopy(el))
     return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+def extract_common_members(groups):
+    """Extract the metadata referenced by the surviving profile, grouped by
+    metadata type: {type: set(member)}. This is the COMMON set — every
+    reference that exists in the target org and is therefore deployable.
+
+    Standard objects/fields/tabs are intentionally excluded: they always exist
+    and would only bloat the manifest. The type names match BLOCK_MAP so the
+    result stays consistent with the MISSING package.xml."""
+    def _txt(el, child):
+        ce = el.find(M + child)
+        return (ce.text or '').strip() if ce is not None else ''
+
+    out = {}
+
+    def add(typ, member):
+        if member:
+            out.setdefault(typ, set()).add(member)
+
+    for block, els in groups.items():
+        if not els:
+            continue
+        if block == 'classAccesses':
+            for el in els:
+                add('ApexClass', _txt(el, 'apexClass'))
+        elif block == 'pageAccesses':
+            for el in els:
+                add('ApexPage', _txt(el, 'apexPage'))
+        elif block == 'applicationVisibilities':
+            for el in els:
+                add('CustomApplication', _txt(el, 'application'))
+        elif block == 'tabVisibilities':
+            for el in els:
+                v = _txt(el, 'tab')
+                if v and not v.startswith('standard-'):
+                    add('CustomTab', v)
+        elif block == 'flowAccesses':
+            for el in els:
+                add('Flow', _txt(el, 'flow'))
+        elif block == 'loginFlows':
+            for el in els:
+                v = _txt(el, 'visualForcePage') or _txt(el, 'flow')
+                add('ApexPage' if _txt(el, 'visualForcePage') else 'Flow', v)
+        elif block == 'layoutAssignments':
+            for el in els:
+                add('Layout', _txt(el, 'layout'))
+                add('RecordType', _txt(el, 'recordType'))
+        elif block == 'recordTypeVisibilities':
+            for el in els:
+                add('RecordType', _txt(el, 'recordType'))
+        elif block == 'customPermissions':
+            for el in els:
+                add('CustomPermission', _txt(el, 'name'))
+        elif block == 'customMetadataTypeAccesses':
+            for el in els:
+                add('CustomMetadataType', _txt(el, 'name'))
+        elif block == 'externalDataSourceAccesses':
+            for el in els:
+                add('ExternalDataSource', _txt(el, 'externalDataSource'))
+        elif block == 'objectPermissions':
+            for el in els:
+                v = _txt(el, 'object')
+                add('CustomObject' if v.endswith('__c') else 'StandardObject', v)
+        elif block == 'fieldPermissions':
+            for el in els:
+                v = _txt(el, 'field')
+                add('CustomField' if '__c' in v else 'StandardField', v)
+        elif block == 'customSettingAccesses':
+            for el in els:
+                add('CustomObject', _txt(el, 'name'))
+        elif block == 'servicePresenceStatusAccesses':
+            for el in els:
+                add('ServicePresenceStatus', _txt(el, 'servicePresenceStatus'))
+        elif block == 'categoryGroupVisibilities':
+            for el in els:
+                add('DataCategoryGroup', _txt(el, 'dataCategoryGroup'))
+        elif block == 'agentAccesses':
+            for el in els:
+                add('AgentDefinition', _txt(el, 'agentName') or _txt(el, 'agent'))
+        elif block == 'genComputingSummaryDefAccesses':
+            for el in els:
+                add('GenComputingSummaryDefinition',
+                    _txt(el, 'genComputingSummaryDef') or _txt(el, 'name'))
+
+    # Drop standard types (they are always present in every org).
+    out.pop('StandardObject', None)
+    out.pop('StandardField', None)
+    return out
