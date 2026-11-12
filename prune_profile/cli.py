@@ -44,8 +44,76 @@ from .xmlio import (
     write_sfdx_project,
 )
 
+# Options that consume exactly one value. Used to reconstruct an argv that
+# Windows/PowerShell mangled (see _repair_mangled_argv).
+_VALUE_FLAGS = {
+    '--profile-path', '--out-dir', '--org', '--profile-name',
+    '--project-dir', '--api-version', '--max-iter', '--sf',
+    '--poll-interval', '--job-timeout', '--thread-number',
+}
+
+
+def _repair_mangled_argv(argv):
+    """Reconstruct argv after PowerShell/Windows mangled a quoted argument.
+
+    When a quoted argument ends with a backslash immediately before its closing
+    quote (e.g. ``--out-dir "...\\src Test\\dest Test\\"``), the Windows command
+    line parser treats the trailing ``\"`` as an escaped quote: the quote becomes
+    a literal ``"``, the argument stays open, and every following token is
+    swallowed into it. Python then sees either
+
+      ['--out-dir', '...\\dest Test" --org Test', 'Org']       (case A)
+      ['--out-dir', '...\\dest Test"']                          (case B)
+
+    A literal ``"`` can never appear in a valid Windows path, so its presence is
+    a reliable marker of this mangling. We split the damaged token at the first
+    ``"`` (restoring the swallowed flags) and re-join value parts that were split
+    at a space so ``--org "Test Org"`` is recovered whole. Returns (argv, note)
+    where note is a non-empty warning string when a repair was applied.
+    """
+    if not any('"' in a for a in argv):
+        return argv, ''
+
+    flat = []
+    for tok in argv:
+        if '"' not in tok:
+            flat.append(tok)
+            continue
+        idx = tok.index('"')
+        flat.append(tok[:idx])           # the real value before the stray quote
+        rest = tok[idx + 1:].strip()     # swallowed flags/values after it
+        if rest:
+            flat.extend(rest.split())
+
+    out = []
+    i, n = 0, len(flat)
+    while i < n:
+        tok = flat[i]
+        out.append(tok)
+        if tok in _VALUE_FLAGS and i + 1 < n:
+            parts = []
+            j = i + 1
+            while j < n and not flat[j].startswith('-'):
+                parts.append(flat[j])
+                j += 1
+            if parts:
+                out.append(' '.join(parts))
+                i = j
+                continue
+        i += 1
+    return out, ('NOTE: a stray double-quote in the arguments was repaired '
+                 'automatically. PowerShell mangles quoted paths that end in a '
+                 'backslash; use forward slashes (/) or drop the trailing '
+                 'backslash to avoid this.')
+
 
 def main():
+    argv = sys.argv[1:]
+    argv, repair_note = _repair_mangled_argv(argv)
+    if repair_note:
+        print(repair_note, file=sys.stderr)
+    sys.argv[1:] = argv
+
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
         description='Removes from a Salesforce Profile every reference to metadata that '
@@ -147,7 +215,14 @@ def main():
                              '%s.profile-meta.xml' % profile_name)
 
     for d in (out_dir, good_dir, errors_dir, work_dir):
-        os.makedirs(d, exist_ok=True)
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as e:
+            print('ERROR: cannot create output directory %r: %s' % (d, e))
+            print('       If the path ends with a quote or is otherwise malformed,')
+            print('       check the --out-dir value (PowerShell may have mangled a')
+            print('       trailing backslash).')
+            sys.exit(2)
 
     # Untouched copy of the source (kept for reconstruction on resume).
     if os.path.abspath(profile_path) != os.path.abspath(original_copy):
