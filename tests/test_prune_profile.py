@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -321,6 +322,24 @@ class TestStatusBoard(unittest.TestCase):
         b.width = 0
         self.assertEqual(b._clip('hello world'), 'hello world')
 
+    def test_mark_completed_only_idle_and_running(self):
+        b = pp.StatusBoard(3, quiet=True)
+        b.set(0, 'ok', 'tabVisibilities', 'clean', 10, 0)
+        b.set(1, 'idle')
+        b.set(2, 'fail', 'classAccesses', 'no progress', 5, 5)
+        b._mark_completed_locked()
+        self.assertIn('completed', b.rows[1])
+        self.assertIn('no more work', b.rows[1])
+        # already-finished rows keep their terminal state
+        self.assertIn('ok', b.rows[0])
+        self.assertIn('fail', b.rows[2])
+
+    def test_finalize_finished_is_safe_when_inactive(self):
+        b = pp.StatusBoard(2, quiet=True)
+        b.set(1, 'idle')
+        b.finalize_finished()
+        self.assertIn('completed', b.rows[1])
+
 
 class TestControl(unittest.TestCase):
     def test_initial_state(self):
@@ -510,6 +529,25 @@ class TestPrefetch(unittest.TestCase):
         self.assertTrue(pp.version_ge('66.0', '66.0'))
         self.assertFalse(pp.version_ge('62.0', '63.0'))
         self.assertTrue(pp.version_ge('68', '63.0'))
+
+    def test_prefetch_preserves_standard_tabs(self):
+        # `standard-*` are standard tabs; listMetadata CustomTab cannot see them,
+        # so the pre-fetch must never report them as dangling.
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<tabVisibilities><tab>standard-Account</tab><visibility>DefaultOn</visibility></tabVisibilities>'
+               '<tabVisibilities><tab>MissingCustomTab</tab><visibility>DefaultOn</visibility></tabVisibilities>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'tabVisibilities': [c for c in root if c.tag == pp.M + 'tabVisibilities']}
+
+        def fake_list(sf, org, mdtype):
+            if mdtype == 'CustomTab':
+                return (['RealCustomTab'], None)
+            return ([], None)  # empty -> skipped for every other type
+
+        with mock.patch.object(pp.engine, 'list_metadata', side_effect=fake_list):
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0', pp.Logger(True))
+        self.assertEqual(removals, [('CustomTab', 'MissingCustomTab')])
 
 
 if __name__ == '__main__':

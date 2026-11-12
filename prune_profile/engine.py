@@ -42,6 +42,11 @@ def prefetch_dangling(sf, org, groups, api_version, logger):
         existing = set(names)
         for block, child in blocks:
             for member in dangling_members(groups[block], child, existing):
+                if mdtype == 'CustomTab' and member.lower().startswith('standard-'):
+                    # `standard-*` are standard tabs, not CustomTab;
+                    # listMetadata --metadata-type CustomTab cannot see them, so
+                    # they must never be treated as dangling.
+                    continue
                 key = (mdtype, member)
                 if key not in seen:
                     seen.add(key)
@@ -130,7 +135,7 @@ def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
             return
         with queue_lock:
             if not queue:
-                board.set(tid, 'idle')
+                board.set(tid, 'completed', '', 'no more work', 0, 0)
                 return
             block = queue.popleft()
         progress.start()
