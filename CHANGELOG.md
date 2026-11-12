@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.2] - 2026-11-12
+
+### Changed
+
+- Removed the misleading `fetched` column from the live board. Each dry-run
+  tests the whole remaining chunk at once, so there is no per-entry "processed"
+  counter — the board now shows only the real, monotonic quantities:
+  `deleted` (discarded so far), `remaining` (still to process) and `initial`
+  (chunk total).
+
 ## [1.15.1] - 2026-11-12
 
 ### Removed
