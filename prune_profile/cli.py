@@ -322,6 +322,9 @@ def _main():
         missing_pkg = os.path.join(missing_dir, 'package.xml')
         if os.path.exists(missing_pkg):
             os.remove(missing_pkg)
+        todeploy = os.path.join(common_dir, 'toDeploy.xml')
+        if os.path.exists(todeploy):
+            os.remove(todeploy)
         logger.log('CLEAN RUN (--fresh): outputs cleared.')
 
     # ---------- load original, split into per-section groups ----------
@@ -359,8 +362,9 @@ def _main():
     logger.log('Writing the initial COMMON/MISSING outputs...')
     common_profile_path = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
     missing_pkg = os.path.join(missing_dir, 'package.xml')
+    todeploy_pkg = os.path.join(common_dir, 'toDeploy.xml')
     state = SharedState(groups, original_seq, logger, missing_log, common_profile_path,
-                        missing_pkg, profile_name, args.api_version)
+                        missing_pkg, todeploy_pkg, profile_name, args.api_version)
     state.removed_by_type = removed_by_type
     state.initial_counts = original_counts
     state.seq = total_resumed  # continue the error-log sequence on resume
@@ -581,6 +585,7 @@ def _main():
     lines.append('Output:')
     lines.append('  COMMON  : %s' % common_dir)
     lines.append('  MISSING : %s' % missing_dir)
+    lines.append('  toDeploy: %s' % todeploy_pkg)
     lines.append('  report : %s' % report)
     with open(report, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
