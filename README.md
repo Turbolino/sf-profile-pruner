@@ -7,8 +7,9 @@ Profile Pruner removes every reference to metadata that does **not** exist in a
 target org from a **Profile** `.profile-meta.xml` file, so it deploys cleanly on
 the first try. It is **dry-run by default** — the org is never modified unless
 you explicitly pass `--deploy-on-success`. The result is a **COMMON** package (a
-profile that deploys cleanly) and a **MISSING** package (the list of everything
-that was removed / is missing).
+profile that deploys cleanly, plus a `toDeploy.xml` manifest of the deployable
+members) and a **MISSING** package (the list of everything that was removed /
+is missing).
 
 ## Why it exists
 
@@ -205,7 +206,8 @@ python -m prune_profile \
 out-dir/
 ├── ORIGINAL_<name>.profile-meta.xml   # untouched copy of the original
 ├── COMMON/
-│   └── <name>.profile-meta.xml          # clean, deployable profile
+│   ├── <name>.profile-meta.xml          # clean, deployable profile
+│   └── toDeploy.xml                     # manifest of the deployable (COMMON) members
 ├── MISSING/
 │   └── package.xml                          # everything removed / missing
 ├── missing_log.txt                           # resumable line-by-line log

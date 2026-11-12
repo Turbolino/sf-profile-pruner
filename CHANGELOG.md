@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.3] - 2026-11-12
+
+### Added
+
+- Restored `COMMON/toDeploy.xml`: a `package.xml` manifest of the deployable
+  (COMMON) members referenced by the clean profile, generated via
+  `extract_common_members` (standard objects/fields/tabs excluded).
+
 ## [1.15.2] - 2026-11-12
 
 ### Changed

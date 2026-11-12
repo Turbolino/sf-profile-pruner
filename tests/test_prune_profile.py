@@ -498,15 +498,16 @@ class TestSharedState(unittest.TestCase):
             groups['tabVisibilities'] = []
             common = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
             errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
             st = pp.SharedState(groups, seq, pp.Logger(True), os.path.join(d, 'e.txt'),
-                                common, errpkg, 'X', '68.0')
+                                common, errpkg, todeploy, 'X', '68.0')
             st._write_outputs_locked()
             tags = [c.tag.split('}')[1] for c in pp.etree.parse(common).getroot()]
             self.assertEqual(tags, ['fieldPermissions', 'classAccesses', 'objectPermissions'])
             # no package.xml in COMMON
             self.assertFalse(os.path.isfile(os.path.join(d, 'COMMON', 'package.xml')))
-            # no toDeploy.xml
-            self.assertFalse(os.path.isfile(os.path.join(d, 'COMMON', 'toDeploy.xml')))
+            # toDeploy.xml lists the kept (COMMON) members
+            self.assertTrue(os.path.isfile(todeploy))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -528,8 +529,10 @@ class TestSharedState(unittest.TestCase):
                 groups.setdefault(el.tag.split('}')[-1], []).append(el)
             good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
             errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
             errlog = os.path.join(d, 'missing_log.txt')
-            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                                todeploy, 'X', '68.0')
             n = st.apply_global_removals([('FlowDefinition', 'PostLoginClearUserAppInfo')])
             self.assertEqual(n, 1)
             tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
@@ -556,8 +559,10 @@ class TestSharedState(unittest.TestCase):
                 groups.setdefault(el.tag.split('}')[-1], []).append(el)
             good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
             errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
             errlog = os.path.join(d, 'missing_log.txt')
-            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                                todeploy, 'X', '68.0')
             n = st.apply_global_removals([('BrandNewType', 'BrandNewMember')])
             self.assertEqual(n, 1)
             tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
@@ -671,8 +676,10 @@ class TestChunking(unittest.TestCase):
             groups.setdefault(el.tag.split('}')[-1], []).append(el)
         good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
         errpkg = os.path.join(d, 'MISSING', 'package.xml')
+        todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
         errlog = os.path.join(d, 'missing_log.txt')
-        return pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+        return pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                              todeploy, 'X', '68.0')
 
     def test_split_chunks(self):
         d = tempfile.mkdtemp()
@@ -731,6 +738,38 @@ class TestChunking(unittest.TestCase):
             self.assertEqual(reason, 'no progress')
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class TestExtractCommonMembers(unittest.TestCase):
+    def _groups(self, xml):
+        tree = pp.etree.fromstring(xml.encode('utf-8'))
+        from collections import OrderedDict
+        groups = OrderedDict()
+        for el in tree:
+            groups.setdefault(el.tag.split('}')[-1], []).append(el)
+        return groups
+
+    def test_extract_common_members(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<classAccesses><apexClass>Foo</apexClass></classAccesses>'
+               '<flowAccesses><flow>MyFlow</flow></flowAccesses>'
+               '<fieldPermissions><field>Account.Name</field></fieldPermissions>'
+               '<fieldPermissions><field>MyObj__c.MyField__c</field></fieldPermissions>'
+               '<objectPermissions><object>MyObj__c</object></objectPermissions>'
+               '<tabVisibilities><tab>standard-Account</tab></tabVisibilities>'
+               '<tabVisibilities><tab>MyTab</tab></tabVisibilities>'
+               '<loginFlows><flow>LoginFlow1</flow></loginFlows>'
+               '</Profile>')
+        out = pp.extract_common_members(self._groups(xml))
+        self.assertEqual(out['ApexClass'], {'Foo'})
+        self.assertEqual(out['Flow'], {'MyFlow', 'LoginFlow1'})
+        self.assertEqual(out['CustomField'], {'MyObj__c.MyField__c'})
+        self.assertEqual(out['CustomObject'], {'MyObj__c'})
+        self.assertEqual(out['CustomTab'], {'MyTab'})
+        # standard field and standard tab are excluded
+        self.assertNotIn('StandardField', out)
+        self.assertNotIn('StandardTab', out)
+        self.assertNotIn('StandardObject', out)
 
 
 if __name__ == '__main__':
