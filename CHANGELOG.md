@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-11-12
+
+### Added
+
+- Non-blocking startup version check: the tool queries PyPI (best-effort,
+  ~2s timeout, silently skipped on any network error) and, only when a newer
+  version exists, prints an informational warning on stderr with the upgrade
+  command (`python -m pip install --upgrade sf-profile-pruner`).
+
 ## [1.12.5] - 2026-11-12
 
 ### Fixed

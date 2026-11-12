@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
-from prune_profile.cli import _repair_mangled_argv  # noqa: E402
+from prune_profile.cli import _check_for_update, _repair_mangled_argv  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
          '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
@@ -142,27 +142,27 @@ class TestRepairMangledArgv(unittest.TestCase):
     def test_swallowed_trailing_flags_recovered(self):
         # Case A: --out-dir ends in backslash+quote, so the closing quote became
         # a literal `"` and swallowed `--org Test` + `Org`.
-        argv = ['--profile-path', 'C:\p\X.profile-meta.xml',
-                '--out-dir', '.\salesforce\src Test\dest Test" --org Test', 'Org']
+        argv = ['--profile-path', r'C:\p\X.profile-meta.xml',
+                '--out-dir', r'.\salesforce\src Test\dest Test" --org Test', 'Org']
         out, note = _repair_mangled_argv(argv)
         self.assertTrue(note)
         self.assertNotIn('"', ' '.join(out))
-        self.assertEqual(out, ['--profile-path', 'C:\p\X.profile-meta.xml',
-                               '--out-dir', '.\salesforce\src Test\dest Test',
+        self.assertEqual(out, ['--profile-path', r'C:\p\X.profile-meta.xml',
+                               '--out-dir', r'.\salesforce\src Test\dest Test',
                                '--org', 'Test Org'])
 
     def test_trailing_quote_stripped(self):
         # Case B: --org first; --out-dir kept a literal trailing `"`.
-        argv = ['--org', 'Test Org', '--profile-path', 'C:\p\X.profile-meta.xml',
-                '--out-dir', '.\salesforce\src Test\dest Test"']
+        argv = ['--org', 'Test Org', '--profile-path', r'C:\p\X.profile-meta.xml',
+                '--out-dir', r'.\salesforce\src Test\dest Test"']
         out, note = _repair_mangled_argv(argv)
         self.assertTrue(note)
         self.assertEqual(out, ['--org', 'Test Org', '--profile-path',
-                               'C:\p\X.profile-meta.xml',
-                               '--out-dir', '.\salesforce\src Test\dest Test'])
+                               r'C:\p\X.profile-meta.xml',
+                               '--out-dir', r'.\salesforce\src Test\dest Test'])
 
     def test_no_quote_is_untouched(self):
-        argv = ['--org', 'Test Org', '--out-dir', '.\dest']
+        argv = ['--org', 'Test Org', '--out-dir', r'.\dest']
         out, note = _repair_mangled_argv(argv)
         self.assertEqual(note, '')
         self.assertEqual(out, argv)
@@ -228,6 +228,45 @@ class TestRunSfInterrupt(unittest.TestCase):
                                  control=None)
         self.assertEqual(len(terminated), 1)
         self.assertIsInstance(terminated[0], FakeProc)
+
+
+class TestUpdateCheck(unittest.TestCase):
+    def _patch_pypi(self, payload):
+        class FakeResp:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        import urllib.request
+        return mock.patch.object(
+            urllib.request, 'urlopen',
+            return_value=FakeResp(payload.encode('utf-8')))
+
+    def test_newer_version_warns(self):
+        import urllib.request
+        with self._patch_pypi('{"info": {"version": "99.0.0"}}'):
+            lines = _check_for_update()
+        self.assertTrue(lines)
+        self.assertIn('99.0.0', lines[0])
+        self.assertIn('pip install --upgrade sf-profile-pruner', ' '.join(lines))
+
+    def test_same_version_is_silent(self):
+        with self._patch_pypi('{"info": {"version": "%s"}}' % pp.__version__):
+            self.assertEqual(_check_for_update(), [])
+
+    def test_network_failure_is_silent(self):
+        import urllib.request
+        with mock.patch.object(urllib.request, 'urlopen',
+                               side_effect=OSError('no network')):
+            self.assertEqual(_check_for_update(), [])
 
 
 class TestPackageXml(unittest.TestCase):
