@@ -76,7 +76,7 @@ class TestReconstruction(unittest.TestCase):
     def test_prepare_work_copy_reapplies_log(self):
         d = tempfile.mkdtemp()
         try:
-            errlog = os.path.join(d, 'errors_log.txt')
+            errlog = os.path.join(d, 'missing_log.txt')
             write_text(errlog,
                        "1|CustomTab|NotARealTab|You can't edit tab settings for NotARealTab, as it's not a valid tab.\n"
                        '1|CustomField|Missing__c.Foo__c|In field: field - no CustomField named Missing__c.Foo__c found\n'
@@ -97,7 +97,7 @@ class TestLogEntries(unittest.TestCase):
     def test_order_and_dedup(self):
         d = tempfile.mkdtemp()
         try:
-            errlog = os.path.join(d, 'errors_log.txt')
+            errlog = os.path.join(d, 'missing_log.txt')
             write_text(errlog,
                        '1|CustomTab|A|p\n'
                        '2|CustomField|B|p\n'
@@ -499,15 +499,18 @@ class TestSharedState(unittest.TestCase):
             # drop the tabVisibilities entry
             tab = groups['tabVisibilities']
             groups['tabVisibilities'] = []
-            good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
-            errpkg = os.path.join(d, 'ERRORS', 'package.xml')
+            common = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
             st = pp.SharedState(groups, seq, pp.Logger(True), os.path.join(d, 'e.txt'),
-                                good, errpkg, 'X', '68.0')
+                                common, errpkg, todeploy, 'X', '68.0')
             st._write_outputs_locked()
-            tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
+            tags = [c.tag.split('}')[1] for c in pp.etree.parse(common).getroot()]
             self.assertEqual(tags, ['fieldPermissions', 'classAccesses', 'objectPermissions'])
-            # no package.xml in GOOD
-            self.assertFalse(os.path.isfile(os.path.join(d, 'GOOD', 'package.xml')))
+            # no package.xml in COMMON
+            self.assertFalse(os.path.isfile(os.path.join(d, 'COMMON', 'package.xml')))
+            # toDeploy.xml lists the kept (COMMON) members
+            self.assertTrue(os.path.isfile(todeploy))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -527,10 +530,12 @@ class TestSharedState(unittest.TestCase):
             groups = OrderedDict()
             for el in seq:
                 groups.setdefault(el.tag.split('}')[-1], []).append(el)
-            good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
-            errpkg = os.path.join(d, 'ERRORS', 'package.xml')
-            errlog = os.path.join(d, 'errors_log.txt')
-            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+            good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
+            errlog = os.path.join(d, 'missing_log.txt')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                                todeploy, 'X', '68.0')
             n = st.apply_global_removals([('FlowDefinition', 'PostLoginClearUserAppInfo')])
             self.assertEqual(n, 1)
             tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
@@ -555,10 +560,12 @@ class TestSharedState(unittest.TestCase):
             groups = OrderedDict()
             for el in seq:
                 groups.setdefault(el.tag.split('}')[-1], []).append(el)
-            good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
-            errpkg = os.path.join(d, 'ERRORS', 'package.xml')
-            errlog = os.path.join(d, 'errors_log.txt')
-            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+            good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
+            errlog = os.path.join(d, 'missing_log.txt')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                                todeploy, 'X', '68.0')
             n = st.apply_global_removals([('BrandNewType', 'BrandNewMember')])
             self.assertEqual(n, 1)
             tags = [c.tag.split('}')[1] for c in pp.etree.parse(good).getroot()]
@@ -670,10 +677,12 @@ class TestChunking(unittest.TestCase):
         groups = OrderedDict()
         for el in seq:
             groups.setdefault(el.tag.split('}')[-1], []).append(el)
-        good = os.path.join(d, 'GOOD', 'X.profile-meta.xml')
-        errpkg = os.path.join(d, 'ERRORS', 'package.xml')
-        errlog = os.path.join(d, 'errors_log.txt')
-        return pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg, 'X', '68.0')
+        good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
+        errpkg = os.path.join(d, 'MISSING', 'package.xml')
+        todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
+        errlog = os.path.join(d, 'missing_log.txt')
+        return pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                              todeploy, 'X', '68.0')
 
     def test_split_chunks(self):
         d = tempfile.mkdtemp()
@@ -716,7 +725,7 @@ class TestChunking(unittest.TestCase):
                                     [('ApexClass', 'K3', 'no ApexClass named K3 found')], 0)
             self.assertEqual(len(st.groups['classAccesses']), 4)
             self.assertEqual(len(st.chunks['classAccesses'][1]), 1)
-            self.assertIn('ApexClass|K3', read_text(os.path.join(d, 'errors_log.txt')))
+            self.assertIn('ApexClass|K3', read_text(os.path.join(d, 'missing_log.txt')))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -732,6 +741,38 @@ class TestChunking(unittest.TestCase):
             self.assertEqual(reason, 'no progress')
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class TestExtractCommonMembers(unittest.TestCase):
+    def _groups(self, xml):
+        tree = pp.etree.fromstring(xml.encode('utf-8'))
+        from collections import OrderedDict
+        groups = OrderedDict()
+        for el in tree:
+            groups.setdefault(el.tag.split('}')[-1], []).append(el)
+        return groups
+
+    def test_extract_common_members(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<classAccesses><apexClass>Foo</apexClass></classAccesses>'
+               '<flowAccesses><flow>MyFlow</flow></flowAccesses>'
+               '<fieldPermissions><field>Account.Name</field></fieldPermissions>'
+               '<fieldPermissions><field>MyObj__c.MyField__c</field></fieldPermissions>'
+               '<objectPermissions><object>MyObj__c</object></objectPermissions>'
+               '<tabVisibilities><tab>standard-Account</tab></tabVisibilities>'
+               '<tabVisibilities><tab>MyTab</tab></tabVisibilities>'
+               '<loginFlows><flow>LoginFlow1</flow></loginFlows>'
+               '</Profile>')
+        out = pp.extract_common_members(self._groups(xml))
+        self.assertEqual(out['ApexClass'], {'Foo'})
+        self.assertEqual(out['Flow'], {'MyFlow', 'LoginFlow1'})
+        self.assertEqual(out['CustomField'], {'MyObj__c.MyField__c'})
+        self.assertEqual(out['CustomObject'], {'MyObj__c'})
+        self.assertEqual(out['CustomTab'], {'MyTab'})
+        # standard field and standard tab are excluded
+        self.assertNotIn('StandardField', out)
+        self.assertNotIn('StandardTab', out)
+        self.assertNotIn('StandardObject', out)
 
 
 if __name__ == '__main__':

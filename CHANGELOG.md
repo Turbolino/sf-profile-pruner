@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-11-12
+
+### Changed
+
+- **Output renamed**: `GOOD/` → `COMMON/` and `ERRORS/` → `MISSING/`, and
+  `errors_log.txt` → `missing_log.txt` (in the code, the report and the docs).
+- `COMMON/` now also contains `toDeploy.xml`: a `package.xml` manifest of the
+  deployable (COMMON) members — every custom metadata the surviving profile
+  references that exists in the target org. Standard objects/fields/tabs are
+  excluded (always present).
+
 ## [1.14.2] - 2026-11-12
 
 ### Changed

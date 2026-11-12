@@ -8,21 +8,22 @@ from copy import deepcopy
 from lxml import etree
 
 from .constants import BLOCK_MAP, M, NS
-from .xmlio import remove_from_list, write_package_xml
+from .xmlio import extract_common_members, remove_from_list, write_package_xml
 
 
 class SharedState:
     """Thread-safe shared results: per-section groups + cumulative errors."""
 
-    def __init__(self, groups, original_seq, logger, err_log, good_profile_path,
-                 errors_pkg_path, profile_name, api_version):
+    def __init__(self, groups, original_seq, logger, missing_log, common_profile_path,
+                 missing_pkg_path, todeploy_path, profile_name, api_version):
         self.lock = threading.Lock()
         self.groups = groups              # OrderedDict: block -> [lxml elements]
         self.original_seq = original_seq  # [lxml elements] in document order
         self.logger = logger
-        self.err_log = err_log
-        self.good_profile_path = good_profile_path
-        self.errors_pkg_path = errors_pkg_path
+        self.missing_log = missing_log
+        self.common_profile_path = common_profile_path
+        self.missing_pkg_path = missing_pkg_path
+        self.todeploy_path = todeploy_path
         self.profile_name = profile_name
         self.api_version = api_version
         self.removed_by_type = {}         # type -> set(member)
@@ -81,19 +82,19 @@ class SharedState:
             for typ, member, problem in removals:
                 self.removed_by_type.setdefault(typ, set()).add(member)
                 self.seq += 1
-                with open(self.err_log, 'a', encoding='utf-8') as f:
+                with open(self.missing_log, 'a', encoding='utf-8') as f:
                     f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
             self._write_outputs_locked()
 
     def apply_and_record(self, block, new_elements, removals, tid):
-        """Under the mutex: update the section, append the error log, and
-        rewrite the GOOD profile and the ERRORS package."""
+        """Under the mutex: update the section, append the log, and
+        rewrite the COMMON profile and the MISSING package."""
         with self.lock:
             self.groups[block] = new_elements
             for typ, member, problem in removals:
                 self.removed_by_type.setdefault(typ, set()).add(member)
                 self.seq += 1
-                with open(self.err_log, 'a', encoding='utf-8') as f:
+                with open(self.missing_log, 'a', encoding='utf-8') as f:
                     f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
             self._write_outputs_locked()
 
@@ -132,7 +133,7 @@ class SharedState:
                     recorded.append((typ, member))
             for typ, member in recorded:
                 self.seq += 1
-                with open(self.err_log, 'a', encoding='utf-8') as f:
+                with open(self.missing_log, 'a', encoding='utf-8') as f:
                     f.write('%d|%s|%s|%s\n' % (self.seq, typ, member, problem))
             if total:
                 self._write_outputs_locked()
@@ -165,11 +166,14 @@ class SharedState:
         for el in self.original_seq:
             if id(el) in surviving:
                 root.append(deepcopy(el))
-        os.makedirs(os.path.dirname(self.good_profile_path), exist_ok=True)
-        os.makedirs(os.path.dirname(self.errors_pkg_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.common_profile_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.missing_pkg_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.todeploy_path), exist_ok=True)
         tree = etree.ElementTree(root)
-        tree.write(self.good_profile_path, encoding='utf-8', xml_declaration=True)
-        write_package_xml(self.errors_pkg_path, self.removed_by_type, self.api_version)
+        tree.write(self.common_profile_path, encoding='utf-8', xml_declaration=True)
+        write_package_xml(self.missing_pkg_path, self.removed_by_type, self.api_version)
+        write_package_xml(self.todeploy_path, extract_common_members(self.groups),
+                         self.api_version)
 
     def totals(self):
         with self.lock:
