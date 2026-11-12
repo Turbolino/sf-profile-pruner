@@ -58,11 +58,12 @@ class StatusBoard:
         self.lines_on_screen = 0
         self.active = (not quiet) and bool(getattr(sys.stdout, 'isatty', lambda: False)())
         self.width = 0
+        self.height = 0
         if self.active:
             if os.name == 'nt':
                 self.active = self._enable_ansi()
             if self.active:
-                self.width = self._terminal_width()
+                self.width, self.height = self._terminal_size()
         self._was_active = self.active
         # A background ticker re-renders the board once a second so the
         # `elapsed` clock keeps moving even when no worker posts an update.
@@ -117,12 +118,13 @@ class StatusBoard:
             return False
 
     @staticmethod
-    def _terminal_width():
-        """Current console width in columns (0 when unknown)."""
+    def _terminal_size():
+        """Current console size as (columns, lines); (0, 0) when unknown."""
         try:
-            return shutil.get_terminal_size((120, 24)).columns
+            size = shutil.get_terminal_size((120, 24))
+            return size.columns, size.lines
         except Exception:
-            return 0
+            return 0, 0
 
     def _clip(self, text):
         """Trim `text` so it never exceeds the console width (prevents the
@@ -169,16 +171,27 @@ class StatusBoard:
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
 
+    def _visible_rows(self):
+        """Number of worker rows to render so the frame (rows + summary) never
+        exceeds the terminal height. A frame taller than the terminal scrolls,
+        which breaks the ANSI cursor-up accounting and makes every update print
+        a new copy of the board instead of redrawing in place."""
+        if self.height and self.height > 1:
+            return max(1, self.height - 1)
+        return self.n
+
     def _render(self):
+        visible = self._visible_rows()
+        rows = self.rows if self.n <= visible else self.rows[:visible]
         out = []
         if self.lines_on_screen:
             out.append('\x1b[%dA' % self.lines_on_screen)
-        for row in self.rows:
+        for row in rows:
             out.append('\x1b[2K' + self._clip(row) + '\n')
         out.append('\x1b[2K' + self._clip(self._summary()) + '\n')
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
-        self.lines_on_screen = self.n + 1
+        self.lines_on_screen = len(rows) + 1
 
     def freeze(self):
         """Stop live redraw; the last rendered frame stays on screen."""
@@ -256,7 +269,7 @@ class PrefetchStatus:
             if os.name == 'nt':
                 self.active = StatusBoard._enable_ansi()
             if self.active:
-                self.width = StatusBoard._terminal_width()
+                self.width, _ = StatusBoard._terminal_size()
         self._stop = threading.Event()
         self._thread = None
 

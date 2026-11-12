@@ -391,6 +391,15 @@ class TestStatusBoard(unittest.TestCase):
         b.width = 0
         self.assertEqual(b._clip('hello world'), 'hello world')
 
+    def test_visible_rows_capped_by_terminal_height(self):
+        b = pp.StatusBoard(40, quiet=True)
+        b.height = 20
+        self.assertEqual(b._visible_rows(), 19)
+        b.height = 3
+        self.assertEqual(b._visible_rows(), 2)
+        b.height = 0  # unknown terminal height -> no cap
+        self.assertEqual(b._visible_rows(), 40)
+
     def test_mark_completed_only_idle_and_running(self):
         b = pp.StatusBoard(3, quiet=True)
         b.set(0, 'ok', 'tabVisibilities', 'clean', 10, 0)
@@ -599,6 +608,16 @@ class TestPrefetch(unittest.TestCase):
         for mdtype, mappings in pp.LISTABLE.items():
             for block, _child in mappings:
                 self.assertIn(block, prunable)
+
+    def test_list_metadata_name_maps_profile_section_to_api_type(self):
+        # The Profile section is `customMetadataTypeAccesses`, but the Metadata
+        # API type to enumerate via `sf org list metadata` is `CustomMetadata`.
+        self.assertEqual(pp.LIST_METADATA_NAME['CustomMetadataType'],
+                         'CustomMetadata')
+        # Every other LISTABLE key lists under its own name.
+        for mdtype in pp.LISTABLE:
+            if mdtype not in pp.LIST_METADATA_NAME:
+                self.assertEqual(pp.LIST_METADATA_NAME.get(mdtype, mdtype), mdtype)
 
     def test_version_ge(self):
         self.assertTrue(pp.version_ge('68.0', '63.0'))

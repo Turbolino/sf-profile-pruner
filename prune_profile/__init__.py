@@ -21,6 +21,7 @@ from .constants import (
     BANNER,
     BLOCK_MAP,
     LISTABLE,
+    LIST_METADATA_NAME,
     M,
     MIN_API,
     NS,
@@ -68,7 +69,8 @@ from .xmlio import (
 )
 
 __all__ = [
-    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'LISTABLE', 'M',
+    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'LISTABLE',
+    'LIST_METADATA_NAME', 'M',
     'MIN_API', 'NS', 'TERMINAL_STATUSES', '__version__', '__author__',
     '__email__', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
