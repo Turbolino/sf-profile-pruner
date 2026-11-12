@@ -29,7 +29,7 @@ from collections import OrderedDict, deque
 
 from lxml import etree
 
-from .board import Control, Logger, Progress, StatusBoard
+from .board import Control, Logger, PrefetchStatus, Progress, StatusBoard
 from .constants import (
     APP_NAME,
     AUTHOR_NOTE,
@@ -356,7 +356,21 @@ def _main():
     # This catches login flows, the newest Profile sections (agentAccesses,
     # genComputingSummaryDefAccesses) and any other listable type in one shot.
     if not args.no_prefetch:
-        pref = prefetch_dangling(sf, args.org, state.groups, args.api_version, logger)
+        # The pre-fetch phase owns the console via a single in-place status line
+        # (message + elapsed) so it never looks frozen; the logger keeps writing
+        # the full history to run.log. In non-TTY mode the status line is a no-op
+        # and the per-type messages keep flowing to stdout through the logger.
+        ps = PrefetchStatus(args.quiet)
+        if ps.active:
+            logger.console = False
+        ps.start()
+        try:
+            pref = prefetch_dangling(sf, args.org, state.groups, args.api_version,
+                                     logger, status=ps.update)
+        finally:
+            ps.stop()
+            if ps.active:
+                logger.console = not args.quiet
         if pref:
             n = state.apply_global_removals(pref, problem='missing in org (pre-fetch)')
             logger.log('PREFETCH: removed %d dangling reference(s) via listMetadata.' % n)
