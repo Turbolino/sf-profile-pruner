@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-11-12
+
+### Added
+
+- `--api-version` no longer defaults to a hardcoded value. When omitted, the
+  tool detects the **latest API version supported by the target org** via
+  `sf org display` and uses it for the manifests. An explicit `--api-version`
+  still overrides it. If the detection fails, the run stops with a clear error
+  asking to pass `--api-version` explicitly.
+
+### Changed
+
+- Updated the CLI help (`sfpp -h`) and the README to document auto-detection
+  and the Metadata API pre-pass consistently.
+
 ## [1.11.2] - 2026-11-11
 
 ### Changed
