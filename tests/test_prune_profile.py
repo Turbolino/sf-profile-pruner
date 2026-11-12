@@ -203,6 +203,33 @@ class TestOrgApiVersion(unittest.TestCase):
         self.assertIsNotNone(err)
 
 
+class TestRunSfInterrupt(unittest.TestCase):
+    def test_ctrl_c_terminates_child_and_reraises(self):
+        # A Ctrl-C during a blocking sf call (control=None, e.g. `sf org
+        # display`) must kill the child tree and re-raise the interrupt so the
+        # top-level handler can stop cleanly instead of leaking the process.
+        terminated = []
+
+        class FakeProc:
+            def __init__(self, *a, **k):
+                pass
+
+            def communicate(self, timeout=None):
+                raise KeyboardInterrupt()
+
+        def fake_terminate(proc):
+            terminated.append(proc)
+
+        with mock.patch.object(pp.sfcli.subprocess, 'Popen', FakeProc), \
+                mock.patch.object(pp.sfcli, '_terminate_proc',
+                                  side_effect=fake_terminate):
+            with self.assertRaises(KeyboardInterrupt):
+                pp.sfcli._run_sf(['sf', 'org', 'display'], 'sf', 'org display',
+                                 control=None)
+        self.assertEqual(len(terminated), 1)
+        self.assertIsInstance(terminated[0], FakeProc)
+
+
 class TestPackageXml(unittest.TestCase):
     def test_no_blank_lines(self):
         d = tempfile.mkdtemp()

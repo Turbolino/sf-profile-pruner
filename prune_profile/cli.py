@@ -107,7 +107,7 @@ def _repair_mangled_argv(argv):
                  'backslash to avoid this.')
 
 
-def main():
+def _main():
     argv = sys.argv[1:]
     argv, repair_note = _repair_mangled_argv(argv)
     if repair_note:
@@ -521,3 +521,14 @@ def main():
         logger.log(l)
     logger.log('========================================================')
     logger.log('RESULT:%s' % result_state)
+
+
+def main():
+    """Entry point. Catches a Ctrl-C raised outside the worker phase (e.g.
+    while `sf org display` or a final dry-run is blocked) and exits cleanly
+    instead of dumping a traceback."""
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print('\nstopped by user', file=sys.stderr)
+        sys.exit(130)

@@ -70,7 +70,22 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
         return None, 'failed to run %s: %s' % (what, e)
 
     if control is None:
-        out, err = proc.communicate()
+        # Poll with a short timeout even without a control object: `sf org
+        # display` (and any other blocking call) must be interruptible, and a
+        # Ctrl-C has to kill the child tree rather than leak it. We re-raise
+        # the interrupt so the top-level handler can stop cleanly.
+        out, err = '', ''
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+            except KeyboardInterrupt:
+                _terminate_proc(proc)
+                raise
+            except OSError:
+                break
     else:
         out, err = '', ''
         while True:
@@ -82,6 +97,9 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
                 break
             except subprocess.TimeoutExpired:
                 continue
+            except KeyboardInterrupt:
+                _terminate_proc(proc)
+                raise
             except OSError:
                 break
     out = (out or '').strip()
