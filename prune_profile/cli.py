@@ -31,7 +31,7 @@ from lxml import etree
 from .board import Control, Logger, Progress, StatusBoard
 from .constants import APP_NAME, AUTHOR_NOTE, BANNER, BLOCK_MAP, __version__
 from .engine import prefetch_dangling, worker
-from .sfcli import deploy, dry_run, find_sf
+from .sfcli import deploy, dry_run, find_sf, org_api_version
 from .state import SharedState
 from .xmlio import (
     load_log_entries,
@@ -64,8 +64,10 @@ def main():
                     help='root of an existing SFDX project. If omitted, a minimal '
                          'temporary project is created inside --out-dir and removed '
                          'at the end')
-    ap.add_argument('--api-version', default='68.0',
-                    help='API version of the manifest (default: 68.0)')
+    ap.add_argument('--api-version', default=None,
+                    help='manifest API version. Default: the latest version supported '
+                         'by the target org, detected automatically via `sf org display`; '
+                         'pass an explicit version (e.g. 66.0) to override')
     ap.add_argument('--max-iter', type=int, default=5000,
                     help='iteration cap (default: 5000)')
     ap.add_argument('--sf', default='sf',
@@ -80,8 +82,8 @@ def main():
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
     ap.add_argument('--no-prefetch', action='store_true',
-                    help='skip the Metadata API pre-pass that removes dangling '
-                         'references by listing existing org metadata (dry-run only)')
+                    help='skip the Metadata API pre-pass (sf org list metadata) and '
+                         'discover dangling references only through dry-runs')
     ap.add_argument('--quiet', action='store_true',
                     help='suppress the progressive stdout output')
     ap.add_argument('--deploy-on-success', action='store_true',
@@ -109,6 +111,17 @@ def main():
         sys.exit(2)
 
     sf = find_sf(args.sf)
+
+    # ---------- API version: explicit or detected from the org ----------
+    api_source = 'explicit'
+    if args.api_version is None:
+        args.api_version, averr = org_api_version(sf, args.org)
+        if args.api_version is None:
+            print('ERROR: could not detect the latest API version from org %r:' % args.org)
+            print('       %s' % (averr or 'unknown error'))
+            print('       Pass --api-version <X.Y> explicitly to continue.')
+            sys.exit(2)
+        api_source = 'auto (latest for org)'
 
     base = os.path.basename(profile_path)
     profile_name = args.profile_name or re.sub(r'\.profile-meta\.xml$', '', base)
@@ -153,7 +166,7 @@ def main():
     logger.log('Org         : %s' % args.org)
     logger.log('Project     : %s' % project_dir)
     logger.log('Output      : %s' % out_dir)
-    logger.log('API version : %s' % args.api_version)
+    logger.log('API version : %s (%s)' % (args.api_version, api_source))
     logger.log('sf          : %s' % sf)
 
     # ---------- already clean? ----------

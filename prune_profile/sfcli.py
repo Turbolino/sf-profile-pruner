@@ -113,6 +113,20 @@ def list_metadata(sf, org, metadata_type, cwd=None, control=None):
     return names, None
 
 
+def org_api_version(sf, org, cwd=None, control=None):
+    """Return the org's API version (the latest it supports) via `sf org display`.
+    Returns (version_string_or_None, error)."""
+    cmd = [sf, 'org', 'display', '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'org display', cwd=cwd, control=control)
+    if err:
+        return None, err
+    result = res.get('result', {})
+    v = result.get('apiVersion')
+    if not v:
+        return None, 'org display returned no apiVersion'
+    return str(v), None
+
+
 def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None, control=None):
     """Start an async deploy. Returns (job_id, error)."""
     cmd = [sf, 'project', 'deploy', 'start', '--async']

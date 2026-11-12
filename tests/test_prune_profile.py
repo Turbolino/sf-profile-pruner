@@ -136,6 +136,36 @@ class TestResolveError(unittest.TestCase):
         self.assertIsNone(pp.resolve_error('totally different error text'))
 
 
+class TestOrgApiVersion(unittest.TestCase):
+    def test_extracts_api_version(self):
+        calls = []
+        def fake_run(cmd, sf, what, cwd=None, control=None):
+            calls.append((cmd, what))
+            return {'status': 0, 'result': {'apiVersion': '68.0'}}, None
+        orig = pp.sfcli._run_sf
+        pp.sfcli._run_sf = fake_run
+        try:
+            v, err = pp.org_api_version('sf', 'devorg')
+        finally:
+            pp.sfcli._run_sf = orig
+        self.assertIsNone(err)
+        self.assertEqual(v, '68.0')
+        self.assertIn('org', calls[0][0])
+        self.assertIn('display', calls[0][0])
+
+    def test_no_api_version_is_error(self):
+        def fake_run(cmd, sf, what, cwd=None, control=None):
+            return {'status': 0, 'result': {}}, None
+        orig = pp.sfcli._run_sf
+        pp.sfcli._run_sf = fake_run
+        try:
+            v, err = pp.org_api_version('sf', 'devorg')
+        finally:
+            pp.sfcli._run_sf = orig
+        self.assertIsNone(v)
+        self.assertIsNotNone(err)
+
+
 class TestPackageXml(unittest.TestCase):
     def test_no_blank_lines(self):
         d = tempfile.mkdtemp()

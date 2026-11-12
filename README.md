@@ -186,7 +186,7 @@ python -m prune_profile \
 | `--org` | Alias or username of the org used for the dry-run. |
 | `--profile-name` | Profile name (package member). Default: derived from the file name. |
 | `--project-dir` | Root of an existing SFDX project. If omitted, a minimal temporary project is created inside `--out-dir` and removed at the end. |
-| `--api-version` | Manifest API version. Default: `68.0`. |
+| `--api-version` | Manifest API version. Default: the latest version supported by the target org, detected automatically via `sf org display`. Pass an explicit version (e.g. `66.0`) to override. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
 | `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
@@ -238,6 +238,9 @@ prune_profile/
 
 - The org is **never** modified unless you pass `--deploy-on-success`.
 - `--quiet` still writes `report.txt`, `errors_log.txt` and `run.log`.
+- The manifest API version is detected automatically from the target org
+  (`sf org display`, latest supported) unless you pass `--api-version`
+  explicitly.
 - The Metadata API pre-pass needs the connecting user to be able to **see** the
   metadata it lists (System Administrator recommended). Custom fields and
   custom/standard objects are intentionally *not* enumerated (listMetadata does
