@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.4] - 2026-11-12
+
+### Fixed
+
+- The Metadata API pre-pass now lists `customMetadataTypeAccesses` under its
+  real API type `CustomMetadata` instead of `CustomMetadataType` (which the API
+  rejects with `INVALID_TYPE: Unknown type:CustomMetadataType`).
+- The live board no longer scrolls / reprints on every update when the number
+  of worker rows exceeds the terminal height: the frame is capped to the
+  terminal height so the ANSI cursor-up accounting never breaks (chunking can
+  now spawn many more workers than before).
+
 ## [1.15.3] - 2026-11-12
 
 ### Added

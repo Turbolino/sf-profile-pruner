@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '1.15.3'
+__version__ = '1.15.4'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -128,6 +128,13 @@ LISTABLE = {
                            ('agentAccesses', 'agent')],
     'GenComputingSummaryDefinition': [('genComputingSummaryDefAccesses', 'name'),
                                       ('genComputingSummaryDefAccesses', 'genComputingSummaryDef')],
+}
+
+# The `--metadata-type` name passed to `sf org list metadata` for a LISTABLE
+# key. Defaults to the key itself; differs where the Profile section name is
+# not the Metadata API type name (customMetadataTypeAccesses -> CustomMetadata).
+LIST_METADATA_NAME = {
+    'CustomMetadataType': 'CustomMetadata',
 }
 
 # Minimum API version that introduced the corresponding Profile section; the

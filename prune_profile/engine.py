@@ -4,7 +4,7 @@
 import json
 import os
 
-from .constants import LISTABLE, MIN_API, version_ge
+from .constants import LISTABLE, LIST_METADATA_NAME, MIN_API, version_ge
 from .sfcli import dry_run, list_metadata
 from .xmlio import (
     build_subprofile,
@@ -44,10 +44,11 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
     n_types = len(active)
     _report('%d metadata type(s) to check' % n_types)
     for i, (mdtype, blocks) in enumerate(active, 1):
-        _report('[%d/%d] listing %s...' % (i, n_types, mdtype))
-        names, err = list_metadata(sf, org, mdtype)
+        list_name = LIST_METADATA_NAME.get(mdtype, mdtype)
+        _report('[%d/%d] listing %s...' % (i, n_types, list_name))
+        names, err = list_metadata(sf, org, list_name)
         if names is None:
-            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, mdtype, err))
+            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, list_name, err))
             continue
         if not names:
             # An empty list is almost always a permissions/feature problem, not
