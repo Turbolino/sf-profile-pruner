@@ -6,17 +6,17 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '1.12.1'
+__version__ = '1.12.2'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
 
 APP_NAME = 'Profile Pruner'
 
-BANNER = r'''
-  _____   ______  _____  _______ _____        _______       _____   ______ _     _ __   _ _______  ______
- |_____] |_____/ |     | |______   |   |      |______      |_____] |_____/ |     | | \  | |______ |_____/
- |       |    \_ |_____| |       __|__ |_____ |______      |       |    \_ |_____| |  \_| |______ |    \_
+BANNER = '''
+▄█████ ██████   █████▄ ▄▄▄▄   ▄▄▄  ▄▄▄▄▄ ▄▄ ▄▄    ▄▄▄▄▄   █████▄ ▄▄▄▄  ▄▄ ▄▄ ▄▄  ▄▄ ▄▄▄▄▄ ▄▄▄▄
+▀▀▀▄▄▄ ██▄▄     ██▄▄█▀ ██▄█▄ ██▀██ ██▄▄  ██ ██    ██▄▄    ██▄▄█▀ ██▄█▄ ██ ██ ███▄██ ██▄▄  ██▄█▄
+█████▀ ██       ██     ██ ██ ▀███▀ ██    ██ ██▄▄▄ ██▄▄▄   ██     ██ ██ ▀███▀ ██ ▀██ ██▄▄▄ ██ ██
 '''
 
 NS = 'http://soap.sforce.com/2006/04/metadata'
