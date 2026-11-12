@@ -203,30 +203,12 @@ def _main():
         print(AUTHOR_NOTE, flush=True)
         print('', flush=True)
 
-    # Informational, non-blocking upgrade notice (stderr so it never disturbs
-    # the stdout progress/board; skipped silently on any network failure).
-    for line in _check_for_update():
-        print(line, file=sys.stderr)
-
     profile_path = os.path.abspath(args.profile_path)
     out_dir = os.path.abspath(args.out_dir)
 
     if not os.path.isfile(profile_path):
         print('ERROR: profile not found: %s' % profile_path)
         sys.exit(2)
-
-    sf = find_sf(args.sf)
-
-    # ---------- API version: explicit or detected from the org ----------
-    api_source = 'explicit'
-    if args.api_version is None:
-        args.api_version, averr = org_api_version(sf, args.org)
-        if args.api_version is None:
-            print('ERROR: could not detect the latest API version from org %r:' % args.org)
-            print('       %s' % (averr or 'unknown error'))
-            print('       Pass --api-version <X.Y> explicitly to continue.')
-            sys.exit(2)
-        api_source = 'auto (latest for org)'
 
     base = os.path.basename(profile_path)
     profile_name = args.profile_name or re.sub(r'\.profile-meta\.xml$', '', base)
@@ -251,6 +233,7 @@ def _main():
     work_path = os.path.join(project_dir, 'force-app', 'main', 'default', 'profiles',
                              '%s.profile-meta.xml' % profile_name)
 
+    # Early logger: created before any slow step so the startup is never silent.
     for d in (out_dir, good_dir, errors_dir, work_dir):
         try:
             os.makedirs(d, exist_ok=True)
@@ -261,6 +244,32 @@ def _main():
             print('       trailing backslash).')
             sys.exit(2)
 
+    logger = Logger(args.quiet, run_log)
+
+    # Informational, non-blocking upgrade notice (stderr so it never disturbs
+    # the stdout progress/board; skipped silently on any network failure).
+    logger.log('Startup: checking for a newer release...')
+    for line in _check_for_update():
+        print(line, file=sys.stderr)
+    logger.log('Startup: update check done.')
+
+    logger.log('Startup: locating the Salesforce CLI (sf)...')
+    sf = find_sf(args.sf)
+    logger.log('sf          : %s' % sf)
+
+    # ---------- API version: explicit or detected from the org ----------
+    api_source = 'explicit'
+    if args.api_version is None:
+        logger.log('Startup: detecting the latest API version from org %s...' % args.org)
+        args.api_version, averr = org_api_version(sf, args.org)
+        if args.api_version is None:
+            print('ERROR: could not detect the latest API version from org %r:' % args.org)
+            print('       %s' % (averr or 'unknown error'))
+            print('       Pass --api-version <X.Y> explicitly to continue.')
+            sys.exit(2)
+        api_source = 'auto (latest for org)'
+
+    logger.log('Startup: preparing the working copy and project scaffolding...')
     # Untouched copy of the source (kept for reconstruction on resume).
     if os.path.abspath(profile_path) != os.path.abspath(original_copy):
         shutil.copyfile(profile_path, original_copy)
@@ -272,14 +281,12 @@ def _main():
     # Internal manifest used by the dry-runs and the optional deploy.
     write_package_xml(manifest_path, {'Profile': [profile_name]}, args.api_version)
 
-    logger = Logger(args.quiet, run_log)
     logger.log('Profile     : %s' % profile_path)
     logger.log('Name        : %s' % profile_name)
     logger.log('Org         : %s' % args.org)
     logger.log('Project     : %s' % project_dir)
     logger.log('Output      : %s' % out_dir)
     logger.log('API version : %s (%s)' % (args.api_version, api_source))
-    logger.log('sf          : %s' % sf)
 
     # ---------- already clean? ----------
     prev_outcome = read_outcome(report)
@@ -311,6 +318,7 @@ def _main():
         logger.log('CLEAN RUN (--fresh): outputs cleared.')
 
     # ---------- load original, split into per-section groups ----------
+    logger.log('Reading the profile and splitting it into sections...')
     tree = etree.parse(original_copy)
     root = tree.getroot()
     original_seq = [c for c in root if isinstance(c.tag, str)]
@@ -318,6 +326,7 @@ def _main():
     for el in original_seq:
         block = el.tag.split('}')[-1]
         groups.setdefault(block, []).append(el)
+    logger.log('Read %d section(s) with %d entry(ies) in total.' % (len(groups), len(original_seq)))
 
     # ---------- apply recorded removals (resume) ----------
     # Capture the true original section sizes first, so the board keeps showing
@@ -340,6 +349,7 @@ def _main():
         logger.log('FIRST RUN.')
 
     # ---------- shared state + initial outputs ----------
+    logger.log('Writing the initial GOOD/ERRORS outputs...')
     good_profile_path = os.path.join(good_dir, '%s.profile-meta.xml' % profile_name)
     errors_pkg = os.path.join(errors_dir, 'package.xml')
     state = SharedState(groups, original_seq, logger, err_log, good_profile_path,
@@ -399,6 +409,7 @@ def _main():
         control = Control()
         # Never spawn more threads than there are sections to prune.
         n_workers = min(args.thread_number, len(queue))
+        logger.log('Launching %d worker(s) across %d section(s)...' % (n_workers, len(queue)))
         board = StatusBoard(n_workers, args.quiet, progress=progress, t0=t0)
         logger.console = False  # board owns the console during the parallel phase
         threads = []
@@ -462,6 +473,7 @@ def _main():
     elapsed = time.time() - t0
 
     # ---------- final GOOD/ERRORS ----------
+    logger.log('Writing the final GOOD/ERRORS outputs...')
     with state.lock:
         state._write_outputs_locked()
 
@@ -538,6 +550,7 @@ def _main():
             result_state = 'DEPLOY_FAILED'
 
     # ---------- report ----------
+    logger.log('Writing the report...')
     lines = []
     lines.append('OUTCOME: %s' % result_state)
     if result_reason:
@@ -561,6 +574,7 @@ def _main():
         f.write('\n'.join(lines) + '\n')
 
     # ---------- throw away our temporary work area ----------
+    logger.log('Cleaning up the temporary working area...')
     remove_temp_project(work_dir, out_dir)
 
     # ---------- final output ----------
