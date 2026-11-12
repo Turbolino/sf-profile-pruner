@@ -235,6 +235,62 @@ class StatusBoard:
             self.active = False
 
 
+class PrefetchStatus:
+    """Single in-place status line for the metadata pre-fetch phase.
+
+    Shows ``message | elapsed HH:MM:SS`` on one line that updates in place,
+    without colliding with the later worker board (it stops and newlines before
+    the board takes over). No-op when stdout is not a TTY or --quiet is set, so
+    the per-type messages still reach stdout through the regular logger."""
+
+    def __init__(self, quiet, t0=None):
+        self.message = ''
+        self.t0 = t0 if t0 is not None else time.time()
+        self.active = (not quiet) and bool(getattr(sys.stdout, 'isatty', lambda: False)())
+        self.width = 0
+        if self.active:
+            if os.name == 'nt':
+                self.active = StatusBoard._enable_ansi()
+            if self.active:
+                self.width = StatusBoard._terminal_width()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _line(self):
+        m = self.message or 'preparing'
+        return '%s | elapsed %s' % (m, StatusBoard._fmt_elapsed(time.time() - self.t0))
+
+    def _draw(self):
+        text = self._line()
+        if self.width:
+            text = text[:self.width - 1]
+        sys.stdout.write('\x1b[2K\r' + text)
+        sys.stdout.flush()
+
+    def update(self, message):
+        self.message = message or ''
+        if self.active:
+            self._draw()
+
+    def _loop(self):
+        while not self._stop.wait(1.0):
+            self._draw()
+
+    def start(self):
+        if not self.active:
+            return
+        self._draw()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self.active:
+            self._draw()
+            sys.stdout.write('\n')
+            sys.stdout.flush()
+
+
 class Control:
     """Stop signal shared between the main thread and the workers."""
 

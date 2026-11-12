@@ -15,31 +15,47 @@ from .xmlio import (
 )
 
 
-def prefetch_dangling(sf, org, groups, api_version, logger):
+def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
     """Detect dangling references by listing existing org metadata per type.
 
     Returns a deduplicated list of (type, member) pairs to remove. Each `type`
     is a BLOCK_MAP key, so the removals are applied and re-applied (on resume)
-    through the exact same code path as dry-run findings."""
-    removals = []
-    seen = set()
+    through the exact same code path as dry-run findings.
+
+    `status` is an optional callable(message) used to show live progress on the
+    console (the pre-fetch phase owns the status line while logger.console is
+    off); every message is also written to the run log via `logger`."""
+    def _report(msg):
+        logger.log('PREFETCH: %s' % msg)
+        if status:
+            status('prefetch: %s' % msg)
+
+    active = []
     for mdtype, mappings in LISTABLE.items():
         minv = MIN_API.get(mdtype)
         if minv and not version_ge(api_version, minv):
             continue
         blocks = [(b, c) for b, c in mappings if groups.get(b)]
-        if not blocks:
-            continue
+        if blocks:
+            active.append((mdtype, blocks))
+
+    removals = []
+    seen = set()
+    n_types = len(active)
+    _report('%d metadata type(s) to check' % n_types)
+    for i, (mdtype, blocks) in enumerate(active, 1):
+        _report('[%d/%d] listing %s...' % (i, n_types, mdtype))
         names, err = list_metadata(sf, org, mdtype)
         if names is None:
-            logger.log('PREFETCH %s: skipped (%s)' % (mdtype, err))
+            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, mdtype, err))
             continue
         if not names:
             # An empty list is almost always a permissions/feature problem, not
             # a genuinely empty org; removing everything would be destructive.
-            logger.log('PREFETCH %s: org returned zero members; skipping.' % mdtype)
+            _report('[%d/%d] %s: zero members, skipping' % (i, n_types, mdtype))
             continue
         existing = set(names)
+        before = len(removals)
         for block, child in blocks:
             for member in dangling_members(groups[block], child, existing):
                 if mdtype == 'CustomTab' and member.lower().startswith('standard-'):
@@ -51,6 +67,9 @@ def prefetch_dangling(sf, org, groups, api_version, logger):
                 if key not in seen:
                     seen.add(key)
                     removals.append(key)
+        dangled = len(removals) - before
+        _report('[%d/%d] %s: %d existing, %d dangling' %
+                (i, n_types, mdtype, len(existing), dangled))
     return removals
 
 

@@ -14,7 +14,7 @@ Public package surface. The implementation is split into thematic modules:
 
 from lxml import etree
 
-from .board import Control, Logger, Progress, StatusBoard
+from .board import Control, Logger, PrefetchStatus, Progress, StatusBoard
 from .constants import (
     APP_NAME,
     AUTHOR_NOTE,
@@ -70,7 +70,7 @@ __all__ = [
     'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'LISTABLE', 'M',
     'MIN_API', 'NS', 'TERMINAL_STATUSES', '__version__', '__author__',
     '__email__', 'version_ge',
-    'Control', 'Logger', 'Progress', 'StatusBoard', 'SharedState',
+    'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prefetch_dangling', 'process_section', 'worker',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
     'deploy', 'dry_run', 'find_node', 'find_sf', 'list_metadata',

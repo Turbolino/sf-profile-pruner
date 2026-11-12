@@ -615,6 +615,42 @@ class TestPrefetch(unittest.TestCase):
             removals = pp.prefetch_dangling('sf', 'org', groups, '68.0', pp.Logger(True))
         self.assertEqual(removals, [('CustomTab', 'MissingCustomTab')])
 
+    def test_prefetch_reports_status_per_type(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<flowAccesses><flow>Existing</flow></flowAccesses>'
+               '<flowAccesses><flow>MissingFlow</flow></flowAccesses>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'flowAccesses': [c for c in root if c.tag == pp.M + 'flowAccesses']}
+
+        def fake_list(sf, org, mdtype):
+            return (['Existing'], None)
+
+        messages = []
+        with mock.patch.object(pp.engine, 'list_metadata', side_effect=fake_list):
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0',
+                                            pp.Logger(True), status=messages.append)
+        self.assertEqual(removals, [('Flow', 'MissingFlow')])
+        self.assertTrue(any('listing Flow' in m for m in messages))
+        self.assertTrue(any('1 existing, 1 dangling' in m for m in messages))
+
+    def test_prefetch_skip_reports_status(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<flowAccesses><flow>X</flow></flowAccesses>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'flowAccesses': [c for c in root if c.tag == pp.M + 'flowAccesses']}
+
+        def fake_list(sf, org, mdtype):
+            return (None, 'no permission')
+
+        messages = []
+        with mock.patch.object(pp.engine, 'list_metadata', side_effect=fake_list):
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0',
+                                            pp.Logger(True), status=messages.append)
+        self.assertEqual(removals, [])
+        self.assertTrue(any('skipped' in m for m in messages))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
