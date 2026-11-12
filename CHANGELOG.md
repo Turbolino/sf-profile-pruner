@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.3] - 2026-11-12
+
+### Added
+
+- Speaking startup and phase logs so the program never looks frozen: the
+  logger is now created before any slow step, and every macro-operation
+  (update check, locating the Salesforce CLI, detecting the API version,
+  preparing the working copy, reading/splitting the profile, writing the
+  initial and final outputs, launching workers, writing the report, cleaning
+  up) prints a clear line to both the console and `run.log`.
+
 ## [1.13.2] - 2026-11-12
 
 ### Changed
