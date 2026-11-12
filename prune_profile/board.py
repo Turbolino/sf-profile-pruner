@@ -45,7 +45,7 @@ class StatusBoard:
         frame in place, then leave it on screen.
     """
 
-    COL_FMT = '%-7s %-9s %-28s %-22s fetched:%-9d deleted:%-9d initial:%-8d'
+    COL_FMT = '%-7s %-9s %-28s %-22s fetched:%-9d remaining:%-9d initial:%-8d'
 
     def __init__(self, n_threads, quiet, progress=None, t0=None):
         self.n = n_threads
@@ -132,9 +132,11 @@ class StatusBoard:
         return text
 
     def _fmt_row(self, tid, status, tag, op, initial, fetched):
-        removed = max(0, initial - fetched)
+        # `fetched` = entries processed so far (monotonic, grows as entries
+        # are discarded); `remaining` = entries still to process = initial - fetched.
+        remaining = max(0, initial - fetched)
         return self.COL_FMT % ('[T%d]' % tid, status, tag or '-', op or '-',
-                               fetched, removed, initial)
+                               fetched, remaining, initial)
 
     @staticmethod
     def _fmt_elapsed(seconds):

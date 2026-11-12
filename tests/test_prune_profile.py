@@ -340,11 +340,14 @@ class TestStatusBoard(unittest.TestCase):
         self.assertIn('[T1]', b.rows[1])
         self.assertIn('dry-run', b.rows[1])
         self.assertIn('tabVisibilities', b.rows[1])
+        # fetched = processed so far; remaining = still to process
         self.assertIn('fetched:5', b.rows[1])
-        self.assertIn('deleted:5', b.rows[1])
+        self.assertIn('remaining:5', b.rows[1])
         self.assertIn('initial:10', b.rows[1])
         self.assertIn('removing', b.rows[0])
         self.assertIn('classAccesses', b.rows[0])
+        self.assertIn('fetched:18', b.rows[0])
+        self.assertIn('remaining:2', b.rows[0])
         # thread 2 still idle
         self.assertIn('idle', b.rows[2])
 

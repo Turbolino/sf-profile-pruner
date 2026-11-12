@@ -101,11 +101,11 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
         with open(profile_path, 'wb') as f:
             f.write(build_subprofile(elements))
 
-        board.set(tid, 'dry-run', block, 'polling', initial, len(elements))
+        board.set(tid, 'dry-run', block, 'polling', initial, initial - len(elements))
         res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
                            logger, cwd=worker_proj,
                            on_status=lambda s: board.set(tid, 'dry-run', block, s,
-                                                         initial, len(elements)),
+                                                         initial, initial - len(elements)),
                            control=control)
         if res is None:
             if err == 'stopped by user':
@@ -125,7 +125,7 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
             return False, json.dumps(diag)[:400]
 
         board.set(tid, 'removing', block, '%d errors' % len(failures),
-                  initial, len(elements))
+                  initial, initial - len(elements))
         removals = []
         for f in failures:
             problem = str(f.get('problem', ''))
