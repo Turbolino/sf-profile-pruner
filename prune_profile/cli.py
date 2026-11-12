@@ -18,6 +18,7 @@ Algorithm:
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -29,7 +30,14 @@ from collections import OrderedDict, deque
 from lxml import etree
 
 from .board import Control, Logger, Progress, StatusBoard
-from .constants import APP_NAME, AUTHOR_NOTE, BANNER, BLOCK_MAP, __version__
+from .constants import (
+    APP_NAME,
+    AUTHOR_NOTE,
+    BANNER,
+    BLOCK_MAP,
+    __version__,
+    version_ge,
+)
 from .engine import prefetch_dangling, worker
 from .sfcli import deploy, dry_run, find_sf, org_api_version
 from .state import SharedState
@@ -107,6 +115,30 @@ def _repair_mangled_argv(argv):
                  'backslash to avoid this.')
 
 
+def _check_for_update():
+    """Best-effort, non-blocking version check against PyPI.
+
+    Returns a list of warning lines (possibly empty) when a newer version of
+    `sf-profile-pruner` exists. Any network/parse failure silently returns no
+    warning, so startup is never blocked (bounded ~2s timeout)."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            'https://pypi.org/pypi/sf-profile-pruner/json',
+            headers={'User-Agent': 'sf-profile-pruner/%s' % __version__})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        latest = str((data.get('info') or {}).get('version') or '')
+    except Exception:
+        return []
+    if not latest or latest == __version__ or not version_ge(latest, __version__):
+        return []
+    return [
+        'A newer version is available: %s (installed: %s).' % (latest, __version__),
+        'Update with:  python -m pip install --upgrade sf-profile-pruner',
+    ]
+
+
 def _main():
     argv = sys.argv[1:]
     argv, repair_note = _repair_mangled_argv(argv)
@@ -170,6 +202,11 @@ def _main():
         print('%s v%s' % (APP_NAME, __version__), flush=True)
         print(AUTHOR_NOTE, flush=True)
         print('', flush=True)
+
+    # Informational, non-blocking upgrade notice (stderr so it never disturbs
+    # the stdout progress/board; skipped silently on any network failure).
+    for line in _check_for_update():
+        print(line, file=sys.stderr)
 
     profile_path = os.path.abspath(args.profile_path)
     out_dir = os.path.abspath(args.out_dir)
