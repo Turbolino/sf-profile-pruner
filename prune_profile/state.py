@@ -8,14 +8,14 @@ from copy import deepcopy
 from lxml import etree
 
 from .constants import BLOCK_MAP, M, NS
-from .xmlio import extract_common_members, remove_from_list, write_package_xml
+from .xmlio import remove_from_list, write_package_xml
 
 
 class SharedState:
     """Thread-safe shared results: per-section groups + cumulative errors."""
 
     def __init__(self, groups, original_seq, logger, missing_log, common_profile_path,
-                 missing_pkg_path, todeploy_path, profile_name, api_version):
+                 missing_pkg_path, profile_name, api_version):
         self.lock = threading.Lock()
         self.groups = groups              # OrderedDict: block -> [lxml elements]
         self.original_seq = original_seq  # [lxml elements] in document order
@@ -23,7 +23,6 @@ class SharedState:
         self.missing_log = missing_log
         self.common_profile_path = common_profile_path
         self.missing_pkg_path = missing_pkg_path
-        self.todeploy_path = todeploy_path
         self.profile_name = profile_name
         self.api_version = api_version
         self.removed_by_type = {}         # type -> set(member)
@@ -168,12 +167,9 @@ class SharedState:
                 root.append(deepcopy(el))
         os.makedirs(os.path.dirname(self.common_profile_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.missing_pkg_path), exist_ok=True)
-        os.makedirs(os.path.dirname(self.todeploy_path), exist_ok=True)
         tree = etree.ElementTree(root)
         tree.write(self.common_profile_path, encoding='utf-8', xml_declaration=True)
         write_package_xml(self.missing_pkg_path, self.removed_by_type, self.api_version)
-        write_package_xml(self.todeploy_path, extract_common_members(self.groups),
-                         self.api_version)
 
     def totals(self):
         with self.lock:
