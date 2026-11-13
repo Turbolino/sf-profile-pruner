@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-11-13
+
+### Added
+
+- **Two input modes**: the CLI now accepts a profile from a file (via 1,
+  `-pp/--profile-path` + `-do/--dest-org`) or retrieves it from a source org
+  (via 2, `-so/--src-org` + `-sp/--src-profile` + `-do` + `-dp`). Source and
+  destination org/profile may coincide.
+- **`-dp/--dest-profile`**: deploy the cleaned profile under a different name;
+  Salesforce creates the profile if it does not exist and merges into it
+  otherwise.
+- **`-fp/--full-profile`**: retrieve the full (non-stripped) profile; the
+  default retrieve is now *clean* (strips `loginIpRanges`/`loginHours`/
+  `userLicense`).
+- Short flags: `-pp`, `-so`, `-sp`, `-fp`, `-do`, `-dp`, `-od`, `-bs`, `-tn`,
+  `-av`.
+- `-h` now groups options into sections and prints usage examples.
+
+### Changed
+
+- `--out-dir` now defaults to the current directory (`-od` to override).
+- `--batch-size` (new) replaces `--max-elem-per-section`: min 100, max 4000,
+  default 200; `0` disables splitting.
+- `--thread-number` default raised to `16`.
+- `--job-timeout` default is now `0` (no timeout); valid range 1–60 minutes.
+
+### Deprecated (removed in v2.x.x)
+
+- `--org` → `--dest-org`; `--profile-name` → `--dest-profile`;
+  `--retrieve-full` → `--full-profile`; `--max-elem-per-section` →
+  `--batch-size`. The old flags still work and print a warning.
+
+### Removed
+
+- `--project-dir`: the tool always uses a minimal project inside `--out-dir`.
+
 ## [1.16.0] - 2026-11-13
 
 ### Added

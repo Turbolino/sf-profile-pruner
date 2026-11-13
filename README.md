@@ -19,34 +19,28 @@ types, agents, enhanced summaries, etc. that do not exist in the target org.
 Deploying such a profile fails. Profile Pruner finds those references one by
 one and strips them.
 
-It works great together with
-[`sf-profile-full`](https://github.com/Archallys-Inc/sf-profile-full):
-install it with `sf plugins install @archallysinc/sf-profile-full` and run
+You have two ways to feed it a profile:
 
-```bash
-sf profile retrieve full --name <Profile> --target-org <org> --clean
-```
+* **via 1 — from a file** (`-pp/--profile-path` + `-do/--dest-org`): prune a
+  `.profile-meta.xml` you already have.
+* **via 2 — from an org** (`-so/--src-org` + `-sp/--src-profile` + `-do` +
+  `-dp`): sfpp retrieves the **complete** profile from the source org itself —
+  all field-level security, layout assignments, class access, page access and
+  tab visibility — using the Metadata API `readMetadata()` (through a small,
+  owned Node helper that reuses the Salesforce CLI's authentication). By default
+  the retrieve is **clean** (it strips the org-specific, non-portable
+  `loginIpRanges`, `loginHours`, `userLicense`); pass `-fp/--full-profile` for
+  the full, non-stripped profile.
 
-to retrieve the **complete** profile — all field-level security, layout
-assignments, class access, page access and tab visibility. The `--clean` flag
-already strips the org-specific, non-portable elements (`<loginIpRanges>`,
-`<loginHours>`, `<userLicense>`) that differ between sandbox and production.
+> The third-party `sf-profile-full` plugin is **no longer required**. To use
+> via 2 you need the Salesforce CLI installed **with Node.js and its global
+> node_modules** (`@salesforce/core` + `@jsforce/jsforce-node`), which any recent
+> `sf` installation already ships.
 
-**New: sfpp can retrieve the complete profile itself** with `--retrieve-full`,
-so the third-party plugin is no longer required. sfpp calls the Metadata API
-`readMetadata()` directly (through a small, owned Node helper that reuses the
-Salesforce CLI's authentication) and serialises the result with lxml — the only
-way to obtain the *complete* Profile, since `project retrieve` returns a sparse
-one.
-
-> To use `--retrieve-full` you need the Salesforce CLI installed **with Node.js
-> and its global node_modules** (`@salesforce/core` + `@jsforce/jsforce-node`),
-> which any recent `sf` installation already ships.
-
-The retrieved profile may still reference metadata that does not exist in the
-target org (for example `tabVisibilities` for tabs that are not available),
-which causes deploy errors. Profile Pruner cleans exactly those leftover
-references.
+The retrieved (or provided) profile may still reference metadata that does not
+exist in the destination org (for example `tabVisibilities` for tabs that are
+not available), which causes deploy errors. Profile Pruner cleans exactly those
+leftover references.
 
 ## How it works
 
@@ -139,22 +133,17 @@ sfpp --help
 ## Usage
 
 ```bash
-sfpp \
-  --profile-path "path/to/My Profile.profile-meta.xml" \
-  --profile-name "My Profile" \
-  --out-dir "path/to/output" \
-  --org myorg
+# via 1 — prune a profile file and dry-run against the destination org
+sfpp -pp "path/to/My Profile.profile-meta.xml" -do myorg
+
+# via 1 — deploy the cleaned profile (renamed) to the destination org
+sfpp -pp "path/to/My Profile.profile-meta.xml" -do prod -dp "My Profile Clean" --deploy-on-success
+
+# via 2 — retrieve from a source org, prune, deploy to the destination org
+sfpp -so devorg -sp "My Profile" -do mysandbox -dp "My Profile" --deploy-on-success
 ```
 
-Or, without the `sfpp` launcher:
-
-```bash
-python -m prune_profile \
-  --profile-path "path/to/My Profile.profile-meta.xml" \
-  --profile-name "My Profile" \
-  --out-dir "path/to/output" \
-  --org myorg
-```
+Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
 
 ## Behaviour
 
@@ -196,26 +185,37 @@ python -m prune_profile \
 
 ## Options
 
+Options are grouped in the `-h` help. The two input modes are:
+
+* **via 1 (file):** `-pp/--profile-path` + `-do/--dest-org`
+* **via 2 (org):** `-so/--src-org` + `-sp/--src-profile` + `-do` + `-dp`
+
 | Option | Description |
 | --- | --- |
-| `--profile-path` | Path of the source `.profile-meta.xml` file. Optional with `--retrieve-full`. |
-| `--out-dir` | Output directory (report, packages, logs). |
-| `--org` | Alias or username of the org used for the dry-run. |
-| `--profile-name` | Profile name (package member). Default: derived from the file name. |
-| `--retrieve-full` | Retrieve the complete profile from `--org` via the Metadata API (`readMetadata`) instead of reading `--profile-path`. Requires `--profile-name`. |
-| `--project-dir` | Root of an existing SFDX project. If omitted, a minimal temporary project is created inside `--out-dir` and removed at the end. |
-| `--api-version` | Manifest API version. Default: the latest version supported by the target org, detected automatically via `sf org display`. Pass an explicit version (e.g. `66.0`) to override. |
+| `-pp`, `--profile-path` | Path of the source `.profile-meta.xml` file (via 1). |
+| `-so`, `--src-org` | Source org alias/username to retrieve from (via 2). |
+| `-sp`, `--src-profile` | Name of the Profile to retrieve from `--src-org` (via 2). |
+| `-fp`, `--full-profile` | Retrieve the full (non-stripped) profile; default is a clean retrieve (`loginIpRanges`/`loginHours`/`userLicense` removed). |
+| `-do`, `--dest-org` | Destination org alias/username (dry-run and optional deploy target). |
+| `-dp`, `--dest-profile` | Name to deploy the cleaned profile under; created if it does not exist. Default: the source profile name. |
+| `-od`, `--out-dir` | Output directory for report/packages/logs. Default: the current directory. |
+| `-bs`, `--batch-size` | Split a section into chunks of `N` entries (min 100, max 4000, default 200); `0` disables splitting. |
+| `-tn`, `--thread-number` | Max parallel workers, `1`–`64`. Default: `16`. |
+| `--job-timeout` | Minutes to wait for a deploy job before aborting (`1`–`60`; `0` = no timeout). Default: `0`. |
+| `-av`, `--api-version` | Manifest API version. Default: detected from the destination org. |
+| `--deploy-throttle-ms` | Min interval between deploy starts, in ms. Default: `1000`; `0` disables. |
+| `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
-| `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
-| `--job-timeout` | Minutes to wait for a deploy job to finish before aborting. Default: `30`. |
-| `--thread-number` | Max parallel worker threads, `1`–`64`; capped to the number of work items (chunks) to prune. Default: `8`. |
-| `--max-elem-per-section` | Split a section into parallel chunks when it holds more than `N` entries. Default: `500`; `0` disables splitting (one worker per section). |
-| `--fresh` | Ignore previous state and restart from the original. |
-| `--quiet` | Suppress progressive stdout output. |
-| `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |
+| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. |
+| `--fresh` | Restart from the original, ignoring any previous state. |
+| `--quiet` | Suppress the progressive stdout output. |
 | `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |
 | `-V`, `--version` | Show version and author. |
+
+**Deprecated** (still accepted, removed in v2.x.x): `--org` → `--dest-org`,
+`--profile-name` → `--dest-profile`, `--retrieve-full` → `--full-profile`,
+`--max-elem-per-section` → `--batch-size`.
 
 ## Output layout (`--out-dir`)
 
@@ -233,9 +233,9 @@ out-dir/
 └── .work/                                   # internal temporary working area (removed at the end)
 ```
 
-> You don't need your own SFDX project. If `--project-dir` is omitted, the tool
-> creates a minimal one (`sfdx-project.json` only) under `.work/project/`, uses
-> it for the deploy commands, and deletes it when finished.
+> You don't need your own SFDX project: the tool always creates a minimal one
+> (`sfdx-project.json` only) under `.work/project/`, uses it for the deploy
+> commands, and deletes it when finished.
 
 ## Repository structure
 

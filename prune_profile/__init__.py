@@ -21,10 +21,12 @@ from .constants import (
     BANNER,
     BLOCK_MAP,
     COPYLEFT,
+    DEFAULT_BATCH_SIZE,
     DISCLAIMER,
     LISTABLE,
     LIST_METADATA_NAME,
     M,
+    MAX_CHUNK_SIZE,
     MIN_API,
     MIN_CHUNK_SIZE,
     NS,
@@ -79,9 +81,9 @@ from .xmlio import (
 )
 
 __all__ = [
-    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'COPYLEFT', 'DISCLAIMER',
-    'LISTABLE', 'LIST_METADATA_NAME', 'M',
-    'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
+    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'COPYLEFT', 'DEFAULT_BATCH_SIZE',
+    'DISCLAIMER', 'LISTABLE', 'LIST_METADATA_NAME', 'M',
+    'MAX_CHUNK_SIZE', 'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
     'TERMINAL_STATUSES', '__version__', '__author__',
     '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',

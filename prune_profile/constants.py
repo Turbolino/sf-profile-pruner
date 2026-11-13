@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '1.16.0'
+__version__ = '1.17.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -171,10 +171,14 @@ MIN_API = {
 # from MISSING/package.xml because standard metadata cannot be packaged.
 STANDARD_TYPES = frozenset({'StandardObject', 'StandardField', 'StandardTab'})
 
-# Minimum number of entries per chunk. `--max-elem-per-section` is clamped up to
-# this: tiny chunks make workers restart deploy jobs too often, which trips the
-# Salesforce CLI's per-org deploy lock ("Lock file is already being held").
+# Minimum/maximum/default number of entries per chunk. `--batch-size` is clamped
+# into [MIN, MAX] (0 = one worker per section, never split): tiny chunks make
+# workers restart deploy jobs too often, which trips the Salesforce CLI's per-org
+# deploy lock ("Lock file is already being held"); huge chunks make the final
+# full-package validation redo too much work at once.
 MIN_CHUNK_SIZE = 100
+MAX_CHUNK_SIZE = 4000
+DEFAULT_BATCH_SIZE = 200
 
 
 def version_ge(a, b):

@@ -236,10 +236,12 @@ def report_deploy(sf, job_id, org, cwd=None, control=None):
 
 def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
                 on_status=None, control=None):
-    """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error)."""
-    deadline = time.time() + job_timeout * 60
+    """Poll a deploy job until it reaches a terminal status. Returns (result_dict, error).
+
+    `job_timeout` is in minutes; 0 (or negative) means no timeout."""
+    deadline = time.time() + job_timeout * 60 if job_timeout and job_timeout > 0 else None
     last_status = ''
-    while time.time() < deadline:
+    while deadline is None or time.time() < deadline:
         if control and control.stop.is_set():
             return None, 'stopped by user'
         res, err = report_deploy(sf, job_id, org, cwd=cwd, control=control)
@@ -264,6 +266,8 @@ def poll_deploy(sf, job_id, org, poll_interval, job_timeout, logger, cwd=None,
                 waited += 0.2
         else:
             time.sleep(poll_interval)
+    if deadline is None:
+        return None, 'deploy job %s was stopped before reaching a terminal status' % job_id
     return None, 'deploy job %s did not reach a terminal status within %d min (last status: %s)' % (
         job_id, job_timeout, last_status or '?')
 

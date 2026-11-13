@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
-from prune_profile.cli import _check_for_update, _clamp_chunk_size, _repair_mangled_argv  # noqa: E402
+from prune_profile.cli import _check_for_update, _clamp_batch_size, _repair_mangled_argv  # noqa: E402
 from prune_profile.retrieve import profile_json_to_xml  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -847,12 +847,14 @@ class TestChunking(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def test_clamp_chunk_size_to_minimum(self):
-        self.assertEqual(_clamp_chunk_size(75), pp.MIN_CHUNK_SIZE)
-        self.assertEqual(_clamp_chunk_size(100), 100)
-        self.assertEqual(_clamp_chunk_size(500), 500)
-        self.assertEqual(_clamp_chunk_size(0), 0)  # 0 = no chunking, kept
-        self.assertEqual(_clamp_chunk_size(1), pp.MIN_CHUNK_SIZE)
+    def test_clamp_batch_size(self):
+        self.assertEqual(_clamp_batch_size(75), pp.MIN_CHUNK_SIZE)
+        self.assertEqual(_clamp_batch_size(100), 100)
+        self.assertEqual(_clamp_batch_size(200), 200)
+        self.assertEqual(_clamp_batch_size(4000), 4000)
+        self.assertEqual(_clamp_batch_size(5000), pp.MAX_CHUNK_SIZE)
+        self.assertEqual(_clamp_batch_size(0), 0)  # 0 = no chunking, kept
+        self.assertEqual(_clamp_batch_size(1), pp.MIN_CHUNK_SIZE)
 
     def test_apply_chunk_removals_rebuilds_flat(self):
         d = tempfile.mkdtemp()

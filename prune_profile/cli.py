@@ -2,9 +2,15 @@
 """Profile Pruner — command-line entry point.
 
 Removes from a Salesforce Profile every reference to metadata that does NOT
-exist in the target org. Pruning combines a Metadata API + Tooling API pre-pass
-with an authoritative `sf project deploy start --dry-run`, and never modifies
-the org; with `--deploy-on-success` the cleaned profile is deployed at the end.
+exist in the destination org. Pruning combines a Metadata API + Tooling API
+pre-pass with an authoritative `sf project deploy start --dry-run`, and never
+modifies the org; with `--deploy-on-success` the cleaned profile is deployed at
+the end.
+
+Two input modes:
+  * via 1 (file):   `--profile-path`  + `--dest-org`
+  * via 2 (org):    `--src-org` + `--src-profile` + `--dest-org` + `--dest-profile`
+                    (the profile is retrieved from the source org first)
 
 Algorithm:
   The profile is split by its top-level sections (`classAccesses`,
@@ -36,7 +42,9 @@ from .constants import (
     BANNER,
     BLOCK_MAP,
     COPYLEFT,
+    DEFAULT_BATCH_SIZE,
     DISCLAIMER,
+    MAX_CHUNK_SIZE,
     MIN_CHUNK_SIZE,
     STORY,
     __version__,
@@ -61,16 +69,51 @@ from .xmlio import (
 # Options that consume exactly one value. Used to reconstruct an argv that
 # Windows/PowerShell mangled (see _repair_mangled_argv).
 _VALUE_FLAGS = {
-    '--profile-path', '--out-dir', '--org', '--profile-name',
-    '--project-dir', '--api-version', '--max-iter', '--sf',
-    '--poll-interval', '--job-timeout', '--thread-number',
+    '--profile-path', '-pp',
+    '--out-dir', '-od',
+    '--src-org', '-so',
+    '--src-profile', '-sp',
+    '--dest-org', '-do',
+    '--dest-profile', '-dp',
+    '--batch-size', '-bs',
+    '--api-version', '-av',
+    '--thread-number', '-tn',
+    '--job-timeout', '--deploy-throttle-ms', '--poll-interval',
+    '--max-iter', '--sf',
+    # deprecated aliases (still accepted)
+    '--org', '--profile-name', '--max-elem-per-section',
 }
 
+EXAMPLES = '''\
+Examples:
+  # Prune a profile file and dry-run against the destination org (output in the current dir)
+  sfpp -pp "Admin.profile-meta.xml" -do mysandbox
 
-def _clamp_chunk_size(n):
-    """Clamp a chunk size to the allowed minimum (0 = no chunking is kept)."""
-    if 0 < n < MIN_CHUNK_SIZE:
+  # Prune and deploy under the same name (creates the profile if it does not exist)
+  sfpp -pp "Admin.profile-meta.xml" -do prod --deploy-on-success
+
+  # Deploy the cleaned profile under a different name
+  sfpp -pp "Admin.profile-meta.xml" -do prod -dp "Admin_Clean" --deploy-on-success
+
+  # Retrieve from a source org, prune and deploy to a destination org
+  sfpp -so devorg -sp "Sales Rep" -do mysandbox -dp "Sales Rep" --deploy-on-success
+
+  # Same org, full (non-stripped) retrieve, dry-run only
+  sfpp -so mysandbox -sp "Sales Rep" -do mysandbox -dp "Sales Rep" -fp
+
+  # Custom output dir, batch size and threads
+  sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
+'''
+
+
+def _clamp_batch_size(n):
+    """Clamp a batch size into the allowed range (0 = no chunking is kept)."""
+    if n <= 0:
+        return 0
+    if n < MIN_CHUNK_SIZE:
         return MIN_CHUNK_SIZE
+    if n > MAX_CHUNK_SIZE:
+        return MAX_CHUNK_SIZE
     return n
 
 
@@ -78,13 +121,13 @@ def _repair_mangled_argv(argv):
     """Reconstruct argv after PowerShell/Windows mangled a quoted argument.
 
     When a quoted argument ends with a backslash immediately before its closing
-    quote (e.g. ``--out-dir "...\\src Test\\dest Test\\"``), the Windows command
-    line parser treats the trailing ``\"`` as an escaped quote: the quote becomes
+    quote (e.g. ``--out-dir "...\\\\src Test\\\\dest Test\\\\"``), the Windows command
+    line parser treats the trailing ``\\\"`` as an escaped quote: the quote becomes
     a literal ``"``, the argument stays open, and every following token is
     swallowed into it. Python then sees either
 
-      ['--out-dir', '...\\dest Test" --org Test', 'Org']       (case A)
-      ['--out-dir', '...\\dest Test"']                          (case B)
+      ['--out-dir', '...\\\\dest Test" --org Test', 'Org']       (case A)
+      ['--out-dir', '...\\\\dest Test"']                          (case B)
 
     A literal ``"`` can never appear in a valid Windows path, so its presence is
     a reliable marker of this mangling. We split the damaged token at the first
@@ -160,7 +203,7 @@ def _main():
     sys.argv[1:] = argv
 
     # Easter egg: print the story and exit before argparse enforces the
-    # required options (--profile-path / --out-dir / --org).
+    # required options.
     if '--tell-me-a-story' in argv:
         print(STORY, flush=True)
         sys.exit(0)
@@ -168,81 +211,153 @@ def _main():
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
         description='Removes from a Salesforce Profile every reference to metadata that '
-                    'does not exist in the target org. Dry-run only by default; use '
-                    '--deploy-on-success to deploy the cleaned profile at the end.'
+                    'does not exist in the destination org. Dry-run only by default; use '
+                    '--deploy-on-success to deploy the cleaned profile at the end.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=EXAMPLES,
     )
-    ap.add_argument('--profile-path', default=None,
-                    help='path of the .profile-meta.xml file (original source). '
-                         'Omit together with --retrieve-full to fetch it from the org.')
-    ap.add_argument('--out-dir', required=True,
-                    help='output directory (report, packages, logs)')
-    ap.add_argument('--org', required=True,
-                    help="alias or username of the org used for the dry-run")
-    ap.add_argument('--profile-name', default=None,
-                    help='name of the Profile (package member); default: derived from the file name')
-    ap.add_argument('--project-dir', default=None,
-                    help='root of an existing SFDX project. If omitted, a minimal '
-                         'temporary project is created inside --out-dir and removed '
-                         'at the end')
-    ap.add_argument('--api-version', default=None,
-                    help='manifest API version. Default: the latest version supported '
-                         'by the target org, detected automatically via `sf org display`; '
-                         'pass an explicit version (e.g. 66.0) to override')
-    ap.add_argument('--max-iter', type=int, default=5000,
-                    help='iteration cap (default: 5000)')
-    ap.add_argument('--sf', default='sf',
-                    help='command/path of the Salesforce CLI (default: sf)')
-    ap.add_argument('--poll-interval', type=float, default=5.0,
-                    help='seconds to wait between status polls of a deploy job (default: 5)')
-    ap.add_argument('--job-timeout', type=int, default=30,
-                    help='minutes to wait for a deploy job to finish before aborting (default: 30)')
-    ap.add_argument('--thread-number', type=int, default=8, metavar='X',
-                    help='max parallel worker threads, 1..64 (default: 8); capped to '
-                         'the number of work items (chunks) to prune')
-    ap.add_argument('--max-elem-per-section', type=int, default=500, metavar='N',
-                    help='split a section into parallel chunks when it holds more than N '
-                         'entries (default: 500, minimum: 100); 0 disables splitting '
-                         '(one worker per section)')
-    ap.add_argument('--deploy-throttle-ms', type=int, default=1000, metavar='MS',
-                    help='minimum interval between deploy start submissions, in ms '
-                         '(default: 1000); 0 disables the throttle')
-    ap.add_argument('--fresh', action='store_true',
-                    help='ignore any previous state and restart from the original')
-    ap.add_argument('--quiet', action='store_true',
-                    help='suppress the progressive stdout output')
-    ap.add_argument('--deploy-on-success', action='store_true',
-                    help='deploy the cleaned profile to the org once the pruning succeeds '
-                         '(default: dry-run only, the org is never modified)')
-    ap.add_argument('--retrieve-full', action='store_true',
-                    help='retrieve the complete profile from --org via the Metadata API '
-                         '(readMetadata) instead of reading --profile-path; '
-                         'requires --profile-name')
-    ap.add_argument('--tell-me-a-story', action='store_true',
-                    help='Turbolino will tell you a fascinating story about code, '
-                         'algorithms and copyright.')
-    ap.add_argument('-V', '--version', action='version',
-                    version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
+
+    g_input = ap.add_argument_group('input source')
+    g_input.add_argument('-pp', '--profile-path', default=None,
+                         help='path of the source .profile-meta.xml file (via 1: file)')
+    g_input.add_argument('-so', '--src-org', default=None,
+                         help='source org alias/username to retrieve the profile from '
+                              '(via 2: org)')
+    g_input.add_argument('-sp', '--src-profile', default=None,
+                         help='name of the Profile to retrieve from --src-org (via 2)')
+    g_input.add_argument('-fp', '--full-profile', action='store_true',
+                         help='retrieve the full (non-stripped) profile; the default is a '
+                              'clean retrieve (loginIpRanges/loginHours/userLicense removed)')
+
+    g_dest = ap.add_argument_group('destination')
+    g_dest.add_argument('-do', '--dest-org', default=None,
+                        help='destination org alias/username (dry-run and optional deploy target)')
+    g_dest.add_argument('-dp', '--dest-profile', default=None,
+                        help='name to deploy the cleaned profile under; if it does not exist '
+                             'in the org it is created. Default: the source profile name')
+
+    g_out = ap.add_argument_group('output')
+    g_out.add_argument('-od', '--out-dir', default=os.getcwd(),
+                       help='output directory for report/packages/logs '
+                            '(default: the current directory)')
+
+    g_tune = ap.add_argument_group('tuning')
+    g_tune.add_argument('-bs', '--batch-size', type=int, default=DEFAULT_BATCH_SIZE, metavar='N',
+                        help='split a section into parallel chunks of N entries '
+                             '(min 100, max 4000, default 200); 0 disables splitting')
+    g_tune.add_argument('-tn', '--thread-number', type=int, default=16, metavar='X',
+                        help='max parallel worker threads, 1..64 (default: 16); capped to '
+                             'the number of work items (chunks) to prune')
+    g_tune.add_argument('--job-timeout', type=int, default=0, metavar='M',
+                        help='minutes to wait for a deploy job before aborting '
+                             '(1..60; 0 = no timeout, the default)')
+    g_tune.add_argument('-av', '--api-version', default=None,
+                        help='manifest API version (default: the latest version supported '
+                             'by the destination org, detected automatically)')
+    g_tune.add_argument('--deploy-throttle-ms', type=int, default=1000, metavar='MS',
+                        help='minimum interval between deploy start submissions, in ms '
+                             '(default: 1000); 0 disables the throttle')
+    g_tune.add_argument('--poll-interval', type=float, default=5.0,
+                        help='seconds to wait between status polls of a deploy job (default: 5)')
+    g_tune.add_argument('--max-iter', type=int, default=5000,
+                        help='iteration cap (default: 5000)')
+    g_tune.add_argument('--sf', default='sf',
+                        help='command/path of the Salesforce CLI (default: sf)')
+
+    g_act = ap.add_argument_group('behavior')
+    g_act.add_argument('--deploy-on-success', action='store_true',
+                       help='deploy the cleaned profile to --dest-org once pruning succeeds '
+                            '(default: dry-run only, the org is never modified)')
+    g_act.add_argument('--fresh', action='store_true',
+                       help='ignore any previous state and restart from the original')
+    g_act.add_argument('--quiet', action='store_true',
+                       help='suppress the progressive stdout output')
+    g_act.add_argument('--tell-me-a-story', action='store_true',
+                       help='Turbolino will tell you a fascinating story about code, '
+                            'algorithms and copyright.')
+    g_act.add_argument('-V', '--version', action='version',
+                       version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
+
+    # Deprecated aliases: accepted for compatibility, hidden from help, warned.
+    ap.add_argument('--org', dest='dep_org', default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--profile-name', dest='dep_profile_name', default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--retrieve-full', dest='dep_retrieve_full', action='store_true',
+                    default=False, help=argparse.SUPPRESS)
+    ap.add_argument('--max-elem-per-section', dest='dep_max_elem', type=int, default=None,
+                    help=argparse.SUPPRESS)
+
     args = ap.parse_args()
 
+    # ---------- deprecated aliases -> new names (with a warning) ----------
+    if args.dep_org is not None:
+        print('WARNING: --org is deprecated; use --dest-org (-do).', file=sys.stderr)
+        args.dest_org = args.dep_org
+    if args.dep_profile_name is not None:
+        print('WARNING: --profile-name is deprecated; use --dest-profile (-dp).', file=sys.stderr)
+        args.dest_profile = args.dep_profile_name
+    if args.dep_retrieve_full:
+        print('WARNING: --retrieve-full is deprecated; use --full-profile (-fp).', file=sys.stderr)
+        args.full_profile = True
+    if args.dep_max_elem is not None:
+        print('WARNING: --max-elem-per-section is deprecated; use --batch-size (-bs).', file=sys.stderr)
+        args.batch_size = args.dep_max_elem
+
+    # ---------- numeric validation ----------
     if not (1 <= args.thread_number <= 64):
         print('ERROR: --thread-number must be between 1 and 64 (got %d).' % args.thread_number)
         sys.exit(2)
 
-    if args.max_elem_per_section < 0:
-        print('ERROR: --max-elem-per-section must be >= 0 (got %d).' % args.max_elem_per_section)
+    if args.batch_size < 0:
+        print('ERROR: --batch-size must be >= 0 (got %d).' % args.batch_size)
         sys.exit(2)
+    clamped = _clamp_batch_size(args.batch_size)
+    if clamped != args.batch_size:
+        if args.batch_size == 0:
+            pass  # 0 = no chunking, kept as-is
+        elif args.batch_size > MAX_CHUNK_SIZE:
+            print('NOTE: --batch-size %d is above the maximum of %d; using %d.' %
+                  (args.batch_size, MAX_CHUNK_SIZE, MAX_CHUNK_SIZE), file=sys.stderr)
+        else:
+            print('NOTE: --batch-size %d is below the minimum of %d; using %d.' %
+                  (args.batch_size, MIN_CHUNK_SIZE, MIN_CHUNK_SIZE), file=sys.stderr)
+        args.batch_size = clamped
 
-    # Tiny chunks make workers restart deploy jobs too often and trip the
-    # Salesforce CLI's per-org deploy lock; raise anything in (0, MIN) to the
-    # minimum chunk size. 0 (one worker per section) is left untouched.
-    if args.max_elem_per_section != _clamp_chunk_size(args.max_elem_per_section):
-        print('NOTE: --max-elem-per-section %d is below the minimum of %d; '
-              'using %d.' % (args.max_elem_per_section, MIN_CHUNK_SIZE, MIN_CHUNK_SIZE),
-              file=sys.stderr)
-        args.max_elem_per_section = MIN_CHUNK_SIZE
+    if args.job_timeout < 0 or args.job_timeout > 60:
+        print('ERROR: --job-timeout must be between 0 and 60 minutes (got %d).' % args.job_timeout)
+        sys.exit(2)
 
     # Apply the deploy-start rate limit before any worker is spawned.
     set_deploy_start_interval(args.deploy_throttle_ms / 1000.0)
+
+    # ---------- mode detection: via 1 (file) or via 2 (org) ----------
+    via2 = bool(args.src_org or args.src_profile)
+    if via2:
+        missing = []
+        if not args.src_org:
+            missing.append('--src-org (-so)')
+        if not args.src_profile:
+            missing.append('--src-profile (-sp)')
+        if not args.dest_org:
+            missing.append('--dest-org (-do)')
+        if not args.dest_profile:
+            missing.append('--dest-profile (-dp)')
+        if missing:
+            print('ERROR: via 2 (retrieve from org) requires: %s.' % ', '.join(missing))
+            sys.exit(2)
+        if args.profile_path:
+            print('ERROR: --profile-path (-pp) and --src-org (-so) are mutually exclusive.')
+            sys.exit(2)
+    else:
+        if not args.profile_path:
+            print('ERROR: provide either --profile-path (-pp) [via 1] or '
+                  '--src-org (-so) + --src-profile (-sp) [via 2].')
+            sys.exit(2)
+        if not args.dest_org:
+            print('ERROR: --dest-org (-do) is required (the dry-run/deploy target).')
+            sys.exit(2)
+        if not os.path.isfile(args.profile_path):
+            print('ERROR: profile not found: %s' % args.profile_path)
+            sys.exit(2)
 
     if not args.quiet:
         print(BANNER, flush=True)
@@ -252,24 +367,20 @@ def _main():
         print(COPYLEFT, flush=True)
         print('', flush=True)
 
-    out_dir = os.path.abspath(args.out_dir)
-
-    if args.retrieve_full:
-        if not args.profile_name:
-            print('ERROR: --retrieve-full requires --profile-name (the Profile to retrieve).')
-            sys.exit(2)
-        profile_name = args.profile_name
+    # ---------- names and mode ----------
+    out_dir = os.path.abspath(args.out_dir or os.getcwd())
+    dest_org = args.dest_org
+    if via2:
+        src_org = args.src_org
+        src_profile_name = args.src_profile
+        dest_profile_name = args.dest_profile
         profile_path = None
     else:
-        if not args.profile_path:
-            print('ERROR: --profile-path is required unless --retrieve-full is used.')
-            sys.exit(2)
+        src_org = None
         profile_path = os.path.abspath(args.profile_path)
-        if not os.path.isfile(profile_path):
-            print('ERROR: profile not found: %s' % profile_path)
-            sys.exit(2)
         base = os.path.basename(profile_path)
-        profile_name = args.profile_name or re.sub(r'\.profile-meta\.xml$', '', base)
+        src_profile_name = re.sub(r'\.profile-meta\.xml$', '', base)
+        dest_profile_name = args.dest_profile or src_profile_name
 
     common_dir = os.path.join(out_dir, 'COMMON')
     missing_dir = os.path.join(out_dir, 'MISSING')
@@ -277,19 +388,10 @@ def _main():
     missing_log = os.path.join(out_dir, 'missing_log.txt')
     report = os.path.join(out_dir, 'report.txt')
     run_log = os.path.join(out_dir, 'run.log')
-    manifest_path = os.path.join(work_dir, 'manifest.xml')
-    original_copy = os.path.join(out_dir, 'ORIGINAL_%s.profile-meta.xml' % profile_name)
+    original_copy = os.path.join(out_dir, 'ORIGINAL_%s.profile-meta.xml' % src_profile_name)
 
-    # Project root: the user's own project, or a minimal temporary micro-project.
-    user_project = args.project_dir is not None
-    if user_project:
-        project_dir = os.path.abspath(args.project_dir)
-    else:
-        project_dir = os.path.join(work_dir, 'project')
-
-    # Working copy inside the package directory of the (micro-)project.
-    work_path = os.path.join(project_dir, 'force-app', 'main', 'default', 'profiles',
-                             '%s.profile-meta.xml' % profile_name)
+    # Always a minimal micro-project inside --out-dir (never the caller's project).
+    project_dir = os.path.join(work_dir, 'project')
 
     # Early logger: created before any slow step so the startup is never silent.
     for d in (out_dir, common_dir, missing_dir, work_dir):
@@ -315,26 +417,43 @@ def _main():
     sf = find_sf(args.sf)
     logger.log('sf          : %s' % sf)
 
-    # ---------- API version: explicit or detected from the org ----------
+    def deploy_cleaned(common_profile, dest_profile_name, dest_org):
+        """Deploy the cleaned profile under dest_profile_name (renaming if needed).
+
+        Salesforce creates the profile if the name does not exist and merges
+        into it otherwise, so a renamed deploy is exactly "create if missing".
+        """
+        deploy_manifest = os.path.join(project_dir, 'manifest.xml')
+        write_package_xml(deploy_manifest, {'Profile': [dest_profile_name]}, args.api_version)
+        deploy_profile = os.path.join(project_dir, 'force-app', 'main', 'default',
+                                      'profiles', '%s.profile-meta.xml' % dest_profile_name)
+        os.makedirs(os.path.dirname(deploy_profile), exist_ok=True)
+        shutil.copyfile(common_profile, deploy_profile)
+        return deploy(sf, deploy_manifest, dest_org, args.poll_interval,
+                      args.job_timeout, logger, cwd=project_dir)
+
+    # ---------- API version: explicit or detected from the destination org ----------
     api_source = 'explicit'
     if args.api_version is None:
-        logger.log('Startup: detecting the latest API version from org %s...' % args.org)
-        args.api_version, averr = org_api_version(sf, args.org)
+        logger.log('Startup: detecting the latest API version from org %s...' % dest_org)
+        args.api_version, averr = org_api_version(sf, dest_org)
         if args.api_version is None:
-            print('ERROR: could not detect the latest API version from org %r:' % args.org)
+            print('ERROR: could not detect the latest API version from org %r:' % dest_org)
             print('       %s' % (averr or 'unknown error'))
             print('       Pass --api-version <X.Y> explicitly to continue.')
             sys.exit(2)
         api_source = 'auto (latest for org)'
 
     logger.log('Startup: preparing the working copy and project scaffolding...')
-    if args.retrieve_full:
-        username, uerr = org_username(sf, args.org)
+    if via2:
+        username, uerr = org_username(sf, src_org)
         if not username:
-            print('ERROR: could not resolve the org username for %r: %s' % (args.org, uerr))
+            print('ERROR: could not resolve the org username for %r: %s' % (src_org, uerr))
             sys.exit(2)
-        logger.log('Retrieve : fetching the complete profile %r from org %s...' % (profile_name, args.org))
-        profiles, rerr = retrieve_profiles(username, [profile_name])
+        clean = not args.full_profile
+        logger.log('Retrieve : fetching profile %r from org %s (%s)...' %
+                   (src_profile_name, src_org, 'full' if args.full_profile else 'clean'))
+        profiles, rerr = retrieve_profiles(username, [src_profile_name], clean=clean)
         if not profiles:
             print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
             sys.exit(2)
@@ -350,34 +469,31 @@ def _main():
         shutil.copyfile(profile_path, original_copy)
 
     # Minimal project scaffolding (a single sfdx-project.json is enough).
-    if not user_project and not os.path.isfile(os.path.join(project_dir, 'sfdx-project.json')):
+    if not os.path.isfile(os.path.join(project_dir, 'sfdx-project.json')):
         write_sfdx_project(project_dir, args.api_version)
 
-    # Internal manifest used by the dry-runs and the optional deploy.
-    write_package_xml(manifest_path, {'Profile': [profile_name]}, args.api_version)
-
     logger.log('Profile     : %s' % profile_path)
-    logger.log('Name        : %s' % profile_name)
-    logger.log('Org         : %s' % args.org)
+    logger.log('Name        : %s' % src_profile_name)
+    logger.log('Deploy as   : %s' % dest_profile_name)
+    logger.log('Dest org    : %s' % dest_org)
+    if via2:
+        logger.log('Source org  : %s' % src_org)
     logger.log('Project     : %s' % project_dir)
     logger.log('Output      : %s' % out_dir)
     logger.log('API version : %s (%s)' % (args.api_version, api_source))
 
     # ---------- already clean? ----------
     prev_outcome = read_outcome(report)
-    common_profile = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
+    common_profile = os.path.join(common_dir, '%s.profile-meta.xml' % src_profile_name)
     if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(common_profile):
         if args.deploy_on_success:
-            os.makedirs(os.path.dirname(work_path), exist_ok=True)
-            shutil.copyfile(common_profile, work_path)
-            logger.log('Profile already clean; deploying the COMMON profile as requested...')
-            ok, detail = deploy(sf, manifest_path, args.org, args.poll_interval,
-                                args.job_timeout, logger, cwd=project_dir)
+            logger.log('Profile already clean; deploying %r to org %s...' % (dest_profile_name, dest_org))
+            ok, detail = deploy_cleaned(common_profile, dest_profile_name, dest_org)
             remove_temp_project(work_dir, out_dir)
             print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
             sys.exit(0 if ok else 1)
         remove_temp_project(work_dir, out_dir)
-        print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % profile_name)
+        print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % src_profile_name)
         sys.exit(0)
 
     # ---------- clean run (--fresh): clear previous outputs ----------
@@ -428,11 +544,11 @@ def _main():
 
     # ---------- shared state + initial outputs ----------
     logger.log('Writing the initial COMMON/MISSING outputs...')
-    common_profile_path = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
+    common_profile_path = os.path.join(common_dir, '%s.profile-meta.xml' % src_profile_name)
     missing_pkg = os.path.join(missing_dir, 'package.xml')
     todeploy_pkg = os.path.join(common_dir, 'toDeploy.xml')
     state = SharedState(groups, original_seq, logger, missing_log, common_profile_path,
-                        missing_pkg, todeploy_pkg, profile_name, args.api_version)
+                        missing_pkg, todeploy_pkg, src_profile_name, args.api_version)
     state.removed_by_type = removed_by_type
     state.initial_counts = original_counts
     state.seq = total_resumed  # continue the error-log sequence on resume
@@ -453,7 +569,7 @@ def _main():
         logger.console = False
     ps.start()
     try:
-        pref = prefetch_dangling(sf, args.org, state.groups, args.api_version,
+        pref = prefetch_dangling(sf, dest_org, state.groups, args.api_version,
                                  logger, status=ps.update)
     finally:
         ps.stop()
@@ -476,7 +592,7 @@ def _main():
         logger.console = False
     ps.start()
     try:
-        pref = prefetch_standard_dangling(sf, args.org, state.groups,
+        pref = prefetch_standard_dangling(sf, dest_org, state.groups,
                                           logger, status=ps.update)
     finally:
         ps.stop()
@@ -501,7 +617,7 @@ def _main():
     for block in state.groups:
         if block in prunable_blocks() and state.groups[block]:
             section_count += 1
-            n_chunks = state.split_chunks(block, args.max_elem_per_section)
+            n_chunks = state.split_chunks(block, args.batch_size)
             for chunk_id in range(n_chunks):
                 queue.append((block, chunk_id))
     logger.log('Sections to prune: %d (split into %d work item(s))' % (section_count, len(queue)))
@@ -530,8 +646,8 @@ def _main():
             t = threading.Thread(
                 target=worker,
                 args=(tid, state, queue, queue_lock, board, progress, control,
-                      sf, args.org, args.poll_interval, args.job_timeout,
-                      profile_name, args.api_version, wp, logger, args.max_iter),
+                      sf, dest_org, args.poll_interval, args.job_timeout,
+                      src_profile_name, args.api_version, wp, logger, args.max_iter),
                 daemon=True)
             t.start()
             threads.append(t)
@@ -598,9 +714,9 @@ def _main():
         final_proj = os.path.join(work_dir, 'final')
         write_sfdx_project(final_proj, args.api_version)
         fmanifest = os.path.join(final_proj, 'manifest.xml')
-        write_package_xml(fmanifest, {'Profile': [profile_name]}, args.api_version)
+        write_package_xml(fmanifest, {'Profile': [src_profile_name]}, args.api_version)
         fprofile = os.path.join(final_proj, 'force-app', 'main', 'default', 'profiles',
-                                '%s.profile-meta.xml' % profile_name)
+                                '%s.profile-meta.xml' % src_profile_name)
         os.makedirs(os.path.dirname(fprofile), exist_ok=True)
 
         guard = 0
@@ -611,7 +727,7 @@ def _main():
                 result_reason = 'final dry-run did not converge within %d iterations' % args.max_iter
                 break
             shutil.copyfile(common_profile_path, fprofile)
-            res, err = dry_run(sf, fmanifest, args.org, args.poll_interval,
+            res, err = dry_run(sf, fmanifest, dest_org, args.poll_interval,
                                args.job_timeout, logger, cwd=final_proj)
             if res is None:
                 result_state = 'ABORTED'
@@ -652,11 +768,8 @@ def _main():
     # ---------- optional deploy (only with --deploy-on-success) ----------
     deploy_detail = ''
     if result_state == 'SUCCESS' and args.deploy_on_success:
-        logger.log('Deploying the cleaned profile to org %s...' % args.org)
-        os.makedirs(os.path.dirname(work_path), exist_ok=True)
-        shutil.copyfile(common_profile_path, work_path)
-        ok, deploy_detail = deploy(sf, manifest_path, args.org, args.poll_interval,
-                                   args.job_timeout, logger, cwd=project_dir)
+        logger.log('Deploying the cleaned profile %r to org %s...' % (dest_profile_name, dest_org))
+        ok, deploy_detail = deploy_cleaned(common_profile_path, dest_profile_name, dest_org)
         if not ok:
             result_state = 'DEPLOY_FAILED'
 
