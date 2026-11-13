@@ -46,6 +46,8 @@ from .constants import (
     __version__,
     version_ge,
 )
+from .merge import (format_ops_table, merge_profiles, removed_non_alignable,
+                    write_manual_ops)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, find_sf, org_api_version, org_username,
                     set_deploy_start_interval)
@@ -221,6 +223,124 @@ def _deploy_profile(sf, org, profile_path, profile_name, api_version,
         return deploy(sf, manifest, org, poll_interval, job_timeout, logger, cwd=proj)
     finally:
         shutil.rmtree(proj, ignore_errors=True)
+
+
+def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quiet):
+    """Write MANUAL-OPERATIONS.txt and, when there is work to do by hand, print
+    the table at the end of the run."""
+    if not manual_ops:
+        logger.log('No manual operations required (every removed/off section is deploy-safe).')
+        return
+    path = write_manual_ops(os.path.join(out_dir, 'MANUAL-OPERATIONS.txt'),
+                            manual_ops, profile_name)
+    logger.log('')
+    logger.log('========================================================')
+    logger.log('  MANUAL OPERATIONS REQUIRED (no deploy-able "off" value)')
+    logger.log('========================================================')
+    if not quiet:
+        print('')
+        print('  MANUAL OPERATIONS REQUIRED FOR A COMPLETE ALIGNMENT')
+        print('  ' + '-' * 68)
+        for line in format_ops_table(manual_ops).split('\n'):
+            print('  ' + line)
+        print('')
+        print('  Saved to: %s' % path)
+    logger.log('Manual operations file: %s' % path)
+    logger.log('========================================================')
+
+
+def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
+                   dest_profile_name, dest_org, do_deploy, logger):
+    """Run --align-from-source: prune the source against the destination,
+    retrieve + prune the destination, merge (source authoritative, destination-
+    only entries turned off), and optionally deploy. Exits with the result code."""
+    # 1. prune the source against the destination (drop source references that
+    #    do not exist in the destination org).
+    src_out = os.path.join(out_dir, '1-source-pruned')
+    logger.log('ALIGN: pruning the source profile against the destination org...')
+    src_res = prune_stage(
+        sf=sf, org=dest_org, source_profile_path=source_profile_path,
+        profile_name=src_profile_name, out_dir=src_out,
+        api_version=args.api_version, poll_interval=args.poll_interval,
+        job_timeout=args.job_timeout, thread_number=args.thread_number,
+        batch_size=args.batch_size, max_iter=args.max_iter,
+        quiet=args.quiet, fresh=True, logger=logger)
+    if src_res['outcome'] != 'SUCCESS':
+        print('ERROR: source prune failed: %s' % (src_res.get('reason') or 'unknown error'))
+        sys.exit(2)
+    src_clean = src_res['common_profile_path']
+
+    # 2. retrieve the destination profile (same clean/full choice as the source).
+    username, uerr = org_username(sf, dest_org)
+    if not username:
+        print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
+        sys.exit(2)
+    dest_dir = os.path.join(out_dir, '2-destination-retrieved')
+    os.makedirs(dest_dir, exist_ok=True)
+    logger.log('ALIGN: retrieving the destination profile %r from %s...'
+               % (dest_profile_name, dest_org))
+    clean = not args.full_profile
+    dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean)
+    if not dest_profiles:
+        print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
+        sys.exit(2)
+    dest_raw = os.path.join(dest_dir, '%s.profile-meta.xml' % dest_profile_name)
+    with open(dest_raw, 'wb') as _f:
+        _f.write(dest_profiles[0][1])
+
+    # 3. prune the destination against itself (drop its own dangling references).
+    dst_out = os.path.join(out_dir, '3-destination-pruned')
+    logger.log('ALIGN: pruning the destination profile against itself...')
+    dst_res = prune_stage(
+        sf=sf, org=dest_org, source_profile_path=dest_raw,
+        profile_name=dest_profile_name, out_dir=dst_out,
+        api_version=args.api_version, poll_interval=args.poll_interval,
+        job_timeout=args.job_timeout, thread_number=args.thread_number,
+        batch_size=args.batch_size, max_iter=args.max_iter,
+        quiet=args.quiet, fresh=True, logger=logger)
+    if dst_res['outcome'] != 'SUCCESS':
+        print('ERROR: destination prune failed: %s' % (dst_res.get('reason') or 'unknown error'))
+        sys.exit(2)
+    dst_clean = dst_res['common_profile_path']
+
+    # 4. merge: source authoritative; destination-only entries turned off.
+    logger.log('ALIGN: merging the source (authoritative) into the destination...')
+    merged_xml, manual_ops, turned_off = merge_profiles(src_clean, dst_clean)
+    merge_dir = os.path.join(out_dir, '4-merged')
+    os.makedirs(merge_dir, exist_ok=True)
+    merged_path = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
+    with open(merged_path, 'wb') as _f:
+        _f.write(merged_xml)
+    logger.log('ALIGN: %d permission(s) turned off; %d non-alignable entr(ies) '
+               'require manual action.' % (turned_off, len(manual_ops)))
+
+    # 5. manual operations (file + end-of-run print).
+    _write_and_report_manual_ops(manual_ops, out_dir, dest_profile_name, logger, args.quiet)
+
+    # 6. optional deploy of the merged profile.
+    deploy_detail = ''
+    outcome = 'SUCCESS'
+    if do_deploy:
+        logger.log('ALIGN: deploying the merged profile to %s...' % dest_org)
+        ok, deploy_detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
+                                            args.api_version, args.poll_interval,
+                                            args.job_timeout, logger, out_dir)
+        outcome = 'SUCCESS' if ok else 'DEPLOY_FAILED'
+
+    logger.log('')
+    logger.log('========================================================')
+    logger.log('  ALIGNMENT RESULT')
+    logger.log('========================================================')
+    logger.log('OUTCOME: %s' % outcome)
+    logger.log('TURNED OFF: %d' % turned_off)
+    logger.log('MANUAL OPERATIONS: %d' % len(manual_ops))
+    logger.log('MERGED PROFILE: %s' % merged_path)
+    if deploy_detail:
+        logger.log('DEPLOY: %s' % deploy_detail)
+    logger.log('========================================================')
+    logger.log('RESULT:%s' % outcome)
+
+    sys.exit(0 if outcome == 'SUCCESS' else 1)
 
 
 def _main():
@@ -450,12 +570,9 @@ def _main():
             do_deploy = False
             print('Deploy skipped: dry-run only.', file=sys.stderr)
 
-    # Alignment engine (retrieve+prune both sides, merge with source authoritative)
-    # lands in the next step.
-    if do_align:
-        print('ERROR: --align-from-source is not implemented yet (the alignment engine '
-              'is being built).', file=sys.stderr)
-        sys.exit(2)
+    # The alignment engine (--align-from-source) is dispatched after the shared
+    # setup below (out_dir / logger / sf / API version), where the source profile
+    # and destination org are known. See _run_alignment().
 
     if not args.quiet:
         print(BANNER, flush=True)
@@ -541,6 +658,12 @@ def _main():
     if mode == 'org':
         logger.log('Source org  : %s' % src_org)
 
+    # ---------- alignment (--align-from-source): separate flow ----------
+    if do_align:
+        _run_alignment(sf, args, out_dir, profile_path, src_profile_name,
+                       dest_profile_name, dest_org, do_deploy, logger)
+        sys.exit(1)  # _run_alignment exits; safety net only
+
     # ---------- run the prune stage ----------
     result = prune_stage(
         sf=sf,
@@ -559,8 +682,12 @@ def _main():
         logger=logger,
     )
 
+    # ---------- manual operations (non-alignable sections the prune removed) ----------
+    manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
+
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
+        _write_and_report_manual_ops(manual_ops, out_dir, dest_profile_name, logger, args.quiet)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % src_profile_name)
         sys.exit(0)
 
@@ -653,6 +780,9 @@ def _main():
         logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')
     logger.log('RESULT:%s' % result_state)
+
+    # ---------- manual operations (non-alignable sections) ----------
+    _write_and_report_manual_ops(manual_ops, out_dir, dest_profile_name, logger, args.quiet)
 
 
 def main():

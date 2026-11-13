@@ -395,10 +395,8 @@ class TestStatusBoard(unittest.TestCase):
     def test_visible_rows_capped_by_terminal_height(self):
         b = pp.StatusBoard(40, quiet=True)
         b.height = 20
-        self.assertEqual(b._visible_rows(), 18)  # height - 2 (1 slack line)
-        b.height = 3
-        self.assertEqual(b._visible_rows(), 1)
-        b.height = 2
+        self.assertEqual(b._visible_rows(), 16)  # height - 4 (2 blank bottom rows)
+        b.height = 4
         self.assertEqual(b._visible_rows(), 1)
         b.height = 0  # unknown terminal height -> no cap
         self.assertEqual(b._visible_rows(), 40)
@@ -987,6 +985,74 @@ class TestProfileJsonToXml(unittest.TestCase):
         op = root.find('{%s}objectPermissions' % self.NS)
         self.assertEqual(op.find('{%s}allowRead' % self.NS).text, 'true')
         self.assertEqual(op.find('{%s}viewAllFields' % self.NS).text, 'false')
+
+
+class TestMerge(unittest.TestCase):
+    """Tests for the alignment merge module (pure functions)."""
+
+    NS = 'http://soap.sforce.com/2006/04/metadata'
+
+    @classmethod
+    def _profile(cls, sections_xml):
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<Profile xmlns="%s">\n%s\n</Profile>\n'
+                % (cls.NS, sections_xml))
+
+    @staticmethod
+    def _merge(src_sections, dst_sections):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._profile(src_sections))
+            write_text(dst, TestMerge._profile(dst_sections))
+            return pp.merge_profiles(src, dst)
+
+    def test_dest_only_tab_is_turned_off(self):
+        xml, manual_ops, turned_off = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOff</visibility></tabVisibilities>\n'
+             '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
+        )
+        root = pp.etree.fromstring(xml)
+        tabs = {el.find('{%s}tab' % self.NS).text: el.find('{%s}visibility' % self.NS).text
+                for el in root.findall('{%s}tabVisibilities' % self.NS)}
+        self.assertEqual(tabs['TabA__c'], 'DefaultOn')   # source value wins
+        self.assertEqual(tabs['TabB__c'], 'Hidden')      # dest-only -> off
+        self.assertEqual(turned_off, 1)
+        self.assertEqual(manual_ops, [])
+
+    def test_dest_only_layout_assignment_is_manual(self):
+        xml, manual_ops, turned_off = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<layoutAssignments><layout>Account-Account Layout</layout></layoutAssignments>'),
+        )
+        self.assertEqual(turned_off, 0)
+        self.assertEqual(len(manual_ops), 1)
+        self.assertEqual(manual_ops[0]['section'], 'layoutAssignments')
+        self.assertIn('Account-Account Layout', manual_ops[0]['item'])
+        self.assertIn('page layout assignment', manual_ops[0]['operation'])
+
+    def test_removed_non_alignable_detects_dropped_layout(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = os.path.join(d, 'orig.xml')
+            clean = os.path.join(d, 'clean.xml')
+            write_text(orig, self._profile(
+                '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>'))
+            write_text(clean, self._profile(''))
+            ops = pp.removed_non_alignable(orig, clean)
+            self.assertEqual(len(ops), 1)
+            self.assertEqual(ops[0]['section'], 'layoutAssignments')
+            self.assertIn('Lead-Lead Layout', ops[0]['item'])
+
+    def test_format_ops_table_is_aligned(self):
+        ops = [{'section': 'layoutAssignments', 'item': 'X-Y Layout',
+                'operation': 'Remove the page layout assignment',
+                'where': 'Setup > Object Manager'}]
+        table = pp.format_ops_table(ops)
+        self.assertIn('SECTION', table)
+        self.assertIn('X-Y Layout', table)
+        self.assertIn('Remove the page layout assignment', table)
 
 
 if __name__ == '__main__':

@@ -172,19 +172,19 @@ class StatusBoard:
         sys.stdout.flush()
 
     def _visible_rows(self):
-        """Number of worker rows to render so the whole frame (rows + summary)
-        never reaches the bottom edge of the terminal.
+        """Number of worker rows to render so the frame never touches the
+        bottom of the terminal.
 
-        The frame is written as N worker rows + 1 summary line, and every line
-        ends with '\n', so after a redraw the cursor sits ONE line below the
-        frame. For the cursor-up accounting to stay exact that final position
-        must still be a valid row: rows + 1 must be <= height - 1, i.e.
-        rows <= height - 2. If the frame were exactly `height` lines (the old
-        `height - 1` rule), the trailing newline would scroll the terminal by
-        one line on every single update, making the board reprint a new copy
-        instead of redrawing in place."""
+        The frame is N worker rows + 1 summary line, and every line ends with
+        '\n', so after a redraw the cursor sits one line below the summary. We
+        keep TWO blank lines below that cursor: the last terminal row is where
+        the shell prompt sits in many setups, and the line above it is the
+        scroll margin — writing into either of them makes the terminal scroll on
+        the next newline and the board reprints instead of redrawing in place.
+        Total: N rows + 1 summary + 1 trailing cursor + 2 blank margin
+        <= height, i.e. rows <= height - 4."""
         if self.height and self.height > 1:
-            return max(1, self.height - 2)
+            return max(1, self.height - 4)
         return self.n
 
     def _render(self):
@@ -199,6 +199,11 @@ class StatusBoard:
         out = []
         if self.lines_on_screen:
             out.append('\x1b[%dA' % self.lines_on_screen)
+        else:
+            # First draw: clear the screen and home the cursor so the frame
+            # starts at the top. Otherwise the banner and startup logs above it
+            # push the frame past the bottom edge and clip the last rows.
+            out.append('\x1b[2J\x1b[H')
         for row in rows:
             out.append('\x1b[2K' + self._clip(row) + '\n')
         out.append('\x1b[2K' + self._clip(self._summary()) + '\n')

@@ -40,6 +40,14 @@ from .constants import (
     version_ge,
 )
 from .engine import prefetch_dangling, prefetch_standard_dangling, process_section, worker
+from .merge import (
+    MERGE_TABLE,
+    NON_ALIGNABLE,
+    format_ops_table,
+    merge_profiles,
+    removed_non_alignable,
+    write_manual_ops,
+)
 from .retrieve import profile_json_to_xml, retrieve_profiles
 from .sfcli import (
     _candidate_dirs,
@@ -89,6 +97,8 @@ __all__ = [
     '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',
+    'MERGE_TABLE', 'NON_ALIGNABLE', 'format_ops_table', 'merge_profiles',
+    'removed_non_alignable', 'write_manual_ops',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
     'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',

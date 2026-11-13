@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-04
+
+### Added
+
+- **Alignment engine (`--align-from-source`)**: the destination profile is now
+  retrieved and pruned too, then merged with the (authoritative) source. Every
+  destination-only permission is turned OFF with an explicit off value
+  (`visible=false`, `visibility=Hidden`, `enabled=false`, …); sections with no
+  expressible off value (`layoutAssignments`, `loginFlows`, `loginIpRanges`,
+  `loginHours`) are collected into a `MANUAL-OPERATIONS.txt` file and printed in
+  a table at the end of the run, with the exact Setup steps to finish the
+  alignment by hand.
+- **Manual-operations report for the normal prune too**: when the prune removes
+  entries from non-alignable sections, the same file + table list which manual
+  actions are still needed in the destination org (a Profile deploy cannot
+  remove them).
+
+### Fixed
+
+- **Progress board overflow**: the frame now clears the screen and homes the
+  cursor before the first draw, and reserves two blank rows at the bottom, so a
+  64-worker board no longer renders two rows past the visible window.
+
 ## [2.0.1] - 2026-11-04
 
 ### Fixed
