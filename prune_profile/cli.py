@@ -7,10 +7,11 @@ pre-pass with an authoritative `sf project deploy start --dry-run`, and never
 modifies the org; with `--deploy-on-success` the cleaned profile is deployed at
 the end.
 
-Two input modes:
+Three input modes:
   * via 1 (file):   `--profile-path`  + `--dest-org`
   * via 2 (org):    `--src-org` + `--src-profile` + `--dest-org` + `--dest-profile`
                     (the profile is retrieved from the source org first)
+  * via 3 (retrieve only): `--src-org` + `--src-profile` (no prune, no dry-run/deploy)
 
 Algorithm:
   The profile is split by its top-level sections (`classAccesses`,
@@ -100,6 +101,9 @@ Examples:
 
   # Same org, full (non-stripped) retrieve, dry-run only
   sfpp -so mysandbox -sp "Sales Rep" -do mysandbox -dp "Sales Rep" -fp
+
+  # Retrieve only (no prune): download the profile from a source org
+  sfpp -so devorg -sp "Sales Rep" -od ./profiles
 
   # Custom output dir, batch size and threads
   sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
@@ -222,16 +226,17 @@ def _main():
                          help='path of the source .profile-meta.xml file (via 1: file)')
     g_input.add_argument('-so', '--src-org', default=None,
                          help='source org alias/username to retrieve the profile from '
-                              '(via 2: org)')
+                              '(via 2: org, or via 3: retrieve only)')
     g_input.add_argument('-sp', '--src-profile', default=None,
-                         help='name of the Profile to retrieve from --src-org (via 2)')
+                         help='name of the Profile to retrieve from --src-org (via 2/3)')
     g_input.add_argument('-fp', '--full-profile', action='store_true',
                          help='retrieve the full (non-stripped) profile; the default is a '
                               'clean retrieve (loginIpRanges/loginHours/userLicense removed)')
 
     g_dest = ap.add_argument_group('destination')
     g_dest.add_argument('-do', '--dest-org', default=None,
-                        help='destination org alias/username (dry-run and optional deploy target)')
+                        help='destination org alias/username (dry-run and optional deploy '
+                             'target). Optional: omit it (with -so + -sp) for retrieve only.')
     g_dest.add_argument('-dp', '--dest-profile', default=None,
                         help='name to deploy the cleaned profile under; if it does not exist '
                              'in the org it is created. Default: the source profile name')
@@ -329,28 +334,26 @@ def _main():
     # Apply the deploy-start rate limit before any worker is spawned.
     set_deploy_start_interval(args.deploy_throttle_ms / 1000.0)
 
-    # ---------- mode detection: via 1 (file) or via 2 (org) ----------
-    via2 = bool(args.src_org or args.src_profile)
-    if via2:
-        missing = []
-        if not args.src_org:
-            missing.append('--src-org (-so)')
-        if not args.src_profile:
-            missing.append('--src-profile (-sp)')
-        if not args.dest_org:
-            missing.append('--dest-org (-do)')
-        if not args.dest_profile:
-            missing.append('--dest-profile (-dp)')
-        if missing:
-            print('ERROR: via 2 (retrieve from org) requires: %s.' % ', '.join(missing))
+    # ---------- mode detection ----------
+    # via 1 (file):           -pp + -do
+    # via 2 (org):            -so + -sp + -do + -dp   (retrieve -> prune -> dry-run/deploy)
+    # via 3 (retrieve only):  -so + -sp                (no prune, no dry-run/deploy)
+    if args.src_org or args.src_profile:
+        if not args.src_org or not args.src_profile:
+            print('ERROR: --src-org (-so) and --src-profile (-sp) must be provided together.')
+            sys.exit(2)
+        if bool(args.dest_org) != bool(args.dest_profile):
+            print('ERROR: --dest-org (-do) and --dest-profile (-dp) must be provided together.')
             sys.exit(2)
         if args.profile_path:
             print('ERROR: --profile-path (-pp) and --src-org (-so) are mutually exclusive.')
             sys.exit(2)
+        mode = 'org' if args.dest_org else 'retrieve'
     else:
         if not args.profile_path:
-            print('ERROR: provide either --profile-path (-pp) [via 1] or '
-                  '--src-org (-so) + --src-profile (-sp) [via 2].')
+            print('ERROR: provide --profile-path (-pp) [via 1], '
+                  '--src-org (-so) + --src-profile (-sp) + -do + -dp [via 2], '
+                  'or -so + -sp alone [via 3, retrieve only].')
             sys.exit(2)
         if not args.dest_org:
             print('ERROR: --dest-org (-do) is required (the dry-run/deploy target).')
@@ -358,6 +361,36 @@ def _main():
         if not os.path.isfile(args.profile_path):
             print('ERROR: profile not found: %s' % args.profile_path)
             sys.exit(2)
+        mode = 'file'
+
+    # ---------- via 3: retrieve only (no prune, no dry-run/deploy) ----------
+    if mode == 'retrieve':
+        out_dir = os.path.abspath(args.out_dir or os.getcwd())
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as e:
+            print('ERROR: cannot create output directory %r: %s' % (out_dir, e))
+            sys.exit(2)
+        sf = find_sf(args.sf)
+        username, uerr = org_username(sf, args.src_org)
+        if not username:
+            print('ERROR: could not resolve the org username for %r: %s' % (args.src_org, uerr))
+            sys.exit(2)
+        clean = not args.full_profile
+        print('Retrieving profile %r from org %s (%s)...' %
+              (args.src_profile, args.src_org, 'full' if args.full_profile else 'clean'))
+        profiles, rerr = retrieve_profiles(username, [args.src_profile], clean=clean)
+        if not profiles:
+            print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
+            sys.exit(2)
+        full_name, xml = profiles[0]
+        out_path = os.path.join(out_dir, '%s.profile-meta.xml' % full_name)
+        with open(out_path, 'wb') as _f:
+            _f.write(xml)
+        print('Retrieved %s -> %s (%d bytes)' % (full_name, out_path, len(xml)))
+        if rerr:
+            print('WARNING: %s' % rerr, file=sys.stderr)
+        sys.exit(0)
 
     if not args.quiet:
         print(BANNER, flush=True)
@@ -370,7 +403,7 @@ def _main():
     # ---------- names and mode ----------
     out_dir = os.path.abspath(args.out_dir or os.getcwd())
     dest_org = args.dest_org
-    if via2:
+    if mode == 'org':
         src_org = args.src_org
         src_profile_name = args.src_profile
         dest_profile_name = args.dest_profile
@@ -445,7 +478,7 @@ def _main():
         api_source = 'auto (latest for org)'
 
     logger.log('Startup: preparing the working copy and project scaffolding...')
-    if via2:
+    if mode == 'org':
         username, uerr = org_username(sf, src_org)
         if not username:
             print('ERROR: could not resolve the org username for %r: %s' % (src_org, uerr))
@@ -476,7 +509,7 @@ def _main():
     logger.log('Name        : %s' % src_profile_name)
     logger.log('Deploy as   : %s' % dest_profile_name)
     logger.log('Dest org    : %s' % dest_org)
-    if via2:
+    if mode == 'org':
         logger.log('Source org  : %s' % src_org)
     logger.log('Project     : %s' % project_dir)
     logger.log('Output      : %s' % out_dir)

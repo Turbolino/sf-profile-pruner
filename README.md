@@ -19,18 +19,17 @@ types, agents, enhanced summaries, etc. that do not exist in the target org.
 Deploying such a profile fails. Profile Pruner finds those references one by
 one and strips them.
 
-You have two ways to feed it a profile:
+You have three ways to feed it a profile:
 
 * **via 1 — from a file** (`-pp/--profile-path` + `-do/--dest-org`): prune a
   `.profile-meta.xml` you already have.
 * **via 2 — from an org** (`-so/--src-org` + `-sp/--src-profile` + `-do` +
-  `-dp`): sfpp retrieves the **complete** profile from the source org itself —
-  all field-level security, layout assignments, class access, page access and
-  tab visibility — using the Metadata API `readMetadata()` (through a small,
-  owned Node helper that reuses the Salesforce CLI's authentication). By default
-  the retrieve is **clean** (it strips the org-specific, non-portable
-  `loginIpRanges`, `loginHours`, `userLicense`); pass `-fp/--full-profile` for
-  the full, non-stripped profile.
+  `-dp`): retrieve the profile from the source org, prune it against the
+  destination org, then dry-run or deploy.
+* **via 3 — retrieve only** (`-so/--src-org` + `-sp/--src-profile`): just
+  download the profile from the source org — no prune, no dry-run, no deploy.
+  You can then feed the retrieved file to via 1, or run via 2 with
+  `-so == -do` and `-sp == -dp` to prune it.
 
 > The third-party `sf-profile-full` plugin is **no longer required**. To use
 > via 2 you need the Salesforce CLI installed **with Node.js and its global
@@ -141,6 +140,9 @@ sfpp -pp "path/to/My Profile.profile-meta.xml" -do prod -dp "My Profile Clean" -
 
 # via 2 — retrieve from a source org, prune, deploy to the destination org
 sfpp -so devorg -sp "My Profile" -do mysandbox -dp "My Profile" --deploy-on-success
+
+# via 3 — retrieve only (no prune): download the profile from a source org
+sfpp -so devorg -sp "My Profile" -od ./profiles
 ```
 
 Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
@@ -189,6 +191,7 @@ Options are grouped in the `-h` help. The two input modes are:
 
 * **via 1 (file):** `-pp/--profile-path` + `-do/--dest-org`
 * **via 2 (org):** `-so/--src-org` + `-sp/--src-profile` + `-do` + `-dp`
+* **via 3 (retrieve only):** `-so/--src-org` + `-sp/--src-profile`
 
 | Option | Description |
 | --- | --- |
@@ -196,7 +199,7 @@ Options are grouped in the `-h` help. The two input modes are:
 | `-so`, `--src-org` | Source org alias/username to retrieve from (via 2). |
 | `-sp`, `--src-profile` | Name of the Profile to retrieve from `--src-org` (via 2). |
 | `-fp`, `--full-profile` | Retrieve the full (non-stripped) profile; default is a clean retrieve (`loginIpRanges`/`loginHours`/`userLicense` removed). |
-| `-do`, `--dest-org` | Destination org alias/username (dry-run and optional deploy target). |
+| `-do`, `--dest-org` | Destination org alias/username (dry-run and optional deploy target). Optional: omit it (with `-so` + `-sp`) for retrieve only. |
 | `-dp`, `--dest-profile` | Name to deploy the cleaned profile under; created if it does not exist. Default: the source profile name. |
 | `-od`, `--out-dir` | Output directory for report/packages/logs. Default: the current directory. |
 | `-bs`, `--batch-size` | Split a section into chunks of `N` entries (min 100, max 4000, default 200); `0` disables splitting. |

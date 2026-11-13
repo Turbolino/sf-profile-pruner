@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-11-13
+
+### Added
+
+- **Via 3 (retrieve only)**: `-so/--src-org` + `-sp/--src-profile` alone
+  retrieves the profile from the source org and writes it to `--out-dir`,
+  with no prune, no dry-run and no deploy. Feed the file to via 1, or run via 2
+  with `-so == -do` and `-sp == -dp`, to prune it afterwards.
+
 ## [1.17.0] - 2026-11-13
 
 ### Added
