@@ -43,7 +43,9 @@ from .constants import (
     version_ge,
 )
 from .engine import prefetch_dangling, prefetch_standard_dangling, worker
-from .sfcli import deploy, dry_run, find_sf, org_api_version, set_deploy_start_interval
+from .retrieve import retrieve_profiles
+from .sfcli import (deploy, dry_run, find_sf, org_api_version, org_username,
+                    set_deploy_start_interval)
 from .state import SharedState
 from .xmlio import (
     load_log_entries,
@@ -169,8 +171,9 @@ def _main():
                     'does not exist in the target org. Dry-run only by default; use '
                     '--deploy-on-success to deploy the cleaned profile at the end.'
     )
-    ap.add_argument('--profile-path', required=True,
-                    help='path of the .profile-meta.xml file (original source)')
+    ap.add_argument('--profile-path', default=None,
+                    help='path of the .profile-meta.xml file (original source). '
+                         'Omit together with --retrieve-full to fetch it from the org.')
     ap.add_argument('--out-dir', required=True,
                     help='output directory (report, packages, logs)')
     ap.add_argument('--org', required=True,
@@ -210,6 +213,10 @@ def _main():
     ap.add_argument('--deploy-on-success', action='store_true',
                     help='deploy the cleaned profile to the org once the pruning succeeds '
                          '(default: dry-run only, the org is never modified)')
+    ap.add_argument('--retrieve-full', action='store_true',
+                    help='retrieve the complete profile from --org via the Metadata API '
+                         '(readMetadata) instead of reading --profile-path; '
+                         'requires --profile-name')
     ap.add_argument('--tell-me-a-story', action='store_true',
                     help='Turbolino will tell you a fascinating story about code, '
                          'algorithms and copyright.')
@@ -245,15 +252,24 @@ def _main():
         print(COPYLEFT, flush=True)
         print('', flush=True)
 
-    profile_path = os.path.abspath(args.profile_path)
     out_dir = os.path.abspath(args.out_dir)
 
-    if not os.path.isfile(profile_path):
-        print('ERROR: profile not found: %s' % profile_path)
-        sys.exit(2)
-
-    base = os.path.basename(profile_path)
-    profile_name = args.profile_name or re.sub(r'\.profile-meta\.xml$', '', base)
+    if args.retrieve_full:
+        if not args.profile_name:
+            print('ERROR: --retrieve-full requires --profile-name (the Profile to retrieve).')
+            sys.exit(2)
+        profile_name = args.profile_name
+        profile_path = None
+    else:
+        if not args.profile_path:
+            print('ERROR: --profile-path is required unless --retrieve-full is used.')
+            sys.exit(2)
+        profile_path = os.path.abspath(args.profile_path)
+        if not os.path.isfile(profile_path):
+            print('ERROR: profile not found: %s' % profile_path)
+            sys.exit(2)
+        base = os.path.basename(profile_path)
+        profile_name = args.profile_name or re.sub(r'\.profile-meta\.xml$', '', base)
 
     common_dir = os.path.join(out_dir, 'COMMON')
     missing_dir = os.path.join(out_dir, 'MISSING')
@@ -312,6 +328,23 @@ def _main():
         api_source = 'auto (latest for org)'
 
     logger.log('Startup: preparing the working copy and project scaffolding...')
+    if args.retrieve_full:
+        username, uerr = org_username(sf, args.org)
+        if not username:
+            print('ERROR: could not resolve the org username for %r: %s' % (args.org, uerr))
+            sys.exit(2)
+        logger.log('Retrieve : fetching the complete profile %r from org %s...' % (profile_name, args.org))
+        profiles, rerr = retrieve_profiles(username, [profile_name])
+        if not profiles:
+            print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
+            sys.exit(2)
+        full_name, xml = profiles[0]
+        with open(original_copy, 'wb') as _f:
+            _f.write(xml)
+        profile_path = original_copy
+        logger.log('Retrieve : %s -> %s (%d bytes)' % (full_name, original_copy, len(xml)))
+        if rerr:
+            logger.log('Retrieve : warning: %s' % rerr)
     # Untouched copy of the source (kept for reconstruction on resume).
     if os.path.abspath(profile_path) != os.path.abspath(original_copy):
         shutil.copyfile(profile_path, original_copy)

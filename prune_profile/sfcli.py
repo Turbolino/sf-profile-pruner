@@ -197,6 +197,19 @@ def org_api_version(sf, org, cwd=None, control=None):
     return str(v), None
 
 
+def org_username(sf, org, cwd=None, control=None):
+    """Return the resolved username (not the alias) for an org via `sf org display`.
+    Returns (username_or_None, error)."""
+    cmd = [sf, 'org', 'display', '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'org display', cwd=cwd, control=control)
+    if err:
+        return None, err
+    u = (res.get('result') or {}).get('username')
+    if not u:
+        return None, 'org display returned no username'
+    return str(u), None
+
+
 def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None, control=None):
     """Start an async deploy. Returns (job_id, error)."""
     _throttle_deploy_start()
@@ -348,6 +361,34 @@ def find_node(min_version=(18, 11)):
     for c in candidates:
         v = _node_version(c)
         if v is not None and v >= min_version:
+            return c
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def find_sf_node_modules():
+    """Locate the directory holding the Salesforce CLI's global node_modules
+    (with @salesforce/core and @jsforce/jsforce-node). The readMetadata helper
+    needs both to authenticate against an org. Returns a path or None."""
+    candidates = []
+    for var in ('SF_HOME', 'SF_DATA_DIR', 'SFXDX_HOME'):
+        v = os.environ.get(var)
+        if v:
+            candidates.append(os.path.join(v, 'node_modules'))
+    home = os.path.expanduser('~')
+    candidates.append(os.path.join(home, '.local', 'share', 'sf', 'node_modules'))
+    for var in ('LOCALAPPDATA', 'APPDATA'):
+        v = os.environ.get(var)
+        if v:
+            candidates.append(os.path.join(v, 'sf', 'node_modules'))
+    seen = set()
+    for c in candidates:
+        c = os.path.normpath(c)
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        if (os.path.isfile(os.path.join(c, '@salesforce', 'core', 'package.json'))
+                and os.path.isdir(os.path.join(c, '@jsforce', 'jsforce-node'))):
             return c
     return None
 

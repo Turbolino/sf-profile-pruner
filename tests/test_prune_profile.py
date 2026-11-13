@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
 from prune_profile.cli import _check_for_update, _clamp_chunk_size, _repair_mangled_argv  # noqa: E402
+from prune_profile.retrieve import profile_json_to_xml  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
          '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
@@ -912,6 +913,76 @@ class TestExtractCommonMembers(unittest.TestCase):
         self.assertNotIn('StandardField', out)
         self.assertNotIn('StandardTab', out)
         self.assertNotIn('StandardObject', out)
+
+
+class TestProfileJsonToXml(unittest.TestCase):
+    """Serializer for readMetadata Profile objects (no network required)."""
+
+    NS = 'http://soap.sforce.com/2006/04/metadata'
+
+    def _sections(self, xml):
+        root = pp.etree.fromstring(xml)
+        out = {}
+        for el in root:
+            if isinstance(el.tag, str):
+                k = el.tag.split('}')[-1]
+                out[k] = out.get(k, 0) + 1
+        return out
+
+    def test_scalar_and_list_sections(self):
+        data = {
+            'fullName': 'Admin',
+            'custom': True,
+            'userLicense': 'Salesforce',
+            'fieldPermissions': [
+                {'editable': False, 'field': 'Account.Name', 'readable': True},
+                {'editable': True, 'field': 'MyObj__c.MyField__c', 'readable': False},
+            ],
+            'tabVisibilities': [{'tab': 'standard-Account', 'visibility': 'Hidden'}],
+        }
+        xml = profile_json_to_xml(data, clean=False)
+        root = pp.etree.fromstring(xml)
+        self.assertEqual(root.tag, '{%s}Profile' % self.NS)
+        secs = self._sections(xml)
+        self.assertEqual(secs['fieldPermissions'], 2)
+        self.assertEqual(secs['tabVisibilities'], 1)
+        self.assertEqual(secs['userLicense'], 1)
+        self.assertEqual(secs['custom'], 1)
+        # fullName must never leak into the XML
+        self.assertNotIn('fullName', secs)
+        # custom scalar renders as lowercase boolean text
+        custom = root.find('{%s}custom' % self.NS)
+        self.assertEqual(custom.text, 'true')
+
+    def test_clean_strips_non_portable_sections(self):
+        data = {
+            'fullName': 'Admin',
+            'custom': False,
+            'userLicense': 'Salesforce',
+            'loginIpRanges': [],
+            'loginHours': [],
+            'userPermissions': [{'enabled': True, 'name': 'ViewSetup'}],
+        }
+        xml = profile_json_to_xml(data, clean=True)
+        secs = self._sections(xml)
+        self.assertNotIn('userLicense', secs)
+        self.assertNotIn('loginIpRanges', secs)
+        self.assertNotIn('loginHours', secs)
+        self.assertEqual(secs['userPermissions'], 1)
+
+    def test_boolean_and_string_scalars(self):
+        # jsforce types some flags inconsistently (e.g. viewAllFields as "false"
+        # string); both must serialize to lowercase text.
+        data = {
+            'objectPermissions': [
+                {'object': 'Account', 'allowRead': True, 'viewAllFields': 'false'},
+            ],
+        }
+        xml = profile_json_to_xml(data, clean=True)
+        root = pp.etree.fromstring(xml)
+        op = root.find('{%s}objectPermissions' % self.NS)
+        self.assertEqual(op.find('{%s}allowRead' % self.NS).text, 'true')
+        self.assertEqual(op.find('{%s}viewAllFields' % self.NS).text, 'false')
 
 
 if __name__ == '__main__':

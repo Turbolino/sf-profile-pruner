@@ -32,6 +32,17 @@ assignments, class access, page access and tab visibility. The `--clean` flag
 already strips the org-specific, non-portable elements (`<loginIpRanges>`,
 `<loginHours>`, `<userLicense>`) that differ between sandbox and production.
 
+**New: sfpp can retrieve the complete profile itself** with `--retrieve-full`,
+so the third-party plugin is no longer required. sfpp calls the Metadata API
+`readMetadata()` directly (through a small, owned Node helper that reuses the
+Salesforce CLI's authentication) and serialises the result with lxml — the only
+way to obtain the *complete* Profile, since `project retrieve` returns a sparse
+one.
+
+> To use `--retrieve-full` you need the Salesforce CLI installed **with Node.js
+> and its global node_modules** (`@salesforce/core` + `@jsforce/jsforce-node`),
+> which any recent `sf` installation already ships.
+
 The retrieved profile may still reference metadata that does not exist in the
 target org (for example `tabVisibilities` for tabs that are not available),
 which causes deploy errors. Profile Pruner cleans exactly those leftover
@@ -187,10 +198,11 @@ python -m prune_profile \
 
 | Option | Description |
 | --- | --- |
-| `--profile-path` | Path of the source `.profile-meta.xml` file. |
+| `--profile-path` | Path of the source `.profile-meta.xml` file. Optional with `--retrieve-full`. |
 | `--out-dir` | Output directory (report, packages, logs). |
 | `--org` | Alias or username of the org used for the dry-run. |
 | `--profile-name` | Profile name (package member). Default: derived from the file name. |
+| `--retrieve-full` | Retrieve the complete profile from `--org` via the Metadata API (`readMetadata`) instead of reading `--profile-path`. Requires `--profile-name`. |
 | `--project-dir` | Root of an existing SFDX project. If omitted, a minimal temporary project is created inside `--out-dir` and removed at the end. |
 | `--api-version` | Manifest API version. Default: the latest version supported by the target org, detected automatically via `sf org display`. Pass an explicit version (e.g. `66.0`) to override. |
 | `--max-iter` | Iteration cap. Default: `5000`. |

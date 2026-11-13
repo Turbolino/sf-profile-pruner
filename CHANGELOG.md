@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and removes standard tabs, objects and fields the profile references but the
   org does not have — the class of error a dry-run never surfaces (e.g.
   `You can't edit tab settings for X, as it's not a valid tab`).
+- **`--retrieve-full`**: retrieve the *complete* Profile directly from `--org`
+  via the Metadata API `readMetadata()` (through a small, owned Node helper that
+  reuses the CLI's authentication), no third-party plugin required. This is the
+  only way to get the full profile — `project retrieve` returns a sparse one.
 - `--deploy-throttle-ms` option (default `1000`) to space out deploy-start
   submissions; `0` disables the throttle.
 

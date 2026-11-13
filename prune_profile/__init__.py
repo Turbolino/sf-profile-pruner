@@ -38,6 +38,7 @@ from .constants import (
     version_ge,
 )
 from .engine import prefetch_dangling, prefetch_standard_dangling, process_section, worker
+from .retrieve import profile_json_to_xml, retrieve_profiles
 from .sfcli import (
     _candidate_dirs,
     _node_version,
@@ -47,8 +48,10 @@ from .sfcli import (
     dry_run,
     find_node,
     find_sf,
+    find_sf_node_modules,
     list_metadata,
     org_api_version,
+    org_username,
     poll_deploy,
     report_deploy,
     start_deploy,
@@ -83,9 +86,11 @@ __all__ = [
     '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
+    'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
-    'deploy', 'dry_run', 'find_node', 'find_sf', 'list_metadata',
-    'org_api_version', 'poll_deploy', 'report_deploy', 'start_deploy',
+    'deploy', 'dry_run', 'find_node', 'find_sf', 'find_sf_node_modules',
+    'list_metadata', 'org_api_version', 'org_username',
+    'poll_deploy', 'report_deploy', 'start_deploy',
     'tooling_query',
     'apply_removals_batch', 'build_subprofile', 'candidates_for_block',
     'dangling_members', 'extract_common_members', 'humanize_status',
