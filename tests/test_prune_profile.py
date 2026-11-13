@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
-from prune_profile.cli import _check_for_update, _repair_mangled_argv  # noqa: E402
+from prune_profile.cli import _check_for_update, _clamp_chunk_size, _repair_mangled_argv  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
          '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
@@ -625,6 +625,17 @@ class TestPrefetch(unittest.TestCase):
         self.assertFalse(pp.version_ge('62.0', '63.0'))
         self.assertTrue(pp.version_ge('68', '63.0'))
 
+    def test_is_standard_api_name(self):
+        self.assertTrue(pp.is_standard_api_name('Account'))
+        self.assertTrue(pp.is_standard_api_name('Case'))
+        self.assertTrue(pp.is_standard_api_name('AccountBrand'))
+        # any double underscore marks custom metadata
+        self.assertFalse(pp.is_standard_api_name('MyObj__c'))
+        self.assertFalse(pp.is_standard_api_name('MyMeta__mdt'))
+        self.assertFalse(pp.is_standard_api_name('ns__Thing__c'))
+        self.assertFalse(pp.is_standard_api_name('Knowledge__kav'))
+        self.assertFalse(pp.is_standard_api_name('BigObj__b'))
+
     def test_prefetch_preserves_standard_tabs(self):
         # `standard-*` are standard tabs; listMetadata CustomTab cannot see them,
         # so the pre-fetch must never report them as dangling.
@@ -681,6 +692,111 @@ class TestPrefetch(unittest.TestCase):
         self.assertTrue(any('skipped' in m for m in messages))
 
 
+class TestPrefetchStandards(unittest.TestCase):
+    def _groups(self, xml):
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {}
+        for el in root:
+            groups.setdefault(el.tag.split('}')[-1], []).append(el)
+        return groups
+
+    def test_removes_dangling_standard_tabs_objects_fields(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<tabVisibilities><tab>standard-Account</tab></tabVisibilities>'
+               '<tabVisibilities><tab>standard-DataMaskJobSession</tab></tabVisibilities>'
+               '<objectPermissions><object>Account</object></objectPermissions>'
+               '<objectPermissions><object>GhostObject</object></objectPermissions>'
+               '<objectPermissions><object>MyCustom__c</object></objectPermissions>'
+               '<objectPermissions><object>MyMeta__mdt</object></objectPermissions>'
+               '<fieldPermissions><field>Account.Name</field></fieldPermissions>'
+               '<fieldPermissions><field>Account.GhostField__c</field></fieldPermissions>'
+               '<fieldPermissions><field>MyCustom__c.AnyField__c</field></fieldPermissions>'
+               '<fieldPermissions><field>MyMeta__mdt.AnyField__c</field></fieldPermissions>'
+               '</Profile>')
+        groups = self._groups(xml)
+
+        def fake_query(sf, org, soql):
+            if 'TabDefinition' in soql:
+                return ([{'Name': 'standard-Account'}], None)
+            if 'FieldDefinition' in soql:
+                # per-object enumeration: only Account.Name exists
+                return ([{'EntityDefinition': {'QualifiedApiName': 'Account'},
+                         'QualifiedApiName': 'Name'}], None)
+            if 'EntityDefinition' in soql:
+                return ([{'QualifiedApiName': 'Account'}], None)
+            return ([], None)
+
+        with mock.patch.object(pp.engine, 'tooling_query', side_effect=fake_query):
+            removals = pp.prefetch_standard_dangling('sf', 'org', groups,
+                                                     pp.Logger(True))
+
+        by_type = {}
+        for typ, member, source in removals:
+            by_type.setdefault(typ, []).append((member, source))
+
+        self.assertEqual(by_type['StandardTab'],
+                         [('standard-DataMaskJobSession', 'TabDefinition')])
+        self.assertEqual(by_type['StandardObject'],
+                         [('GhostObject', 'EntityDefinition')])
+        self.assertEqual(by_type['StandardField'],
+                         [('Account.GhostField__c', 'FieldDefinition')])
+        # custom metadata types (__mdt) must NOT be classified as standard
+        obj_members = [m for m, _s in by_type.get('StandardObject', [])]
+        fld_members = [m for m, _s in by_type.get('StandardField', [])]
+        self.assertNotIn('MyCustom__c', obj_members)
+        self.assertNotIn('MyMeta__mdt', obj_members)
+        self.assertNotIn('MyMeta__mdt.AnyField__c', fld_members)
+
+    def test_source_failure_skips_only_that_source(self):
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<tabVisibilities><tab>standard-Account</tab></tabVisibilities>'
+               '<objectPermissions><object>GhostObject</object></objectPermissions>'
+               '</Profile>')
+        groups = self._groups(xml)
+
+        def fake_query(sf, org, soql):
+            if 'TabDefinition' in soql:
+                return ([{'Name': 'standard-Account'}], None)
+            # EntityDefinition fails
+            return (None, 'EXCEEDED_ID_LIMIT')
+
+        with mock.patch.object(pp.engine, 'tooling_query', side_effect=fake_query):
+            removals = pp.prefetch_standard_dangling('sf', 'org', groups,
+                                                     pp.Logger(True))
+
+        # TabDefinition still produced nothing (Account is valid); EntityDefinition
+        # failed so GhostObject must NOT be reported as dangling.
+        self.assertEqual(removals, [])
+
+    def test_standard_types_excluded_from_missing_package(self):
+        d = tempfile.mkdtemp()
+        try:
+            xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+                   '<objectPermissions><object>Account</object></objectPermissions>'
+                   '</Profile>')
+            tree = pp.etree.fromstring(xml.encode('utf-8'))
+            seq = [c for c in tree]
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for el in seq:
+                groups.setdefault(el.tag.split('}')[-1], []).append(el)
+            good = os.path.join(d, 'COMMON', 'X.profile-meta.xml')
+            errpkg = os.path.join(d, 'MISSING', 'package.xml')
+            todeploy = os.path.join(d, 'COMMON', 'toDeploy.xml')
+            errlog = os.path.join(d, 'missing_log.txt')
+            st = pp.SharedState(groups, seq, pp.Logger(True), errlog, good, errpkg,
+                                todeploy, 'X', '68.0')
+            st.removed_by_type = {'StandardObject': {'Account'},
+                                  'ApexClass': {'Foo'}}
+            st._write_outputs_locked()
+            pkg = read_text(errpkg)
+            self.assertNotIn('StandardObject', pkg)
+            self.assertIn('ApexClass', pkg)
+            self.assertIn('Foo', pkg)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestChunking(unittest.TestCase):
     def _state(self, d, n_class=6):
         parts = ['<Profile xmlns="http://soap.sforce.com/2006/04/metadata">']
@@ -729,6 +845,13 @@ class TestChunking(unittest.TestCase):
             self.assertEqual(st.split_chunks('classAccesses', 500), 1)
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+    def test_clamp_chunk_size_to_minimum(self):
+        self.assertEqual(_clamp_chunk_size(75), pp.MIN_CHUNK_SIZE)
+        self.assertEqual(_clamp_chunk_size(100), 100)
+        self.assertEqual(_clamp_chunk_size(500), 500)
+        self.assertEqual(_clamp_chunk_size(0), 0)  # 0 = no chunking, kept
+        self.assertEqual(_clamp_chunk_size(1), pp.MIN_CHUNK_SIZE)
 
     def test_apply_chunk_removals_rebuilds_flat(self):
         d = tempfile.mkdtemp()

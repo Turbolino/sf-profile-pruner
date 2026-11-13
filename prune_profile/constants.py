@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '1.15.4'
+__version__ = '1.16.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -74,6 +74,7 @@ BLOCK_MAP = {
     ],
     'CustomPermission':   [('customPermissions', 'name', 'exact')],
     'CustomMetadataType': [('customMetadataTypeAccesses', 'name', 'exact')],
+    'StandardTab':        [('tabVisibilities', 'tab', 'exact')],
     'ExternalDataSource': [('externalDataSourceAccesses', 'externalDataSource', 'exact')],
     'CustomObject':       [
         ('objectPermissions', 'object', 'exact'),
@@ -144,6 +145,16 @@ MIN_API = {
     'GenComputingSummaryDefinition': '66.0',
 }
 
+# Types whose members are standard (not custom) metadata. They are removed from
+# the profile and recorded in missing_log.txt / report.txt, but are excluded
+# from MISSING/package.xml because standard metadata cannot be packaged.
+STANDARD_TYPES = frozenset({'StandardObject', 'StandardField', 'StandardTab'})
+
+# Minimum number of entries per chunk. `--max-elem-per-section` is clamped up to
+# this: tiny chunks make workers restart deploy jobs too often, which trips the
+# Salesforce CLI's per-org deploy lock ("Lock file is already being held").
+MIN_CHUNK_SIZE = 100
+
 
 def version_ge(a, b):
     """Compare dotted numeric versions: True if a >= b (missing parts = 0)."""
@@ -159,4 +170,17 @@ def version_ge(a, b):
     while len(tb) < len(ta):
         tb.append(0)
     return ta >= tb
+
+
+def is_standard_api_name(name):
+    """True when `name` is a standard (non-custom) Salesforce API name.
+
+    Salesforce convention: custom metadata API names always contain a double
+    underscore (`__` — from the namespace and/or a custom suffix like `__c`,
+    `__mdt`, `__kav`, `__x`, `__b`, `__e`, `__p`, `__Share`, `__History`), while
+    standard names never do. This is the complete criterion, unlike checking
+    only `endswith('__c')`, which misses custom metadata types, big/external
+    objects, knowledge articles, etc.
+    """
+    return '__' not in name
 

@@ -7,10 +7,42 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 
 from .constants import TERMINAL_STATUSES
 from .xmlio import humanize_status
+
+
+# Rate-limit `sf deploy start` submissions. The Salesforce CLI serializes deploy
+# operations with a per-org lock file; many workers submitting at once trip
+# "Lock file is already being held". A minimum interval between submissions
+# (plus a sane minimum chunk size) keeps the lock from being hammered.
+_deploy_start_lock = threading.Lock()
+_last_deploy_start = 0.0
+_deploy_start_interval = 1.0  # seconds
+
+
+def set_deploy_start_interval(seconds):
+    """Set the minimum interval (seconds) between deploy start submissions.
+    Zero disables the throttle."""
+    global _deploy_start_interval
+    _deploy_start_interval = max(0.0, float(seconds))
+
+
+def _throttle_deploy_start():
+    """Block until the minimum interval since the previous deploy start has
+    elapsed, then record this submission as the new last start."""
+    global _last_deploy_start
+    if _deploy_start_interval <= 0:
+        return
+    with _deploy_start_lock:
+        now = time.monotonic()
+        wait = _last_deploy_start + _deploy_start_interval - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _last_deploy_start = now
 
 
 def _sf_invocation(cmd, node):
@@ -131,6 +163,26 @@ def list_metadata(sf, org, metadata_type, cwd=None, control=None):
     return names, None
 
 
+def tooling_query(sf, org, soql, cwd=None, control=None):
+    """Run a Tooling API SOQL query and return its records.
+    Returns (list_of_record_dicts_or_None, error).
+
+    `sf data query` already follows pagination for Tooling objects that support
+    it (TabDefinition, FieldDefinition, ...). For objects that reject queryMore
+    (EntityDefinition) the caller must keep the result within a single batch via
+    a WHERE IN filter; a truncated single batch is still returned as-is."""
+    cmd = [sf, 'data', 'query', '--query', soql, '--use-tooling-api',
+           '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'tooling query', cwd=cwd, control=control)
+    if err:
+        return None, err
+    result = res.get('result', {})
+    records = result.get('records')
+    if not isinstance(records, list):
+        return None, 'unexpected tooling query result: %s' % json.dumps(res)[:200]
+    return records, None
+
+
 def org_api_version(sf, org, cwd=None, control=None):
     """Return the org's API version (the latest it supports) via `sf org display`.
     Returns (version_string_or_None, error)."""
@@ -147,6 +199,7 @@ def org_api_version(sf, org, cwd=None, control=None):
 
 def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None, control=None):
     """Start an async deploy. Returns (job_id, error)."""
+    _throttle_deploy_start()
     cmd = [sf, 'project', 'deploy', 'start', '--async']
     if dry_run:
         cmd.append('--dry-run')

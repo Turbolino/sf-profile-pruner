@@ -2,9 +2,9 @@
 """Profile Pruner — command-line entry point.
 
 Removes from a Salesforce Profile every reference to metadata that does NOT
-exist in the target org. Pruning uses only `sf project deploy start --dry-run`
-and never modifies the org; with `--deploy-on-success` the cleaned profile is
-deployed at the end.
+exist in the target org. Pruning combines a Metadata API + Tooling API pre-pass
+with an authoritative `sf project deploy start --dry-run`, and never modifies
+the org; with `--deploy-on-success` the cleaned profile is deployed at the end.
 
 Algorithm:
   The profile is split by its top-level sections (`classAccesses`,
@@ -35,11 +35,12 @@ from .constants import (
     AUTHOR_NOTE,
     BANNER,
     BLOCK_MAP,
+    MIN_CHUNK_SIZE,
     __version__,
     version_ge,
 )
-from .engine import prefetch_dangling, worker
-from .sfcli import deploy, dry_run, find_sf, org_api_version
+from .engine import prefetch_dangling, prefetch_standard_dangling, worker
+from .sfcli import deploy, dry_run, find_sf, org_api_version, set_deploy_start_interval
 from .state import SharedState
 from .xmlio import (
     load_log_entries,
@@ -59,6 +60,13 @@ _VALUE_FLAGS = {
     '--project-dir', '--api-version', '--max-iter', '--sf',
     '--poll-interval', '--job-timeout', '--thread-number',
 }
+
+
+def _clamp_chunk_size(n):
+    """Clamp a chunk size to the allowed minimum (0 = no chunking is kept)."""
+    if 0 < n < MIN_CHUNK_SIZE:
+        return MIN_CHUNK_SIZE
+    return n
 
 
 def _repair_mangled_argv(argv):
@@ -181,12 +189,13 @@ def _main():
                          'the number of work items (chunks) to prune')
     ap.add_argument('--max-elem-per-section', type=int, default=500, metavar='N',
                     help='split a section into parallel chunks when it holds more than N '
-                         'entries (default: 500); 0 disables splitting (one worker per section)')
+                         'entries (default: 500, minimum: 100); 0 disables splitting '
+                         '(one worker per section)')
+    ap.add_argument('--deploy-throttle-ms', type=int, default=1000, metavar='MS',
+                    help='minimum interval between deploy start submissions, in ms '
+                         '(default: 1000); 0 disables the throttle')
     ap.add_argument('--fresh', action='store_true',
                     help='ignore any previous state and restart from the original')
-    ap.add_argument('--no-prefetch', action='store_true',
-                    help='skip the Metadata API pre-pass (sf org list metadata) and '
-                         'discover dangling references only through dry-runs')
     ap.add_argument('--quiet', action='store_true',
                     help='suppress the progressive stdout output')
     ap.add_argument('--deploy-on-success', action='store_true',
@@ -203,6 +212,18 @@ def _main():
     if args.max_elem_per_section < 0:
         print('ERROR: --max-elem-per-section must be >= 0 (got %d).' % args.max_elem_per_section)
         sys.exit(2)
+
+    # Tiny chunks make workers restart deploy jobs too often and trip the
+    # Salesforce CLI's per-org deploy lock; raise anything in (0, MIN) to the
+    # minimum chunk size. 0 (one worker per section) is left untouched.
+    if args.max_elem_per_section != _clamp_chunk_size(args.max_elem_per_section):
+        print('NOTE: --max-elem-per-section %d is below the minimum of %d; '
+              'using %d.' % (args.max_elem_per_section, MIN_CHUNK_SIZE, MIN_CHUNK_SIZE),
+              file=sys.stderr)
+        args.max_elem_per_section = MIN_CHUNK_SIZE
+
+    # Apply the deploy-start rate limit before any worker is spawned.
+    set_deploy_start_interval(args.deploy_throttle_ms / 1000.0)
 
     if not args.quiet:
         print(BANNER, flush=True)
@@ -376,27 +397,54 @@ def _main():
     # every reference that has no matching component, before the dry-run loop.
     # This catches login flows, the newest Profile sections (agentAccesses,
     # genComputingSummaryDefAccesses) and any other listable type in one shot.
-    if not args.no_prefetch:
-        # The pre-fetch phase owns the console via a single in-place status line
-        # (message + elapsed) so it never looks frozen; the logger keeps writing
-        # the full history to run.log. In non-TTY mode the status line is a no-op
-        # and the per-type messages keep flowing to stdout through the logger.
-        ps = PrefetchStatus(args.quiet)
+    # The pre-fetch phase owns the console via a single in-place status line
+    # (message + elapsed) so it never looks frozen; the logger keeps writing
+    # the full history to run.log. In non-TTY mode the status line is a no-op
+    # and the per-type messages keep flowing to stdout through the logger.
+    ps = PrefetchStatus(args.quiet)
+    if ps.active:
+        logger.console = False
+    ps.start()
+    try:
+        pref = prefetch_dangling(sf, args.org, state.groups, args.api_version,
+                                 logger, status=ps.update)
+    finally:
+        ps.stop()
         if ps.active:
-            logger.console = False
-        ps.start()
-        try:
-            pref = prefetch_dangling(sf, args.org, state.groups, args.api_version,
-                                     logger, status=ps.update)
-        finally:
-            ps.stop()
-            if ps.active:
-                logger.console = not args.quiet
-        if pref:
-            n = state.apply_global_removals(pref, problem='missing in org (pre-fetch)')
-            logger.log('PREFETCH: removed %d dangling reference(s) via listMetadata.' % n)
-        else:
-            logger.log('PREFETCH: no dangling references found via listMetadata.')
+            logger.console = not args.quiet
+    if pref:
+        n = state.apply_global_removals(pref, problem='missing in org (pre-fetch)')
+        logger.log('PREFETCH: removed %d dangling reference(s) via listMetadata.' % n)
+    else:
+        logger.log('PREFETCH: no dangling references found via listMetadata.')
+
+    # ---------- standard pre-pass: prune dangling standard metadata ----------
+    # Queries the org Tooling API (TabDefinition / EntityDefinition /
+    # FieldDefinition) for the standard tabs/objects/fields the profile
+    # references, and removes those that do not exist. This catches the class of
+    # error the dry-run never surfaces (e.g. "can't edit tab settings for X, as
+    # it's not a valid tab"), where an object exists but has no editable tab.
+    ps = PrefetchStatus(args.quiet)
+    if ps.active:
+        logger.console = False
+    ps.start()
+    try:
+        pref = prefetch_standard_dangling(sf, args.org, state.groups,
+                                          logger, status=ps.update)
+    finally:
+        ps.stop()
+        if ps.active:
+            logger.console = not args.quiet
+    by_source = {}
+    for typ, member, source in pref:
+        by_source.setdefault(source, []).append((typ, member))
+    for source in sorted(by_source):
+        n = state.apply_global_removals(
+            by_source[source],
+            problem='missing in org (standard pre-fetch: %s)' % source)
+        logger.log('STD-PREFETCH [%s]: removed %d dangling reference(s).' % (source, n))
+    if not pref:
+        logger.log('STD-PREFETCH: no dangling standard references found.')
 
     # ---------- queue of prunable chunks (sections split into chunks) ----------
     # No workers are running yet, so reading `state.groups` is safe here; each

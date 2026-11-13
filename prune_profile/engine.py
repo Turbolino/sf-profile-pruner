@@ -4,8 +4,8 @@
 import json
 import os
 
-from .constants import LISTABLE, LIST_METADATA_NAME, MIN_API, version_ge
-from .sfcli import dry_run, list_metadata
+from .constants import LISTABLE, LIST_METADATA_NAME, M, MIN_API, is_standard_api_name, version_ge
+from .sfcli import dry_run, list_metadata, tooling_query
 from .xmlio import (
     build_subprofile,
     dangling_members,
@@ -71,6 +71,156 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
         dangled = len(removals) - before
         _report('[%d/%d] %s: %d existing, %d dangling' %
                 (i, n_types, mdtype, len(existing), dangled))
+    return removals
+
+
+def _chunked(seq, size):
+    """Yield `seq` in slices of at most `size` elements."""
+    seq = list(seq)
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def prefetch_standard_dangling(sf, org, groups, logger, status=None):
+    """Detect standard metadata the target org does not have, via its Tooling
+    API, and return (type, member, source) removals.
+
+    Covers three profile sections with three sources:
+
+      - ``tabVisibilities``   ``standard-*``  -> TabDefinition   (`StandardTab`)
+      - ``objectPermissions`` standard object -> EntityDefinition (`StandardObject`)
+      - ``fieldPermissions``  standard field  -> FieldDefinition  (`StandardField`)
+
+    EntityDefinition does not support queryMore and FieldDefinition requires a
+    reified filter, so both are queried with a ``WHERE ... IN`` on exactly the
+    names the profile references (in batches), never with an unfiltered scan.
+    A source that fails is skipped without aborting the other two (the dry-run
+    loop below remains the authoritative fallback).
+
+    `status` is an optional callable(message) for live console progress."""
+    def _report(msg):
+        logger.log('STD-PREFETCH: %s' % msg)
+        if status:
+            status('standards: %s' % msg)
+
+    def _txt(el, child):
+        ce = el.find(M + child)
+        return (ce.text or '').strip() if ce is not None else ''
+
+    removals = []  # (type, member, source)
+
+    # ---------- standard tabs (tabVisibilities: standard-*) ----------
+    std_tabs = set()
+    for el in groups.get('tabVisibilities', []):
+        v = _txt(el, 'tab')
+        if v.startswith('standard-'):
+            std_tabs.add(v)
+    if std_tabs:
+        _report('listing %d standard tab(s) via TabDefinition...' % len(std_tabs))
+        recs, err = tooling_query(sf, org, 'SELECT Name FROM TabDefinition')
+        if recs is None:
+            _report('TabDefinition skipped: %s' % err)
+        else:
+            valid = set(r.get('Name', '') for r in recs
+                        if (r.get('Name') or '').startswith('standard-'))
+            dangling = sorted(std_tabs - valid)
+            for v in dangling:
+                removals.append(('StandardTab', v, 'TabDefinition'))
+            _report('TabDefinition: %d valid, %d dangling' % (len(valid), len(dangling)))
+
+    # ---------- standard objects (objectPermissions: non-custom) ----------
+    std_objs = set()
+    for el in groups.get('objectPermissions', []):
+        v = _txt(el, 'object')
+        if v and is_standard_api_name(v):
+            std_objs.add(v)
+    if std_objs:
+        _report('listing %d standard object(s) via EntityDefinition...' % len(std_objs))
+        existing = set()
+        failed = False
+        for batch in _chunked(sorted(std_objs), 100):
+            in_clause = ', '.join("'%s'" % o for o in batch)
+            recs, err = tooling_query(
+                sf, org,
+                'SELECT QualifiedApiName FROM EntityDefinition '
+                'WHERE QualifiedApiName IN (%s)' % in_clause)
+            if recs is None:
+                _report('EntityDefinition skipped: %s' % err)
+                failed = True
+                break
+            existing.update(r.get('QualifiedApiName', '') for r in recs)
+        if not failed:
+            dangling = sorted(std_objs - existing)
+            for o in dangling:
+                removals.append(('StandardObject', o, 'EntityDefinition'))
+            _report('EntityDefinition: %d valid, %d dangling' %
+                    (len(std_objs & existing), len(dangling)))
+
+    # ---------- standard fields (fieldPermissions: Object.Field) ----------
+    # FieldDefinition does not support queryMore(), so a full scan is out, and
+    # DurableId is NOT reliably 'Object.Field' (relationship/system fields like
+    # Account.ParentId use a different DurableId) — filtering on it yields false
+    # negatives. EntityDefinition.QualifiedApiName + QualifiedApiName is
+    # authoritative for every field (relationships included), so we query by
+    # object. To keep the number of queries low (per-object round trips are
+    # slow and trip the Tooling API rate limit) we batch several objects per
+    # query with an IN filter, and split a batch in half when it trips the
+    # single-batch row limit (EXCEEDED_ID_LIMIT).
+    fields_by_obj = {}
+    for el in groups.get('fieldPermissions', []):
+        v = _txt(el, 'field')
+        if v and '.' in v:
+            obj, fname = v.split('.', 1)
+            if obj and is_standard_api_name(obj):
+                fields_by_obj.setdefault(obj, set()).add(fname)
+
+    def _collect(batch):
+        """Collect fields for a list of objects. Returns True on success,
+        False if a batch cannot be enumerated (kept for caller diagnostics)."""
+        if not batch:
+            return True
+        in_clause = ', '.join("'%s'" % o for o in batch)
+        recs, err = tooling_query(
+            sf, org,
+            'SELECT EntityDefinition.QualifiedApiName, QualifiedApiName '
+            'FROM FieldDefinition '
+            'WHERE EntityDefinition.QualifiedApiName IN (%s)' % in_clause)
+        if recs is not None:
+            for r in recs:
+                ed = r.get('EntityDefinition') or {}
+                o = ed.get('QualifiedApiName') if isinstance(ed, dict) else ''
+                existing.add('%s.%s' % (o, r.get('QualifiedApiName')))
+            return True
+        if err and 'EXCEEDED_ID_LIMIT' in err and len(batch) > 1:
+            mid = len(batch) // 2
+            return _collect(batch[:mid]) and _collect(batch[mid:])
+        _report('FieldDefinition batch skipped: %s' % err)
+        return False
+
+    if fields_by_obj:
+        total = sum(len(s) for s in fields_by_obj.values())
+        _report('listing %d standard field(s) across %d object(s) via FieldDefinition...'
+                % (total, len(fields_by_obj)))
+        existing = set()  # 'Object.Field' values present in the org
+        objects = sorted(fields_by_obj)
+        ok = True
+        for i in range(0, len(objects), 40):
+            batch = objects[i:i + 40]
+            if not _collect(batch):
+                ok = False
+                break
+        if ok:
+            dangling = []
+            for obj in objects:
+                for fname in sorted(fields_by_obj[obj]):
+                    key = '%s.%s' % (obj, fname)
+                    if key not in existing:
+                        dangling.append(key)
+            for key in dangling:
+                removals.append(('StandardField', key, 'FieldDefinition'))
+            _report('FieldDefinition: %d valid, %d dangling' %
+                    (total - len(dangling), len(dangling)))
+
     return removals
 
 

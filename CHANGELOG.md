@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-11-13
+
+### Added
+
+- **Standard metadata pre-pass**: before the dry-run loop the tool now queries
+  the org's Tooling API (`TabDefinition`, `EntityDefinition`, `FieldDefinition`)
+  and removes standard tabs, objects and fields the profile references but the
+  org does not have — the class of error a dry-run never surfaces (e.g.
+  `You can't edit tab settings for X, as it's not a valid tab`).
+- `--deploy-throttle-ms` option (default `1000`) to space out deploy-start
+  submissions; `0` disables the throttle.
+
+### Changed
+
+- **Prefetch is now mandatory**: the Metadata API pre-pass and the standard
+  metadata pre-pass always run. The `--no-prefetch` and `--prefetch-standards`
+  flags were removed — the cleaned profile is always validated against the full
+  org metadata, not just the dry-run.
+
+### Fixed
+
+- `__mdt` objects (custom metadata types) were misclassified as standard
+  objects; standard-object/field detection now uses `is_standard_api_name`
+  (`__` in the API name), so only true standard objects are treated as such.
+- `FieldDefinition.DurableId` is not reliably `Object.Field` for relationship
+  and system fields; standard fields are now resolved per object from
+  `EntityDefinition.QualifiedApiName + QualifiedApiName` (batched, split on
+  `EXCEEDED_ID_LIMIT`).
+- `--max-elem-per-section` is now clamped to a minimum of `100` (0 = no
+  splitting is preserved). Tiny chunks restarted deploy jobs too often and
+  tripped the CLI's per-org deploy lock (`Lock file is already being held`).
+
 ## [1.15.4] - 2026-11-12
 
 ### Fixed

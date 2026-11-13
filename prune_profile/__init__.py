@@ -24,14 +24,17 @@ from .constants import (
     LIST_METADATA_NAME,
     M,
     MIN_API,
+    MIN_CHUNK_SIZE,
     NS,
+    STANDARD_TYPES,
     TERMINAL_STATUSES,
     __author__,
     __email__,
     __version__,
+    is_standard_api_name,
     version_ge,
 )
-from .engine import prefetch_dangling, process_section, worker
+from .engine import prefetch_dangling, prefetch_standard_dangling, process_section, worker
 from .sfcli import (
     _candidate_dirs,
     _node_version,
@@ -46,6 +49,7 @@ from .sfcli import (
     poll_deploy,
     report_deploy,
     start_deploy,
+    tooling_query,
 )
 from .state import SharedState
 from .xmlio import (
@@ -71,13 +75,14 @@ from .xmlio import (
 __all__ = [
     'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'LISTABLE',
     'LIST_METADATA_NAME', 'M',
-    'MIN_API', 'NS', 'TERMINAL_STATUSES', '__version__', '__author__',
-    '__email__', 'version_ge',
+    'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'TERMINAL_STATUSES', '__version__', '__author__',
+    '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
-    'prefetch_dangling', 'process_section', 'worker',
+    'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
     'deploy', 'dry_run', 'find_node', 'find_sf', 'list_metadata',
     'org_api_version', 'poll_deploy', 'report_deploy', 'start_deploy',
+    'tooling_query',
     'apply_removals_batch', 'build_subprofile', 'candidates_for_block',
     'dangling_members', 'extract_common_members', 'humanize_status',
     'load_log_entries',

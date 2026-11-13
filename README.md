@@ -163,8 +163,13 @@ python -m prune_profile \
   shim), so Ctrl-C can never trigger cmd's "Terminate batch job" prompt.
 - **Metadata API pre-pass**: before the dry-run loop, the tool enumerates the
   metadata that actually exists in the target org (`sf org list metadata`) and
-  removes every dangling reference in one shot — login flows included. Disable
-  with `--no-prefetch`.
+  removes every dangling reference in one shot — login flows included.
+- **Standard metadata pre-pass**: the tool also queries the org's Tooling API
+  (`TabDefinition`, `EntityDefinition`, `FieldDefinition`) and removes standard
+  tabs, objects and fields the profile references but the org does not have.
+  This catches the class of error a dry-run never surfaces — e.g. `You can't
+  edit tab settings for X, as it's not a valid tab` — where an object exists
+  but has no editable tab.
 - **Self-healing final gate**: the final full-package dry-run loops — any
   residual reference (a login flow, or a metadata type not yet in the internal
   map) is removed and the package re-validated until clean, rather than
@@ -195,7 +200,6 @@ python -m prune_profile \
 | `--thread-number` | Max parallel worker threads, `1`–`64`; capped to the number of work items (chunks) to prune. Default: `8`. |
 | `--max-elem-per-section` | Split a section into parallel chunks when it holds more than `N` entries. Default: `500`; `0` disables splitting (one worker per section). |
 | `--fresh` | Ignore previous state and restart from the original. |
-| `--no-prefetch` | Skip the Metadata API pre-pass (`sf org list metadata`) and rely only on dry-run discovery. |
 | `--quiet` | Suppress progressive stdout output. |
 | `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |
 | `-V`, `--version` | Show version and author. |
@@ -246,9 +250,10 @@ prune_profile/
   explicitly.
 - The Metadata API pre-pass needs the connecting user to be able to **see** the
   metadata it lists (System Administrator recommended). Custom fields and
-  custom/standard objects are intentionally *not* enumerated (listMetadata does
-  not return standard fields/objects), so those are still discovered and pruned
-  by the authoritative dry-run. Use `--no-prefetch` to disable the pre-pass.
+  custom objects are intentionally *not* enumerated (listMetadata does not
+  return them), so those are still discovered and pruned by the authoritative
+  dry-run. Standard tabs, objects and fields are covered by the Tooling API
+  pre-pass.
 
 ## Author
 

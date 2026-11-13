@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from lxml import etree
 
-from .constants import BLOCK_MAP, M, NS
+from .constants import BLOCK_MAP, M, NS, STANDARD_TYPES
 from .xmlio import extract_common_members, remove_from_list, write_package_xml
 
 
@@ -171,7 +171,11 @@ class SharedState:
         os.makedirs(os.path.dirname(self.todeploy_path), exist_ok=True)
         tree = etree.ElementTree(root)
         tree.write(self.common_profile_path, encoding='utf-8', xml_declaration=True)
-        write_package_xml(self.missing_pkg_path, self.removed_by_type, self.api_version)
+        # Standard metadata cannot be packaged: keep it in the log/report but
+        # exclude it from MISSING/package.xml (which lists deployable types).
+        deployable = {t: m for t, m in self.removed_by_type.items()
+                      if t not in STANDARD_TYPES}
+        write_package_xml(self.missing_pkg_path, deployable, self.api_version)
         write_package_xml(self.todeploy_path, extract_common_members(self.groups),
                          self.api_version)
 
