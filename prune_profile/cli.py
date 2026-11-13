@@ -90,7 +90,7 @@ Examples:
 
   # Align the destination profile to the source (turns OFF destination-only
   # permissions); the Y/N prompt is skipped by the trailing --sure
-  sfpp -so collaudo -sp "Sales Rep" -do test -dp "Sales Rep" \
+  sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" \
       --align-from-source --sure --deploy-on-success --sure
 
   # Custom output dir, batch size and threads
@@ -560,29 +560,82 @@ def _main():
     )
 
     # ---------- already clean? (resume short-circuit) ----------
-    if result['already_clean']:
-        if do_deploy:
-            logger.log('Profile already clean; deploying %r to org %s...' % (dest_profile_name, dest_org))
-            ok, detail = _deploy_profile(sf, dest_org, result['common_profile_path'],
-                                         dest_profile_name, args.api_version,
-                                         args.poll_interval, args.job_timeout,
-                                         logger, out_dir)
-            print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
-            sys.exit(0 if ok else 1)
+    if result['already_clean'] and not do_deploy:
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % src_profile_name)
         sys.exit(0)
 
-    # ---------- optional deploy (only with --deploy-on-success) ----------
-    result_state = result['outcome']
+    # ---------- deploy with retry-on-failure loop (only with --deploy-on-success) ----------
+    # The prune always runs to completion first (it can never be interrupted by
+    # a deploy). When a deploy fails, run another prune round and retry; stop and
+    # report an explicit failure only when the prune result stops changing (no
+    # progress). This lets a transient org change converge, without spinning
+    # forever on a reference that the dry-run cannot see.
+    report_result = result          # stats of the last prune round that did real work
+    result_state = report_result['outcome']
     deploy_detail = ''
-    if result_state == 'SUCCESS' and do_deploy:
-        logger.log('Deploying the cleaned profile %r to org %s...' % (dest_profile_name, dest_org))
-        ok, deploy_detail = _deploy_profile(sf, dest_org, result['common_profile_path'],
-                                            dest_profile_name, args.api_version,
-                                            args.poll_interval, args.job_timeout,
-                                            logger, out_dir)
-        if not ok:
-            result_state = 'DEPLOY_FAILED'
+
+    if do_deploy and result_state == 'SUCCESS':
+        import hashlib
+
+        def _sig(path):
+            try:
+                with open(path, 'rb') as f:
+                    return hashlib.sha256(f.read()).hexdigest()
+            except OSError:
+                return None
+
+        if report_result['already_clean']:
+            logger.log('Profile already clean; deploying %r to org %s...' % (dest_profile_name, dest_org))
+
+        prev_sig = _sig(report_result['common_profile_path'])
+        round_no = 1
+        while True:
+            logger.log('Deploying the cleaned profile %r to org %s (round %d)...'
+                       % (dest_profile_name, dest_org, round_no))
+            ok, detail = _deploy_profile(sf, dest_org, report_result['common_profile_path'],
+                                         dest_profile_name, args.api_version,
+                                         args.poll_interval, args.job_timeout,
+                                         logger, out_dir)
+            if ok:
+                deploy_detail = detail
+                result_state = 'SUCCESS'
+                break
+
+            deploy_detail = detail
+            logger.log('Deploy failed (round %d); re-running the prune...' % round_no)
+            result = prune_stage(
+                sf=sf,
+                org=dest_org,
+                source_profile_path=profile_path,
+                profile_name=src_profile_name,
+                out_dir=out_dir,
+                api_version=args.api_version,
+                poll_interval=args.poll_interval,
+                job_timeout=args.job_timeout,
+                thread_number=args.thread_number,
+                batch_size=args.batch_size,
+                max_iter=args.max_iter,
+                quiet=args.quiet,
+                fresh=False,
+                logger=logger,
+            )
+            result_state = result['outcome']
+            if result_state != 'SUCCESS':
+                break
+            if not result.get('already_clean'):
+                report_result = result  # a prune round that actually did work
+            new_sig = _sig(result['common_profile_path'])
+            if new_sig == prev_sig:
+                result_state = 'DEPLOY_FAILED'
+                logger.log('Deploy still failing with an identical prune result; '
+                           'giving up (no progress).')
+                break
+            prev_sig = new_sig
+            round_no += 1
+            if round_no > args.max_iter:
+                result_state = 'DEPLOY_FAILED'
+                logger.log('Deploy retry did not converge within %d rounds.' % args.max_iter)
+                break
 
     # ---------- final output ----------
     logger.log('')
@@ -590,12 +643,12 @@ def _main():
     logger.log('  PROFILE PRUNING RESULT')
     logger.log('========================================================')
     logger.log('OUTCOME: %s' % result_state)
-    if result['reason']:
-        logger.log('REASON: %s' % result['reason'])
-    logger.log('METADATA REMOVED (total): %d' % result['total_removed'])
-    logger.log('TIME: %.1fs' % result['elapsed'])
-    if result['final_detail']:
-        logger.log('FINAL DRY-RUN: %s' % result['final_detail'])
+    if report_result.get('reason'):
+        logger.log('REASON: %s' % report_result['reason'])
+    logger.log('METADATA REMOVED (total): %d' % report_result['total_removed'])
+    logger.log('TIME: %.1fs' % report_result['elapsed'])
+    if report_result.get('final_detail'):
+        logger.log('FINAL DRY-RUN: %s' % report_result['final_detail'])
     if deploy_detail:
         logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')
