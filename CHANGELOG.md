@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-13
+
+### Added
+
+- **`--align-from-source`**: align the destination profile to the source (turn
+  off destination-only permissions). Destructive even on dry-run; asks for Y/N
+  confirmation unless immediately followed by `--sure`.
+- **`--sure`**: skip the Y/N confirmation of the immediately preceding
+  destructive option (`--align-from-source` or `--deploy-on-success`). It must
+  be placed right after it and applies to that one option only.
+- **Y/N confirmation** on `--deploy-on-success` (it modifies the org).
+
+### Removed
+
+- Deprecated flags `--org`, `--profile-name`, `--retrieve-full` and
+  `--max-elem-per-section` (use `--dest-org`, `--dest-profile`,
+  `--full-profile` and `--batch-size`).
+
 ## [1.18.0] - 2026-11-13
 
 ### Added

@@ -13,6 +13,12 @@ Three input modes:
                     (the profile is retrieved from the source org first)
   * via 3 (retrieve only): `--src-org` + `--src-profile` (no prune, no dry-run/deploy)
 
+`--align-from-source` upgrades via 2 into an *alignment*: after pruning, the
+destination profile is also retrieved and pruned, and every permission that
+exists only in the destination is turned off so the destination matches the
+source. It is destructive even on dry-run and asks for Y/N confirmation (skip
+with a following `--sure`).
+
 Algorithm:
   The profile is split by its top-level sections (`classAccesses`,
   `fieldPermissions`, `tabVisibilities`, … — discovered dynamically from the
@@ -81,8 +87,6 @@ _VALUE_FLAGS = {
     '--thread-number', '-tn',
     '--job-timeout', '--deploy-throttle-ms', '--poll-interval',
     '--max-iter', '--sf',
-    # deprecated aliases (still accepted)
-    '--org', '--profile-name', '--max-elem-per-section',
 }
 
 EXAMPLES = '''\
@@ -104,6 +108,11 @@ Examples:
 
   # Retrieve only (no prune): download the profile from a source org
   sfpp -so devorg -sp "Sales Rep" -od ./profiles
+
+  # Align the destination profile to the source (turns OFF destination-only
+  # permissions); the Y/N prompt is skipped by the trailing --sure
+  sfpp -so collaudo -sp "Sales Rep" -do test -dp "Sales Rep" \
+      --align-from-source --sure --deploy-on-success --sure
 
   # Custom output dir, batch size and threads
   sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
@@ -199,6 +208,20 @@ def _check_for_update():
     ]
 
 
+def _confirm(prompt):
+    """Ask a Y/N confirmation on screen. Returns True only on an explicit yes.
+
+    Any non-interactive input (EOF) or Ctrl-C counts as 'no', so a destructive
+    operation never proceeds without a human answering yes."""
+    try:
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ''
+    return answer in ('y', 'yes')
+
+
 def _main():
     argv = sys.argv[1:]
     argv, repair_note = _repair_mangled_argv(argv)
@@ -211,6 +234,22 @@ def _main():
     if '--tell-me-a-story' in argv:
         print(STORY, flush=True)
         sys.exit(0)
+
+    # --sure must immediately follow --align-from-source or --deploy-on-success,
+    # and it applies only to that one operation (deploy and align are independent).
+    sure_align = False
+    sure_deploy = False
+    for i, tok in enumerate(argv):
+        if tok == '--sure':
+            prev = argv[i - 1] if i > 0 else None
+            if prev == '--align-from-source':
+                sure_align = True
+            elif prev == '--deploy-on-success':
+                sure_deploy = True
+            else:
+                print('ERROR: --sure must immediately follow --align-from-source or '
+                      '--deploy-on-success (e.g. --align-from-source --sure).')
+                sys.exit(2)
 
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
@@ -270,9 +309,22 @@ def _main():
                         help='command/path of the Salesforce CLI (default: sf)')
 
     g_act = ap.add_argument_group('behavior')
+    g_act.add_argument('--align-from-source', action='store_true',
+                       help='align the destination profile to the source: retrieve the '
+                            'source, prune it against the destination, then retrieve and '
+                            'prune the destination too, and turn OFF any permission that '
+                            'exists only in the destination (hidden tab/app, disabled '
+                            'field/object/class/page/flow), so the destination matches the '
+                            'source. Without it, destination-only permissions are left '
+                            'untouched. Destructive even on dry-run: asks for Y/N '
+                            'confirmation unless followed by --sure.')
     g_act.add_argument('--deploy-on-success', action='store_true',
-                       help='deploy the cleaned profile to --dest-org once pruning succeeds '
-                            '(default: dry-run only, the org is never modified)')
+                       help='deploy the cleaned profile to --dest-org once pruning succeeds. '
+                            'Modifies the org: asks for Y/N confirmation unless followed by --sure.')
+    g_act.add_argument('--sure', action='store_true',
+                       help='skip the Y/N confirmation of the immediately preceding '
+                            'destructive option (--align-from-source or --deploy-on-success). '
+                            'Must be placed right after it, e.g. --align-from-source --sure.')
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
     g_act.add_argument('--quiet', action='store_true',
@@ -283,29 +335,7 @@ def _main():
     g_act.add_argument('-V', '--version', action='version',
                        version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
 
-    # Deprecated aliases: accepted for compatibility, hidden from help, warned.
-    ap.add_argument('--org', dest='dep_org', default=None, help=argparse.SUPPRESS)
-    ap.add_argument('--profile-name', dest='dep_profile_name', default=None, help=argparse.SUPPRESS)
-    ap.add_argument('--retrieve-full', dest='dep_retrieve_full', action='store_true',
-                    default=False, help=argparse.SUPPRESS)
-    ap.add_argument('--max-elem-per-section', dest='dep_max_elem', type=int, default=None,
-                    help=argparse.SUPPRESS)
-
     args = ap.parse_args()
-
-    # ---------- deprecated aliases -> new names (with a warning) ----------
-    if args.dep_org is not None:
-        print('WARNING: --org is deprecated; use --dest-org (-do).', file=sys.stderr)
-        args.dest_org = args.dep_org
-    if args.dep_profile_name is not None:
-        print('WARNING: --profile-name is deprecated; use --dest-profile (-dp).', file=sys.stderr)
-        args.dest_profile = args.dep_profile_name
-    if args.dep_retrieve_full:
-        print('WARNING: --retrieve-full is deprecated; use --full-profile (-fp).', file=sys.stderr)
-        args.full_profile = True
-    if args.dep_max_elem is not None:
-        print('WARNING: --max-elem-per-section is deprecated; use --batch-size (-bs).', file=sys.stderr)
-        args.batch_size = args.dep_max_elem
 
     # ---------- numeric validation ----------
     if not (1 <= args.thread_number <= 64):
@@ -333,6 +363,12 @@ def _main():
 
     # Apply the deploy-start rate limit before any worker is spawned.
     set_deploy_start_interval(args.deploy_throttle_ms / 1000.0)
+
+    # --align-from-source is a via-2 operation (it needs both source and destination).
+    if args.align_from_source and not (args.src_org and args.src_profile
+                                       and args.dest_org and args.dest_profile):
+        print('ERROR: --align-from-source requires -so, -sp, -do and -dp (via 2).')
+        sys.exit(2)
 
     # ---------- mode detection ----------
     # via 1 (file):           -pp + -do
@@ -391,6 +427,25 @@ def _main():
         if rerr:
             print('WARNING: %s' % rerr, file=sys.stderr)
         sys.exit(0)
+
+    # ---------- destructive-op confirmations (Y/N, skippable with --sure) ----------
+    if args.align_from_source and not sure_align:
+        if not _confirm('--align-from-source disables destination-only permissions '
+                        '(destructive, even on dry-run). Continue? [y/N] '):
+            print('Aborted by user.', file=sys.stderr)
+            sys.exit(0)
+    if args.deploy_on_success and not sure_deploy:
+        if not _confirm('--deploy-on-success will deploy the cleaned profile to the '
+                        'destination org. Continue? [y/N] '):
+            print('Aborted by user.', file=sys.stderr)
+            sys.exit(0)
+
+    # Alignment engine (retrieve+prune both sides, merge with source authoritative)
+    # lands in the next step.
+    if args.align_from_source:
+        print('ERROR: --align-from-source is not implemented yet (the alignment engine '
+              'is being built).', file=sys.stderr)
+        sys.exit(2)
 
     if not args.quiet:
         print(BANNER, flush=True)

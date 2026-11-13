@@ -31,6 +31,15 @@ You have three ways to feed it a profile:
   You can then feed the retrieved file to via 1, or run via 2 with
   `-so == -do` and `-sp == -dp` to prune it.
 
+**Alignment** (`--align-from-source`): upgrades via 2 into a profile alignment.
+It retrieves and prunes the source profile against the destination, then
+retrieves and prunes the *destination* profile too, and turns **OFF** every
+permission that exists only in the destination (hidden tab/app, disabled
+field/object/class/page/flow) so the destination matches the source. This lets
+you align, for example, a UAT profile to a test profile. It is **destructive
+even on dry-run** and asks for Y/N confirmation (skip with a following
+`--sure`).
+
 > The third-party `sf-profile-full` plugin is **no longer required**. To use
 > via 2 you need the Salesforce CLI installed **with Node.js and its global
 > node_modules** (`@salesforce/core` + `@jsforce/jsforce-node`), which any recent
@@ -210,15 +219,13 @@ Options are grouped in the `-h` help. The two input modes are:
 | `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
-| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. |
+| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation unless followed by `--sure`. |
+| `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Destructive even on dry-run: asks for Y/N confirmation unless followed by `--sure`. |
+| `--sure` | Skip the Y/N confirmation of the immediately preceding `--align-from-source` or `--deploy-on-success`. Must be placed right after it. |
 | `--fresh` | Restart from the original, ignoring any previous state. |
 | `--quiet` | Suppress the progressive stdout output. |
 | `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |
 | `-V`, `--version` | Show version and author. |
-
-**Deprecated** (still accepted, removed in v2.x.x): `--org` → `--dest-org`,
-`--profile-name` → `--dest-profile`, `--retrieve-full` → `--full-profile`,
-`--max-elem-per-section` → `--batch-size`.
 
 ## Output layout (`--out-dir`)
 

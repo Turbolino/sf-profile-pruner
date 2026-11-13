@@ -142,34 +142,34 @@ class TestResolveError(unittest.TestCase):
 class TestRepairMangledArgv(unittest.TestCase):
     def test_swallowed_trailing_flags_recovered(self):
         # Case A: --out-dir ends in backslash+quote, so the closing quote became
-        # a literal `"` and swallowed `--org Test` + `Org`.
+        # a literal `"` and swallowed `--dest-org Test` + `Org`.
         argv = ['--profile-path', r'C:\p\X.profile-meta.xml',
-                '--out-dir', r'.\salesforce\src Test\dest Test" --org Test', 'Org']
+                '--out-dir', r'.\salesforce\src Test\dest Test" --dest-org Test', 'Org']
         out, note = _repair_mangled_argv(argv)
         self.assertTrue(note)
         self.assertNotIn('"', ' '.join(out))
         self.assertEqual(out, ['--profile-path', r'C:\p\X.profile-meta.xml',
                                '--out-dir', r'.\salesforce\src Test\dest Test',
-                               '--org', 'Test Org'])
+                               '--dest-org', 'Test Org'])
 
     def test_trailing_quote_stripped(self):
-        # Case B: --org first; --out-dir kept a literal trailing `"`.
-        argv = ['--org', 'Test Org', '--profile-path', r'C:\p\X.profile-meta.xml',
+        # Case B: --dest-org first; --out-dir kept a literal trailing `"`.
+        argv = ['--dest-org', 'Test Org', '--profile-path', r'C:\p\X.profile-meta.xml',
                 '--out-dir', r'.\salesforce\src Test\dest Test"']
         out, note = _repair_mangled_argv(argv)
         self.assertTrue(note)
-        self.assertEqual(out, ['--org', 'Test Org', '--profile-path',
+        self.assertEqual(out, ['--dest-org', 'Test Org', '--profile-path',
                                r'C:\p\X.profile-meta.xml',
                                '--out-dir', r'.\salesforce\src Test\dest Test'])
 
     def test_no_quote_is_untouched(self):
-        argv = ['--org', 'Test Org', '--out-dir', r'.\dest']
+        argv = ['--dest-org', 'Test Org', '--out-dir', r'.\dest']
         out, note = _repair_mangled_argv(argv)
         self.assertEqual(note, '')
         self.assertEqual(out, argv)
 
     def test_repair_never_leaves_literal_quote(self):
-        argv = ['--out-dir', 'a" --org X', 'Y']
+        argv = ['--out-dir', 'a" --dest-org X', 'Y']
         out, _ = _repair_mangled_argv(argv)
         self.assertFalse(any('"' in t for t in out))
 
