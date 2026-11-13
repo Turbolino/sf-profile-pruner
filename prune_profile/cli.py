@@ -13,21 +13,16 @@ Three input modes:
                     (the profile is retrieved from the source org first)
   * via 3 (retrieve only): `--src-org` + `--src-profile` (no prune, no dry-run/deploy)
 
-`--align-from-source` upgrades via 2 into an *alignment*: after pruning, the
-destination profile is also retrieved and pruned, and every permission that
+`--align-from-source` upgrades via 1/via 2 into an *alignment*: after pruning,
+the destination profile is also retrieved and pruned, and every permission that
 exists only in the destination is turned off so the destination matches the
 source. It is destructive even on dry-run and asks for Y/N confirmation (skip
 with a following `--sure`).
 
-Algorithm:
-  The profile is split by its top-level sections (`classAccesses`,
-  `fieldPermissions`, `tabVisibilities`, … — discovered dynamically from the
-  XML). Up to `--thread-number` workers run in parallel; each worker takes a
-  section and, in a loop, builds a sub-package with only that section, starts
-  an async deploy dry-run and polls its job via `sf project deploy report`
-  until terminal, then removes every offending entry. COMMON/ and MISSING/ are
-  reassembled from the surviving entries in the original document order under
-  a mutex. A final dry-run of the whole assembled package gates `SUCCESS`.
+This module is the orchestration layer: it parses/validates arguments, resolves
+the input mode, retrieves the profile when needed, calls the reusable prune
+stage (`stage.prune_stage`), and optionally deploys the result. All the actual
+pruning lives in `stage.py`.
 """
 
 import argparse
@@ -36,18 +31,12 @@ import os
 import re
 import shutil
 import sys
-import threading
-import time
-from collections import OrderedDict, deque
 
-from lxml import etree
-
-from .board import Control, Logger, PrefetchStatus, Progress, StatusBoard
+from .board import Logger
 from .constants import (
     APP_NAME,
     AUTHOR_NOTE,
     BANNER,
-    BLOCK_MAP,
     COPYLEFT,
     DEFAULT_BATCH_SIZE,
     DISCLAIMER,
@@ -57,21 +46,11 @@ from .constants import (
     __version__,
     version_ge,
 )
-from .engine import prefetch_dangling, prefetch_standard_dangling, worker
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, dry_run, find_sf, org_api_version, org_username,
+from .sfcli import (deploy, find_sf, org_api_version, org_username,
                     set_deploy_start_interval)
-from .state import SharedState
-from .xmlio import (
-    load_log_entries,
-    prunable_blocks,
-    read_outcome,
-    remove_from_list,
-    remove_temp_project,
-    resolve_error,
-    write_package_xml,
-    write_sfdx_project,
-)
+from .stage import prune_stage
+from .xmlio import write_package_xml, write_sfdx_project
 
 # Options that consume exactly one value. Used to reconstruct an argv that
 # Windows/PowerShell mangled (see _repair_mangled_argv).
@@ -220,6 +199,28 @@ def _confirm(prompt):
     except (EOFError, KeyboardInterrupt):
         answer = ''
     return answer in ('y', 'yes')
+
+
+def _deploy_profile(sf, org, profile_path, profile_name, api_version,
+                    poll_interval, job_timeout, logger, out_dir):
+    """Deploy `profile_path` to `org` under `profile_name`.
+
+    Salesforce creates the profile if the name does not exist and merges into it
+    otherwise, so a renamed deploy is exactly "create if missing". A fresh
+    micro-project is created under `.work/deploy` and removed afterwards.
+    """
+    proj = os.path.join(out_dir, '.work', 'deploy')
+    try:
+        write_sfdx_project(proj, api_version)
+        manifest = os.path.join(proj, 'manifest.xml')
+        write_package_xml(manifest, {'Profile': [profile_name]}, api_version)
+        dst = os.path.join(proj, 'force-app', 'main', 'default', 'profiles',
+                           '%s.profile-meta.xml' % profile_name)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(profile_path, dst)
+        return deploy(sf, manifest, org, poll_interval, job_timeout, logger, cwd=proj)
+    finally:
+        shutil.rmtree(proj, ignore_errors=True)
 
 
 def _main():
@@ -479,27 +480,14 @@ def _main():
         src_profile_name = re.sub(r'\.profile-meta\.xml$', '', base)
         dest_profile_name = args.dest_profile or src_profile_name
 
-    common_dir = os.path.join(out_dir, 'COMMON')
-    missing_dir = os.path.join(out_dir, 'MISSING')
-    work_dir = os.path.join(out_dir, '.work')
-    missing_log = os.path.join(out_dir, 'missing_log.txt')
-    report = os.path.join(out_dir, 'report.txt')
-    run_log = os.path.join(out_dir, 'run.log')
     original_copy = os.path.join(out_dir, 'ORIGINAL_%s.profile-meta.xml' % src_profile_name)
+    run_log = os.path.join(out_dir, 'run.log')
 
-    # Always a minimal micro-project inside --out-dir (never the caller's project).
-    project_dir = os.path.join(work_dir, 'project')
-
-    # Early logger: created before any slow step so the startup is never silent.
-    for d in (out_dir, common_dir, missing_dir, work_dir):
-        try:
-            os.makedirs(d, exist_ok=True)
-        except OSError as e:
-            print('ERROR: cannot create output directory %r: %s' % (d, e))
-            print('       If the path ends with a quote or is otherwise malformed,')
-            print('       check the --out-dir value (PowerShell may have mangled a')
-            print('       trailing backslash).')
-            sys.exit(2)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as e:
+        print('ERROR: cannot create output directory %r: %s' % (out_dir, e))
+        sys.exit(2)
 
     logger = Logger(args.quiet, run_log)
 
@@ -514,21 +502,6 @@ def _main():
     sf = find_sf(args.sf)
     logger.log('sf          : %s' % sf)
 
-    def deploy_cleaned(common_profile, dest_profile_name, dest_org):
-        """Deploy the cleaned profile under dest_profile_name (renaming if needed).
-
-        Salesforce creates the profile if the name does not exist and merges
-        into it otherwise, so a renamed deploy is exactly "create if missing".
-        """
-        deploy_manifest = os.path.join(project_dir, 'manifest.xml')
-        write_package_xml(deploy_manifest, {'Profile': [dest_profile_name]}, args.api_version)
-        deploy_profile = os.path.join(project_dir, 'force-app', 'main', 'default',
-                                      'profiles', '%s.profile-meta.xml' % dest_profile_name)
-        os.makedirs(os.path.dirname(deploy_profile), exist_ok=True)
-        shutil.copyfile(common_profile, deploy_profile)
-        return deploy(sf, deploy_manifest, dest_org, args.poll_interval,
-                      args.job_timeout, logger, cwd=project_dir)
-
     # ---------- API version: explicit or detected from the destination org ----------
     api_source = 'explicit'
     if args.api_version is None:
@@ -540,8 +513,9 @@ def _main():
             print('       Pass --api-version <X.Y> explicitly to continue.')
             sys.exit(2)
         api_source = 'auto (latest for org)'
+    logger.log('API version : %s (%s)' % (args.api_version, api_source))
 
-    logger.log('Startup: preparing the working copy and project scaffolding...')
+    # ---------- retrieve the source profile (via 2) ----------
     if mode == 'org':
         username, uerr = org_username(sf, src_org)
         if not username:
@@ -561,351 +535,69 @@ def _main():
         logger.log('Retrieve : %s -> %s (%d bytes)' % (full_name, original_copy, len(xml)))
         if rerr:
             logger.log('Retrieve : warning: %s' % rerr)
-    # Untouched copy of the source (kept for reconstruction on resume).
-    if os.path.abspath(profile_path) != os.path.abspath(original_copy):
-        shutil.copyfile(profile_path, original_copy)
 
-    # Minimal project scaffolding (a single sfdx-project.json is enough).
-    if not os.path.isfile(os.path.join(project_dir, 'sfdx-project.json')):
-        write_sfdx_project(project_dir, args.api_version)
-
-    logger.log('Profile     : %s' % profile_path)
-    logger.log('Name        : %s' % src_profile_name)
     logger.log('Deploy as   : %s' % dest_profile_name)
     logger.log('Dest org    : %s' % dest_org)
     if mode == 'org':
         logger.log('Source org  : %s' % src_org)
-    logger.log('Project     : %s' % project_dir)
-    logger.log('Output      : %s' % out_dir)
-    logger.log('API version : %s (%s)' % (args.api_version, api_source))
 
-    # ---------- already clean? ----------
-    prev_outcome = read_outcome(report)
-    common_profile = os.path.join(common_dir, '%s.profile-meta.xml' % src_profile_name)
-    if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(common_profile):
+    # ---------- run the prune stage ----------
+    result = prune_stage(
+        sf=sf,
+        org=dest_org,
+        source_profile_path=profile_path,
+        profile_name=src_profile_name,
+        out_dir=out_dir,
+        api_version=args.api_version,
+        poll_interval=args.poll_interval,
+        job_timeout=args.job_timeout,
+        thread_number=args.thread_number,
+        batch_size=args.batch_size,
+        max_iter=args.max_iter,
+        quiet=args.quiet,
+        fresh=args.fresh,
+        logger=logger,
+    )
+
+    # ---------- already clean? (resume short-circuit) ----------
+    if result['already_clean']:
         if do_deploy:
             logger.log('Profile already clean; deploying %r to org %s...' % (dest_profile_name, dest_org))
-            ok, detail = deploy_cleaned(common_profile, dest_profile_name, dest_org)
-            remove_temp_project(work_dir, out_dir)
+            ok, detail = _deploy_profile(sf, dest_org, result['common_profile_path'],
+                                         dest_profile_name, args.api_version,
+                                         args.poll_interval, args.job_timeout,
+                                         logger, out_dir)
             print('%s: %s' % ('DEPLOY OK' if ok else 'DEPLOY FAILED', detail))
             sys.exit(0 if ok else 1)
-        remove_temp_project(work_dir, out_dir)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % src_profile_name)
         sys.exit(0)
 
-    # ---------- clean run (--fresh): clear previous outputs ----------
-    if args.fresh:
-        for p in (missing_log, report, run_log):
-            if os.path.exists(p):
-                os.remove(p)
-        if os.path.exists(common_profile):
-            os.remove(common_profile)
-        missing_pkg = os.path.join(missing_dir, 'package.xml')
-        if os.path.exists(missing_pkg):
-            os.remove(missing_pkg)
-        todeploy = os.path.join(common_dir, 'toDeploy.xml')
-        if os.path.exists(todeploy):
-            os.remove(todeploy)
-        logger.log('CLEAN RUN (--fresh): outputs cleared.')
-
-    # ---------- load original, split into per-section groups ----------
-    logger.log('Reading the profile and splitting it into sections...')
-    tree = etree.parse(original_copy)
-    root = tree.getroot()
-    original_seq = [c for c in root if isinstance(c.tag, str)]
-    groups = OrderedDict()
-    for el in original_seq:
-        block = el.tag.split('}')[-1]
-        groups.setdefault(block, []).append(el)
-    logger.log('Read %d section(s) with %d entry(ies) in total.' % (len(groups), len(original_seq)))
-
-    # ---------- apply recorded removals (resume) ----------
-    # Capture the true original section sizes first, so the board keeps showing
-    # cumulative deleted/initial across resumptions instead of resetting.
-    original_counts = {block: len(els) for block, els in groups.items()}
-    removed_by_type = {}
-    for typ, member in load_log_entries(missing_log):
-        removed_by_type.setdefault(typ, set()).add(member)
-        for block, child, mode in BLOCK_MAP.get(typ, []):
-            g = groups.get(block)
-            if g is None:
-                continue
-            g, _n = remove_from_list(g, block, member)
-            groups[block] = g
-
-    total_resumed = sum(len(v) for v in removed_by_type.values())
-    if total_resumed:
-        logger.log('RESUME: %d metadata already removed.' % total_resumed)
-    else:
-        logger.log('FIRST RUN.')
-
-    # ---------- shared state + initial outputs ----------
-    logger.log('Writing the initial COMMON/MISSING outputs...')
-    common_profile_path = os.path.join(common_dir, '%s.profile-meta.xml' % src_profile_name)
-    missing_pkg = os.path.join(missing_dir, 'package.xml')
-    todeploy_pkg = os.path.join(common_dir, 'toDeploy.xml')
-    state = SharedState(groups, original_seq, logger, missing_log, common_profile_path,
-                        missing_pkg, todeploy_pkg, src_profile_name, args.api_version)
-    state.removed_by_type = removed_by_type
-    state.initial_counts = original_counts
-    state.seq = total_resumed  # continue the error-log sequence on resume
-    with state.lock:
-        state._write_outputs_locked()
-
-    # ---------- Metadata API pre-pass: prune dangling references fast ----------
-    # Enumerates existing metadata per type (`sf org list metadata`) and removes
-    # every reference that has no matching component, before the dry-run loop.
-    # This catches login flows, the newest Profile sections (agentAccesses,
-    # genComputingSummaryDefAccesses) and any other listable type in one shot.
-    # The pre-fetch phase owns the console via a single in-place status line
-    # (message + elapsed) so it never looks frozen; the logger keeps writing
-    # the full history to run.log. In non-TTY mode the status line is a no-op
-    # and the per-type messages keep flowing to stdout through the logger.
-    ps = PrefetchStatus(args.quiet)
-    if ps.active:
-        logger.console = False
-    ps.start()
-    try:
-        pref = prefetch_dangling(sf, dest_org, state.groups, args.api_version,
-                                 logger, status=ps.update)
-    finally:
-        ps.stop()
-        if ps.active:
-            logger.console = not args.quiet
-    if pref:
-        n = state.apply_global_removals(pref, problem='missing in org (pre-fetch)')
-        logger.log('PREFETCH: removed %d dangling reference(s) via listMetadata.' % n)
-    else:
-        logger.log('PREFETCH: no dangling references found via listMetadata.')
-
-    # ---------- standard pre-pass: prune dangling standard metadata ----------
-    # Queries the org Tooling API (TabDefinition / EntityDefinition /
-    # FieldDefinition) for the standard tabs/objects/fields the profile
-    # references, and removes those that do not exist. This catches the class of
-    # error the dry-run never surfaces (e.g. "can't edit tab settings for X, as
-    # it's not a valid tab"), where an object exists but has no editable tab.
-    ps = PrefetchStatus(args.quiet)
-    if ps.active:
-        logger.console = False
-    ps.start()
-    try:
-        pref = prefetch_standard_dangling(sf, dest_org, state.groups,
-                                          logger, status=ps.update)
-    finally:
-        ps.stop()
-        if ps.active:
-            logger.console = not args.quiet
-    by_source = {}
-    for typ, member, source in pref:
-        by_source.setdefault(source, []).append((typ, member))
-    for source in sorted(by_source):
-        n = state.apply_global_removals(
-            by_source[source],
-            problem='missing in org (standard pre-fetch: %s)' % source)
-        logger.log('STD-PREFETCH [%s]: removed %d dangling reference(s).' % (source, n))
-    if not pref:
-        logger.log('STD-PREFETCH: no dangling standard references found.')
-
-    # ---------- queue of prunable chunks (sections split into chunks) ----------
-    # No workers are running yet, so reading `state.groups` is safe here; each
-    # split_chunks() call takes the state lock itself.
-    queue = deque()
-    section_count = 0
-    for block in state.groups:
-        if block in prunable_blocks() and state.groups[block]:
-            section_count += 1
-            n_chunks = state.split_chunks(block, args.batch_size)
-            for chunk_id in range(n_chunks):
-                queue.append((block, chunk_id))
-    logger.log('Sections to prune: %d (split into %d work item(s))' % (section_count, len(queue)))
-
-    t0 = time.time()
-    result_reason = ''
-
-    if not queue:
-        result_state = 'SUCCESS'
-        logger.log('Nothing to prune: all sections already clean.')
-    else:
-        # ---------- launch workers (one per workable section, capped) ----------
-        workers_dir = os.path.join(work_dir, 'workers')
-        queue_lock = threading.Lock()
-        progress = Progress(total=len(queue))
-        control = Control()
-        # Never spawn more threads than there are work items to prune.
-        n_workers = min(args.thread_number, len(queue))
-        logger.log('Launching %d worker(s) across %d work item(s)...' % (n_workers, len(queue)))
-        board = StatusBoard(n_workers, args.quiet, progress=progress, t0=t0)
-        logger.console = False  # board owns the console during the parallel phase
-        threads = []
-        for tid in range(n_workers):
-            wp = os.path.join(workers_dir, 'w%d' % tid)
-            write_sfdx_project(wp, args.api_version)
-            t = threading.Thread(
-                target=worker,
-                args=(tid, state, queue, queue_lock, board, progress, control,
-                      sf, dest_org, args.poll_interval, args.job_timeout,
-                      src_profile_name, args.api_version, wp, logger, args.max_iter),
-                daemon=True)
-            t.start()
-            threads.append(t)
-
-        # ---------- join workers; Ctrl-C stops gracefully (as if 'S') ----------
-        # Bounded joins: a join() without timeout blocks the main thread in a
-        # native wait that never checks the Ctrl-C interrupt flag on Windows,
-        # so the interrupt is only raised when the join returns. Polling with a
-        # short timeout keeps KeyboardInterrupt responsive.
-        stopped = False
-        try:
-            while any(t.is_alive() for t in threads):
-                for t in threads:
-                    t.join(timeout=0.5)
-        except KeyboardInterrupt:
-            control.stop.set()
-            board.freeze()
-            sys.stdout.write('Saving pending work...\n')
-            sys.stdout.flush()
-            stopped = True
-
-        # Wait for the workers to acknowledge the stop at their next checkpoint.
-        # A second Ctrl-C while shutting down must not abort this wait, or the
-        # workers would be left holding their temp dirs and cleanup would fail.
-        if stopped:
-            while any(t.is_alive() for t in threads):
-                try:
-                    for t in threads:
-                        t.join(timeout=0.5)
-                except KeyboardInterrupt:
-                    pass
-
-        if stopped:
-            board.finalize_stopped()
-            logger.console = not args.quiet
-            result_state = 'ABORTED'
-            result_reason = 'stopped by user'
-        else:
-            board.finalize_finished()
-            logger.console = not args.quiet
-
-            # ---------- outcome ----------
-            failed = [(b, r) for b, (ok, r) in state.section_status.items() if not ok]
-            if failed:
-                result_state = 'ABORTED'
-                result_reason = '; '.join('%s: %s' % (b, r) for b, r in failed)
-            else:
-                result_state = 'SUCCESS'
-
-    elapsed = time.time() - t0
-
-    # ---------- final COMMON/MISSING ----------
-    logger.log('Writing the final COMMON/MISSING outputs...')
-    with state.lock:
-        state._write_outputs_locked()
-
-    # ---------- final full dry-run of the assembled package ----------
-    # Loop it: when the full-package validation surfaces a reference the
-    # per-section pass missed (e.g. login flows), resolve + remove it and
-    # re-validate until clean (or until no further progress is possible).
-    final_detail = ''
-    if result_state == 'SUCCESS':
-        logger.log('Final dry-run of the full package...')
-        final_proj = os.path.join(work_dir, 'final')
-        write_sfdx_project(final_proj, args.api_version)
-        fmanifest = os.path.join(final_proj, 'manifest.xml')
-        write_package_xml(fmanifest, {'Profile': [src_profile_name]}, args.api_version)
-        fprofile = os.path.join(final_proj, 'force-app', 'main', 'default', 'profiles',
-                                '%s.profile-meta.xml' % src_profile_name)
-        os.makedirs(os.path.dirname(fprofile), exist_ok=True)
-
-        guard = 0
-        while True:
-            guard += 1
-            if guard > args.max_iter:
-                result_state = 'ABORTED'
-                result_reason = 'final dry-run did not converge within %d iterations' % args.max_iter
-                break
-            shutil.copyfile(common_profile_path, fprofile)
-            res, err = dry_run(sf, fmanifest, dest_org, args.poll_interval,
-                               args.job_timeout, logger, cwd=final_proj)
-            if res is None:
-                result_state = 'ABORTED'
-                result_reason = 'final dry-run failed: %s' % (err or 'unparseable output')
-                break
-            r = res.get('result', {})
-            if r.get('success') is True:
-                final_detail = 'clean'
-                break
-            cf = (r.get('details', {}) or {}).get('componentFailures') or []
-            if not cf:
-                result_state = 'ABORTED'
-                result_reason = 'final dry-run reported a failed deploy with no componentFailures'
-                break
-            removals = []
-            for f in cf:
-                problem = str(f.get('problem', ''))
-                rr = resolve_error(problem)
-                if rr is None:
-                    logger.log('Final gate: unmappable problem, skipped: %s' % problem)
-                    continue
-                removals.append((rr[0], rr[1]))
-            if not removals:
-                probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
-                result_state = 'ABORTED'
-                result_reason = 'final dry-run reported %d failure(s), none mappable: %s' % (len(cf), probs)
-                break
-            removed = state.apply_global_removals(removals)
-            if removed == 0:
-                probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
-                result_state = 'ABORTED'
-                result_reason = 'final dry-run: no progress removing %d failure(s): %s' % (len(cf), probs)
-                break
-            logger.log('Final gate: removed %d entry(ies); re-running full dry-run...' % removed)
-
-    total_removed = state.totals()
-
     # ---------- optional deploy (only with --deploy-on-success) ----------
+    result_state = result['outcome']
     deploy_detail = ''
     if result_state == 'SUCCESS' and do_deploy:
         logger.log('Deploying the cleaned profile %r to org %s...' % (dest_profile_name, dest_org))
-        ok, deploy_detail = deploy_cleaned(common_profile_path, dest_profile_name, dest_org)
+        ok, deploy_detail = _deploy_profile(sf, dest_org, result['common_profile_path'],
+                                            dest_profile_name, args.api_version,
+                                            args.poll_interval, args.job_timeout,
+                                            logger, out_dir)
         if not ok:
             result_state = 'DEPLOY_FAILED'
-
-    # ---------- report ----------
-    logger.log('Writing the report...')
-    lines = []
-    lines.append('OUTCOME: %s' % result_state)
-    if result_reason:
-        lines.append('REASON: %s' % result_reason)
-    lines.append('METADATA REMOVED (total): %d' % total_removed)
-    lines.append('TIME: %.1fs' % elapsed)
-    if final_detail:
-        lines.append('FINAL DRY-RUN: %s' % final_detail)
-    if deploy_detail:
-        lines.append('DEPLOY: %s' % deploy_detail)
-    lines.append('')
-    lines.append('Removed by type:')
-    for t in sorted(removed_by_type):
-        lines.append('  %s : %d' % (t, len(removed_by_type[t])))
-    lines.append('')
-    lines.append('Output:')
-    lines.append('  COMMON  : %s' % common_dir)
-    lines.append('  MISSING : %s' % missing_dir)
-    lines.append('  toDeploy: %s' % todeploy_pkg)
-    lines.append('  report : %s' % report)
-    with open(report, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
-
-    # ---------- throw away our temporary work area ----------
-    logger.log('Cleaning up the temporary working area...')
-    remove_temp_project(work_dir, out_dir)
 
     # ---------- final output ----------
     logger.log('')
     logger.log('========================================================')
     logger.log('  PROFILE PRUNING RESULT')
     logger.log('========================================================')
-    for l in lines:
-        logger.log(l)
+    logger.log('OUTCOME: %s' % result_state)
+    if result['reason']:
+        logger.log('REASON: %s' % result['reason'])
+    logger.log('METADATA REMOVED (total): %d' % result['total_removed'])
+    logger.log('TIME: %.1fs' % result['elapsed'])
+    if result['final_detail']:
+        logger.log('FINAL DRY-RUN: %s' % result['final_detail'])
+    if deploy_detail:
+        logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')
     logger.log('RESULT:%s' % result_state)
 

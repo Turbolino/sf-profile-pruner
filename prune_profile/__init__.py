@@ -60,6 +60,7 @@ from .sfcli import (
     tooling_query,
 )
 from .state import SharedState
+from .stage import prune_stage
 from .xmlio import (
     apply_removals_batch,
     build_subprofile,
@@ -87,6 +88,7 @@ __all__ = [
     'TERMINAL_STATUSES', '__version__', '__author__',
     '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
+    'prune_stage',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
     'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
