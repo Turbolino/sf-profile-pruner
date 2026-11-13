@@ -202,6 +202,7 @@ python -m prune_profile \
 | `--fresh` | Ignore previous state and restart from the original. |
 | `--quiet` | Suppress progressive stdout output. |
 | `--deploy-on-success` | Deploy the cleaned profile to the org once pruning succeeds. |
+| `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |
 | `-V`, `--version` | Show version and author. |
 
 ## Output layout (`--out-dir`)
@@ -258,6 +259,10 @@ prune_profile/
 ## Author
 
 Made with <3 by Lorenzo D'Aleo — turbolino.dev@proton.me
+
+This software is unofficial and is written under the AGPL-3.0 license; use at your own risk.
+
+(ɔ) All Right Reversed!
 
 ## License
 

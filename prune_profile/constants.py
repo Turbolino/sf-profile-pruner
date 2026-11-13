@@ -11,6 +11,27 @@ __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
 
+DISCLAIMER = ("This software is unofficial and is written under the AGPL-3.0 "
+              "license; use at your own risk.")
+COPYLEFT = "(ɔ) All Right Reversed!"
+
+# The `--tell-me-a-story` easter egg. Intentionally undocumented (it never
+# appears in CHANGELOG.md): a love letter to free software. Algorithms belong
+# to everyone, so the code that expresses them should never be fenced off.
+STORY = (
+    "When you were little, you probably found yourself unable to open a jar of "
+    "jam. Then your mum came along and taught you that if you hold it under hot "
+    "water, the lid expands and the jar becomes easier to open. Your mother had "
+    "just shared an algorithm with you: a sequence of steps that takes you from "
+    "state A to state B — or, more simply, that helps you reach a goal. Now "
+    "imagine someone claiming rights over that algorithm, making it usable only "
+    "for a fee or, worse, keeping it all to themselves. That is intellectual "
+    "property: a concept that, applied to code, makes no sense at all. Code is "
+    "the language through which the computer understands and runs algorithms, "
+    "and for that very reason it should never be subject to copyright. Let that "
+    "sink in."
+)
+
 APP_NAME = 'Profile Pruner'
 
 BANNER = '''

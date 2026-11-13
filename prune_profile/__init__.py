@@ -20,6 +20,8 @@ from .constants import (
     AUTHOR_NOTE,
     BANNER,
     BLOCK_MAP,
+    COPYLEFT,
+    DISCLAIMER,
     LISTABLE,
     LIST_METADATA_NAME,
     M,
@@ -27,6 +29,7 @@ from .constants import (
     MIN_CHUNK_SIZE,
     NS,
     STANDARD_TYPES,
+    STORY,
     TERMINAL_STATUSES,
     __author__,
     __email__,
@@ -73,9 +76,10 @@ from .xmlio import (
 )
 
 __all__ = [
-    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'LISTABLE',
-    'LIST_METADATA_NAME', 'M',
-    'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'TERMINAL_STATUSES', '__version__', '__author__',
+    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'COPYLEFT', 'DISCLAIMER',
+    'LISTABLE', 'LIST_METADATA_NAME', 'M',
+    'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
+    'TERMINAL_STATUSES', '__version__', '__author__',
     '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',

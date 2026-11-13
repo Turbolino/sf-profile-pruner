@@ -35,7 +35,10 @@ from .constants import (
     AUTHOR_NOTE,
     BANNER,
     BLOCK_MAP,
+    COPYLEFT,
+    DISCLAIMER,
     MIN_CHUNK_SIZE,
+    STORY,
     __version__,
     version_ge,
 )
@@ -154,6 +157,12 @@ def _main():
         print(repair_note, file=sys.stderr)
     sys.argv[1:] = argv
 
+    # Easter egg: print the story and exit before argparse enforces the
+    # required options (--profile-path / --out-dir / --org).
+    if '--tell-me-a-story' in argv:
+        print(STORY, flush=True)
+        sys.exit(0)
+
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
         description='Removes from a Salesforce Profile every reference to metadata that '
@@ -201,6 +210,9 @@ def _main():
     ap.add_argument('--deploy-on-success', action='store_true',
                     help='deploy the cleaned profile to the org once the pruning succeeds '
                          '(default: dry-run only, the org is never modified)')
+    ap.add_argument('--tell-me-a-story', action='store_true',
+                    help='Turbolino will tell you a fascinating story about code, '
+                         'algorithms and copyright.')
     ap.add_argument('-V', '--version', action='version',
                     version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
     args = ap.parse_args()
@@ -229,6 +241,8 @@ def _main():
         print(BANNER, flush=True)
         print('%s v%s' % (APP_NAME, __version__), flush=True)
         print(AUTHOR_NOTE, flush=True)
+        print(DISCLAIMER, flush=True)
+        print(COPYLEFT, flush=True)
         print('', flush=True)
 
     profile_path = os.path.abspath(args.profile_path)
