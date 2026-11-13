@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-11-04
+
+### Fixed
+
+- **Progress board scrolling**: the board left the frame at exactly the terminal
+  height (`height - 1` worker rows + 1 summary line), so the trailing newline
+  scrolled the console by one line on every update and the board kept reprinting
+  instead of redrawing in place. It now reserves one extra line (`height - 2`) and
+  re-reads the window size on every render so a mid-run resize no longer desyncs
+  the cursor accounting.
+
 ## [2.0.0] - 2026-11-13
 
 ### Added

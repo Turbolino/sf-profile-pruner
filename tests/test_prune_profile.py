@@ -395,9 +395,11 @@ class TestStatusBoard(unittest.TestCase):
     def test_visible_rows_capped_by_terminal_height(self):
         b = pp.StatusBoard(40, quiet=True)
         b.height = 20
-        self.assertEqual(b._visible_rows(), 19)
+        self.assertEqual(b._visible_rows(), 18)  # height - 2 (1 slack line)
         b.height = 3
-        self.assertEqual(b._visible_rows(), 2)
+        self.assertEqual(b._visible_rows(), 1)
+        b.height = 2
+        self.assertEqual(b._visible_rows(), 1)
         b.height = 0  # unknown terminal height -> no cap
         self.assertEqual(b._visible_rows(), 40)
 

@@ -172,15 +172,28 @@ class StatusBoard:
         sys.stdout.flush()
 
     def _visible_rows(self):
-        """Number of worker rows to render so the frame (rows + summary) never
-        exceeds the terminal height. A frame taller than the terminal scrolls,
-        which breaks the ANSI cursor-up accounting and makes every update print
-        a new copy of the board instead of redrawing in place."""
+        """Number of worker rows to render so the whole frame (rows + summary)
+        never reaches the bottom edge of the terminal.
+
+        The frame is written as N worker rows + 1 summary line, and every line
+        ends with '\n', so after a redraw the cursor sits ONE line below the
+        frame. For the cursor-up accounting to stay exact that final position
+        must still be a valid row: rows + 1 must be <= height - 1, i.e.
+        rows <= height - 2. If the frame were exactly `height` lines (the old
+        `height - 1` rule), the trailing newline would scroll the terminal by
+        one line on every single update, making the board reprint a new copy
+        instead of redrawing in place."""
         if self.height and self.height > 1:
-            return max(1, self.height - 1)
+            return max(1, self.height - 2)
         return self.n
 
     def _render(self):
+        # Refresh the window size on every render so a terminal resize mid-run
+        # is picked up instead of using a stale height/width captured at startup.
+        try:
+            self.width, self.height = self._terminal_size()
+        except Exception:
+            pass
         visible = self._visible_rows()
         rows = self.rows if self.n <= visible else self.rows[:visible]
         out = []
