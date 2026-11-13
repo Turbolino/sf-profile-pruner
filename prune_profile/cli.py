@@ -310,17 +310,20 @@ def _main():
 
     g_act = ap.add_argument_group('behavior')
     g_act.add_argument('--align-from-source', action='store_true',
-                       help='align the destination profile to the source: retrieve the '
-                            'source, prune it against the destination, then retrieve and '
-                            'prune the destination too, and turn OFF any permission that '
-                            'exists only in the destination (hidden tab/app, disabled '
+                       help='align the destination profile to the source (works with a '
+                            'source file via 1, or a source org via 2): prune the source '
+                            'against the destination, then retrieve and prune the '
+                            'destination too, and turn OFF any permission that exists only '
+                            'in the destination (hidden tab/app, disabled '
                             'field/object/class/page/flow), so the destination matches the '
                             'source. Without it, destination-only permissions are left '
                             'untouched. Destructive even on dry-run: asks for Y/N '
-                            'confirmation unless followed by --sure.')
+                            'confirmation (a No skips the alignment and runs the normal '
+                            'prune); skip with a following --sure.')
     g_act.add_argument('--deploy-on-success', action='store_true',
                        help='deploy the cleaned profile to --dest-org once pruning succeeds. '
-                            'Modifies the org: asks for Y/N confirmation unless followed by --sure.')
+                            'Modifies the org: asks for Y/N confirmation (a No runs the '
+                            'dry-run only); skip with a following --sure.')
     g_act.add_argument('--sure', action='store_true',
                        help='skip the Y/N confirmation of the immediately preceding '
                             'destructive option (--align-from-source or --deploy-on-success). '
@@ -364,10 +367,11 @@ def _main():
     # Apply the deploy-start rate limit before any worker is spawned.
     set_deploy_start_interval(args.deploy_throttle_ms / 1000.0)
 
-    # --align-from-source is a via-2 operation (it needs both source and destination).
-    if args.align_from_source and not (args.src_org and args.src_profile
-                                       and args.dest_org and args.dest_profile):
-        print('ERROR: --align-from-source requires -so, -sp, -do and -dp (via 2).')
+    # --align-from-source needs a destination org. The source can be either a
+    # file (via 1: -pp + -do) or an org retrieve (via 2: -so + -sp + -do + -dp).
+    # Retrieve-only (via 3) has no destination, so it cannot align.
+    if args.align_from_source and not args.dest_org:
+        print('ERROR: --align-from-source requires --dest-org (-do).')
         sys.exit(2)
 
     # ---------- mode detection ----------
@@ -429,20 +433,25 @@ def _main():
         sys.exit(0)
 
     # ---------- destructive-op confirmations (Y/N, skippable with --sure) ----------
-    if args.align_from_source and not sure_align:
+    # A 'no' downgrades the operation instead of aborting the whole run:
+    #   - align 'no'  -> skip the alignment, run the normal prune flow
+    #   - deploy 'no' -> skip the deploy, run the dry-run only
+    do_align = args.align_from_source
+    if do_align and not sure_align:
         if not _confirm('--align-from-source disables destination-only permissions '
-                        '(destructive, even on dry-run). Continue? [y/N] '):
-            print('Aborted by user.', file=sys.stderr)
-            sys.exit(0)
-    if args.deploy_on_success and not sure_deploy:
+                        '(destructive, even on dry-run). Align? [y/N] '):
+            do_align = False
+            print('Alignment skipped: running the normal prune flow.', file=sys.stderr)
+    do_deploy = args.deploy_on_success
+    if do_deploy and not sure_deploy:
         if not _confirm('--deploy-on-success will deploy the cleaned profile to the '
-                        'destination org. Continue? [y/N] '):
-            print('Aborted by user.', file=sys.stderr)
-            sys.exit(0)
+                        'destination org. Deploy? [y/N] '):
+            do_deploy = False
+            print('Deploy skipped: dry-run only.', file=sys.stderr)
 
     # Alignment engine (retrieve+prune both sides, merge with source authoritative)
     # lands in the next step.
-    if args.align_from_source:
+    if do_align:
         print('ERROR: --align-from-source is not implemented yet (the alignment engine '
               'is being built).', file=sys.stderr)
         sys.exit(2)
@@ -574,7 +583,7 @@ def _main():
     prev_outcome = read_outcome(report)
     common_profile = os.path.join(common_dir, '%s.profile-meta.xml' % src_profile_name)
     if (not args.fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(common_profile):
-        if args.deploy_on_success:
+        if do_deploy:
             logger.log('Profile already clean; deploying %r to org %s...' % (dest_profile_name, dest_org))
             ok, detail = deploy_cleaned(common_profile, dest_profile_name, dest_org)
             remove_temp_project(work_dir, out_dir)
@@ -855,7 +864,7 @@ def _main():
 
     # ---------- optional deploy (only with --deploy-on-success) ----------
     deploy_detail = ''
-    if result_state == 'SUCCESS' and args.deploy_on_success:
+    if result_state == 'SUCCESS' and do_deploy:
         logger.log('Deploying the cleaned profile %r to org %s...' % (dest_profile_name, dest_org))
         ok, deploy_detail = deploy_cleaned(common_profile_path, dest_profile_name, dest_org)
         if not ok:
