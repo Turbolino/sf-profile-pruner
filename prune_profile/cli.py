@@ -185,7 +185,8 @@ def _check_for_update():
         return []
     return [
         'A newer version is available: %s (installed: %s).' % (latest, __version__),
-        'Update with:  python -m pip install --upgrade sf-profile-pruner',
+        'Update with:  python -m pip install --upgrade --upgrade-strategy eager '
+        'sf-profile-pruner',
     ]
 
 

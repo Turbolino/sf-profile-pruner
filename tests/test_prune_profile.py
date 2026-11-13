@@ -257,7 +257,7 @@ class TestUpdateCheck(unittest.TestCase):
             lines = _check_for_update()
         self.assertTrue(lines)
         self.assertIn('99.0.0', lines[0])
-        self.assertIn('pip install --upgrade sf-profile-pruner', ' '.join(lines))
+        self.assertIn('pip install --upgrade --upgrade-strategy eager', ' '.join(lines))
 
     def test_same_version_is_silent(self):
         with self._patch_pypi('{"info": {"version": "%s"}}' % pp.__version__):
@@ -338,17 +338,14 @@ class TestStatusBoard(unittest.TestCase):
         b = pp.StatusBoard(3, quiet=True)  # quiet -> inactive render, rows still update
         b.set(1, 'dry-run', 'tabVisibilities', 'polling', 10, 5)
         b.set(0, 'removing', 'classAccesses', '2 errors', 20, 18)
-        self.assertIn('[T1]', b.rows[1])
+        self.assertIn('[T1', b.rows[1])
         self.assertIn('dry-run', b.rows[1])
         self.assertIn('tabVisibilities', b.rows[1])
-        # deleted = discarded so far; remaining = still to process = initial - deleted
-        self.assertIn('deleted:5', b.rows[1])
-        self.assertIn('remaining:5', b.rows[1])
-        self.assertIn('initial:10', b.rows[1])
+        # cell shows the [deleted/initial] ratio only (remaining dropped for 2 cols)
+        self.assertIn('[5/10]', b.rows[1])
         self.assertIn('removing', b.rows[0])
         self.assertIn('classAccesses', b.rows[0])
-        self.assertIn('deleted:18', b.rows[0])
-        self.assertIn('remaining:2', b.rows[0])
+        self.assertIn('[18/20]', b.rows[0])
         # thread 2 still idle
         self.assertIn('idle', b.rows[2])
 
@@ -398,8 +395,8 @@ class TestStatusBoard(unittest.TestCase):
         self.assertEqual(b._visible_rows(), 16)  # height - 4 (2 blank bottom rows)
         b.height = 4
         self.assertEqual(b._visible_rows(), 1)
-        b.height = 0  # unknown terminal height -> no cap
-        self.assertEqual(b._visible_rows(), 40)
+        b.height = 0  # unknown terminal height -> no cap (pairs = ceil(n/2))
+        self.assertEqual(b._visible_rows(), 20)
 
     def test_mark_completed_only_idle_and_running(self):
         b = pp.StatusBoard(3, quiet=True)

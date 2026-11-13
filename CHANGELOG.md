@@ -24,9 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Progress board overflow**: the frame now clears the screen and homes the
-  cursor before the first draw, and reserves two blank rows at the bottom, so a
-  64-worker board no longer renders two rows past the visible window.
+- **Progress board two-column layout**: the board clears the screen and homes
+  the cursor before the first draw, reserves two blank bottom rows, and renders
+  two workers per line (dropping the `remaining`/`initial` columns and keeping
+  only `deleted/initial`), so a 64-worker board fits without scrolling.
+- **Upgrade hint** now suggests `pip install --upgrade --upgrade-strategy eager`
+  so a future `pip` upgrade also bumps the dependencies (e.g. lxml).
 
 ## [2.0.1] - 2026-11-04
 

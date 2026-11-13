@@ -31,12 +31,10 @@ class Logger:
 
 
 class StatusBoard:
-    """One live-updating line per worker thread on the console, plus a summary
-    line with the elapsed time and the tag counters (done / running / todo).
-
-    Renders N thread lines + 1 summary line and redraws them in place on every
-    update. Falls back to no-op when stdout is not a TTY (e.g. piped) or when
-    --quiet is set.
+    """A live progress board: two worker cells per line (side by side), plus a
+    summary line with the elapsed time and the tag counters (done / running /
+    todo). Redrawn in place on every update; falls back to no-op when stdout is
+    not a TTY (e.g. piped) or --quiet is set.
 
     Stop lifecycle:
       - freeze(): stop the live redraw, leaving the current frame on screen
@@ -44,8 +42,6 @@ class StatusBoard:
       - finalize_stopped(): mark non-idle rows "stopped by user" and redraw the
         frame in place, then leave it on screen.
     """
-
-    COL_FMT = '%-7s %-9s %-24s %-18s deleted:%-7d remaining:%-7d initial:%-7d'
 
     def __init__(self, n_threads, quiet, progress=None, t0=None):
         self.n = n_threads
@@ -134,13 +130,15 @@ class StatusBoard:
         return text
 
     def _fmt_row(self, tid, status, tag, op, initial, deleted):
-        # `deleted` = entries discarded so far; `remaining` = entries still to
-        # process = initial - deleted. There is no per-entry "processed" counter:
-        # each dry-run tests the whole remaining chunk at once, so the only real
-        # monotonic quantities are discarded / remaining / initial.
-        remaining = max(0, initial - deleted)
-        return self.COL_FMT % ('[T%d]' % tid, status, tag or '-', op or '-',
-                               deleted, remaining, initial)
+        """One worker cell: ``[Tid] status tag op [deleted/initial]``, fixed
+        width so two cells align side by side. Only the ``deleted/initial``
+        ratio is kept (the ``remaining``/``initial`` columns were dropped to
+        halve the row width for the two-column layout)."""
+        def f(text, width):
+            text = str(text if text is not None else '-')
+            return text[:width].ljust(width)
+        return '[T%-2d] %s %s %s [%d/%d]' % (
+            tid, f(status, 9), f(tag, 17), f(op, 15), deleted, initial)
 
     @staticmethod
     def _fmt_elapsed(seconds):
@@ -172,20 +170,14 @@ class StatusBoard:
         sys.stdout.flush()
 
     def _visible_rows(self):
-        """Number of worker rows to render so the frame never touches the
-        bottom of the terminal.
-
-        The frame is N worker rows + 1 summary line, and every line ends with
-        '\n', so after a redraw the cursor sits one line below the summary. We
-        keep TWO blank lines below that cursor: the last terminal row is where
-        the shell prompt sits in many setups, and the line above it is the
-        scroll margin — writing into either of them makes the terminal scroll on
-        the next newline and the board reprints instead of redrawing in place.
-        Total: N rows + 1 summary + 1 trailing cursor + 2 blank margin
-        <= height, i.e. rows <= height - 4."""
+        """Number of screen rows available for the board. Each row now holds
+        TWO worker cells side by side, so ceil(n/2) rows are needed for the
+        workers; one more line is the summary, and two blank bottom lines are
+        the scroll margin. Total rows <= height - 4."""
+        pairs = (self.n + 1) // 2
         if self.height and self.height > 1:
             return max(1, self.height - 4)
-        return self.n
+        return pairs
 
     def _render(self):
         # Refresh the window size on every render so a terminal resize mid-run
@@ -195,7 +187,9 @@ class StatusBoard:
         except Exception:
             pass
         visible = self._visible_rows()
-        rows = self.rows if self.n <= visible else self.rows[:visible]
+        pairs = [(self.rows[i], self.rows[i + 1] if i + 1 < self.n else None)
+                 for i in range(0, self.n, 2)]
+        pairs = pairs if len(pairs) <= visible else pairs[:visible]
         out = []
         if self.lines_on_screen:
             out.append('\x1b[%dA' % self.lines_on_screen)
@@ -204,12 +198,13 @@ class StatusBoard:
             # starts at the top. Otherwise the banner and startup logs above it
             # push the frame past the bottom edge and clip the last rows.
             out.append('\x1b[2J\x1b[H')
-        for row in rows:
-            out.append('\x1b[2K' + self._clip(row) + '\n')
+        for left, right in pairs:
+            line = left if right is None else '%s   %s' % (left, right)
+            out.append('\x1b[2K' + self._clip(line) + '\n')
         out.append('\x1b[2K' + self._clip(self._summary()) + '\n')
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
-        self.lines_on_screen = len(rows) + 1
+        self.lines_on_screen = len(pairs) + 1
 
     def freeze(self):
         """Stop live redraw; the last rendered frame stays on screen."""
