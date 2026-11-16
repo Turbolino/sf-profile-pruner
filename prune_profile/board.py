@@ -49,6 +49,10 @@ class StatusBoard:
         self.t0 = t0 if t0 is not None else time.time()
         self.state = [dict(status='idle', tag='-', op='-', initial=0, deleted=0)
                       for _ in range(n_threads)]
+        # Width of the trailing ``[deleted/initial]`` column. It grows on demand
+        # (e.g. ``-bs 1000``/``10000`` push the counters to 4-5 digits) so the
+        # two board columns stay aligned whatever the magnitude of the counters.
+        self.ratio_w = 5
         self.rows = [self._fmt_row(t, **self.state[t]) for t in range(n_threads)]
         self.lock = threading.Lock()
         self.lines_on_screen = 0
@@ -134,25 +138,38 @@ class StatusBoard:
         width so two cells align side by side. Only the ``deleted/initial``
         ratio is kept (the ``remaining``/``initial`` columns were dropped to
         halve the row width for the two-column layout). The ratio is padded to
-        a fixed width so the right-hand cell always starts at the same column
-        regardless of how many digits ``deleted``/``initial`` have."""
+        ``self.ratio_w`` — a board-wide width that grows with the largest
+        counter seen so far — so the right-hand cell always starts at the same
+        column even when the counters grow to 4-5 digits."""
         def f(text, width):
             text = str(text if text is not None else '-')
             return text[:width].ljust(width)
         ratio = '[%d/%d]' % (deleted, initial)
         return '[T%-2d] %s %s %s %s' % (
-            tid, f(status, 9), f(tag, 17), f(op, 15), ratio.ljust(9))
+            tid, f(status, 9), f(tag, 17), f(op, 15), ratio.ljust(self.ratio_w))
 
     @staticmethod
     def _fmt_elapsed(seconds):
         s = max(0, int(seconds))
         return '%02d:%02d:%02d' % (s // 3600, (s % 3600) // 60, s % 60)
 
+    def _grow_ratio_width(self, deleted, initial):
+        """Widen the ``[deleted/initial]`` column when a larger counter appears
+        and re-pad every row to the new width. Returns True when it grew."""
+        w = len('[%d/%d]' % (deleted, initial))
+        if w <= self.ratio_w:
+            return False
+        self.ratio_w = w
+        for t in range(self.n):
+            self.rows[t] = self._fmt_row(t, **self.state[t])
+        return True
+
     def set(self, tid, status, tag='', op='', initial=0, deleted=0):
         with self.lock:
             self.state[tid] = dict(status=status, tag=tag, op=op,
                                    initial=initial, deleted=deleted)
-            self.rows[tid] = self._fmt_row(tid, **self.state[tid])
+            if not self._grow_ratio_width(deleted, initial):
+                self.rows[tid] = self._fmt_row(tid, **self.state[tid])
             if self.active:
                 self._render()
 

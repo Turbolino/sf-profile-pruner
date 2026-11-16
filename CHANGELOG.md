@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-11-16
+
+### Added
+
+- `--batch-size` maximum raised from 4000 to **10000**, so `-bs 1000` and
+  `-bs 10000` are usable as-is (larger chunks, fewer parallel deploy jobs).
+
+### Fixed
+
+- The two-column progress board's `[deleted/initial]` column now auto-widens
+  when the counters grow to 4-5 digits (1000/10000), so the right-hand column
+  stays aligned instead of drifting when the digit count changes.
+
+### Changed
+
+- README brought up to date: two-column board, alignment flow and its output
+  (`4-merged/`, `MANUAL-OPERATIONS.txt`, `what-is-changed.txt`), merged-profile
+  dry-run validation, and the full module layout (`retrieve.py`, `stage.py`,
+  `merge.py`, `node/`).
+
 ## [2.2.1] - 2026-11-16
 
 ### Fixed

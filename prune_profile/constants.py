@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '2.2.1'
+__version__ = '2.3.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -177,7 +177,7 @@ STANDARD_TYPES = frozenset({'StandardObject', 'StandardField', 'StandardTab'})
 # deploy lock ("Lock file is already being held"); huge chunks make the final
 # full-package validation redo too much work at once.
 MIN_CHUNK_SIZE = 100
-MAX_CHUNK_SIZE = 4000
+MAX_CHUNK_SIZE = 10000
 DEFAULT_BATCH_SIZE = 200
 
 

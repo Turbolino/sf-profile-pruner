@@ -40,6 +40,15 @@ you align, for example, a UAT profile to a test profile. It is **destructive
 even on dry-run** and asks for Y/N confirmation (skip with a following
 `--sure`). A **No** skips the alignment and runs the normal prune instead.
 
+The alignment merge is **source-authoritative**: every source entry is kept
+verbatim, and every destination-only entry is turned OFF with an explicit off
+value (a Profile deploy is a per-element merge, so omitting an entry is a
+silent no-op). Sections with no expressible off value (`layoutAssignments`,
+`loginFlows`, `loginIpRanges`, `loginHours`) cannot be turned off by a deploy,
+so their destination-only entries are listed in `MANUAL-OPERATIONS.txt` for a
+manual Setup action. The merged profile is re-validated with a dry-run before
+any deploy — the deploy is attempted only when that dry-run is clean.
+
 > The third-party `sf-profile-full` plugin is **no longer required**. To use
 > via 2 you need the Salesforce CLI installed **with Node.js and its global
 > node_modules** (`@salesforce/core` + `@jsforce/jsforce-node`), which any recent
@@ -160,13 +169,14 @@ Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
 
 - **Dry-run by default**: the org is never modified.
 - **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
-- **Live progress board**: during pruning, the console shows one
-  self-updating line per worker thread with columns `[Tx] status | tag |
-  operation | remaining/deleted/initial`, plus a summary line with the elapsed
-  time (hh:mm:ss) and the tag counters (done / running / todo). The elapsed
-  clock ticks every second even while the workers are just polling. The full
-  timestamped log still goes to `run.log`, and a final summary is printed at
-  the end.
+- **Live progress board**: during pruning, the console shows a live board with
+  **two worker cells per line**, each with columns `[Tx] status | tag |
+  operation | [deleted/initial]`, plus a summary line with the elapsed time
+  (hh:mm:ss) and the tag counters (done / running / todo). The
+  `[deleted/initial]` column auto-widens when the counters grow (e.g. with
+  `-bs 1000`/`10000`) so the two columns stay aligned. The elapsed clock ticks
+  every second even while the workers are just polling. The full timestamped
+  log still goes to `run.log`, and a final summary is printed at the end.
 - **Ctrl-C stops cleanly**: the run prints `Saving pending work...`, saves all
   pending work (the removals applied so far are kept), keeps the board rows on
   screen, marks the active threads "stopped by user", and reports `ABORTED`.
@@ -187,6 +197,14 @@ Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
   aborting on the first error.
 - **Batch removal**: every component failure reported by a single deploy is
   resolved and removed in one pass (not one error per run).
+- **Alignment report (`--align-from-source`)**: the merged profile lives in
+  `4-merged/` together with `MANUAL-OPERATIONS.txt` (sections with no
+  deploy-able "off" value) and `what-is-changed.txt` (only the changed /
+  turned-off and removed entries, each annotated with `old value from <org>:
+  <value>` or `removed in destination org because not present in source org`).
+- **Merged-profile validation**: before any deploy, the merged profile is
+  dry-run against the destination; the deploy only runs when that dry-run is
+  clean, otherwise the run ends with `VALIDATION_FAILED`.
 - **Resumable**: if it stops (network hiccup, unexpected error), run the exact
   same command again and it continues from the last error — nothing is redone.
 - **Already clean**: if a previous run ended with `SUCCESS` and you launch it
@@ -211,7 +229,7 @@ Options are grouped in the `-h` help. The two input modes are:
 | `-do`, `--dest-org` | Destination org alias/username (dry-run and optional deploy target). Optional: omit it (with `-so` + `-sp`) for retrieve only. |
 | `-dp`, `--dest-profile` | Name to deploy the cleaned profile under; created if it does not exist. Default: the source profile name. |
 | `-od`, `--out-dir` | Output directory for report/packages/logs. Default: the current directory. |
-| `-bs`, `--batch-size` | Split a section into chunks of `N` entries (min 100, max 4000, default 200); `0` disables splitting. |
+| `-bs`, `--batch-size` | Split a section into chunks of `N` entries (min 100, max 10000, default 200); `0` disables splitting. |
 | `-tn`, `--thread-number` | Max parallel workers, `1`–`64`. Default: `16`. |
 | `--job-timeout` | Minutes to wait for a deploy job before aborting (`1`–`60`; `0` = no timeout). Default: `0`. |
 | `-av`, `--api-version` | Manifest API version. Default: detected from the destination org. |
@@ -247,6 +265,22 @@ out-dir/
 > (`sfdx-project.json` only) under `.work/project/`, uses it for the deploy
 > commands, and deletes it when finished.
 
+### Alignment output (`--align-from-source`)
+
+When aligning, `--out-dir` is a run folder (one per invocation):
+
+```
+run/
+├── 1-source-pruned/               # source pruned against the destination org
+├── 2-destination-retrieved/       # destination profile retrieved from the org
+├── 3-destination-pruned/          # destination pruned against itself
+├── 4-merged/
+│   ├── <name>.profile-meta.xml    # source-authoritative merged profile
+│   ├── MANUAL-OPERATIONS.txt      # sections with no deploy-able "off" value
+│   └── what-is-changed.txt        # only the changed/turned-off + removed entries
+└── run.log                        # full log
+```
+
 ## Repository structure
 
 The tool is a small Python package split into thematic modules:
@@ -261,7 +295,11 @@ prune_profile/
 ├── board.py        console logging and the live progress board
 ├── state.py        thread-safe shared pruning state
 ├── engine.py       parallel per-section pruning workers
-└── cli.py          command-line entry point (`main()`)
+├── retrieve.py     native full-profile retrieve (readMetadata)
+├── stage.py        prune-stage orchestration (workers + prefetch + board)
+├── merge.py        alignment merge (source-authoritative) + reports
+├── cli.py          command-line entry point (`main()`)
+└── node/retrieve_profile.cjs  Node helper for readMetadata retrieval
 ```
 
 ## Notes

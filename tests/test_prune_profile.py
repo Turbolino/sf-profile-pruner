@@ -389,6 +389,14 @@ class TestStatusBoard(unittest.TestCase):
         b.width = 0
         self.assertEqual(b._clip('hello world'), 'hello world')
 
+    def test_ratio_column_grows_with_large_counters(self):
+        b = pp.StatusBoard(2, quiet=True)
+        b.set(0, 'dry-run', 'fieldPermissions', 'polling', initial=100, deleted=0)
+        b.set(1, 'dry-run', 'tabVisibilities', 'polling', initial=10000, deleted=5000)
+        self.assertEqual(len(b.rows[0]), len(b.rows[1]))
+        self.assertTrue(b.rows[0].endswith('[0/100]     '))
+        self.assertTrue(b.rows[1].endswith('[5000/10000]'))
+
     def test_visible_rows_capped_by_terminal_height(self):
         b = pp.StatusBoard(40, quiet=True)
         b.height = 20
@@ -849,7 +857,8 @@ class TestChunking(unittest.TestCase):
         self.assertEqual(_clamp_batch_size(100), 100)
         self.assertEqual(_clamp_batch_size(200), 200)
         self.assertEqual(_clamp_batch_size(4000), 4000)
-        self.assertEqual(_clamp_batch_size(5000), pp.MAX_CHUNK_SIZE)
+        self.assertEqual(_clamp_batch_size(10000), 10000)
+        self.assertEqual(_clamp_batch_size(15000), pp.MAX_CHUNK_SIZE)
         self.assertEqual(_clamp_batch_size(0), 0)  # 0 = no chunking, kept
         self.assertEqual(_clamp_batch_size(1), pp.MIN_CHUNK_SIZE)
 
