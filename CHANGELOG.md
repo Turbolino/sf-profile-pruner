@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-11-16
+
+### Fixed
+
+- The two-column progress board now pads the `[deleted/initial]` ratio to a
+  fixed width, so the right-hand column no longer drifts to the left/right
+  when the number of digits changes (e.g. `[0/0]` vs `[0/100]`).
+
 ## [2.2.0] - 2026-11-16
 
 ### Added

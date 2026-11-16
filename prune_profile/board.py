@@ -133,12 +133,15 @@ class StatusBoard:
         """One worker cell: ``[Tid] status tag op [deleted/initial]``, fixed
         width so two cells align side by side. Only the ``deleted/initial``
         ratio is kept (the ``remaining``/``initial`` columns were dropped to
-        halve the row width for the two-column layout)."""
+        halve the row width for the two-column layout). The ratio is padded to
+        a fixed width so the right-hand cell always starts at the same column
+        regardless of how many digits ``deleted``/``initial`` have."""
         def f(text, width):
             text = str(text if text is not None else '-')
             return text[:width].ljust(width)
-        return '[T%-2d] %s %s %s [%d/%d]' % (
-            tid, f(status, 9), f(tag, 17), f(op, 15), deleted, initial)
+        ratio = '[%d/%d]' % (deleted, initial)
+        return '[T%-2d] %s %s %s %s' % (
+            tid, f(status, 9), f(tag, 17), f(op, 15), ratio.ljust(9))
 
     @staticmethod
     def _fmt_elapsed(seconds):
@@ -199,7 +202,7 @@ class StatusBoard:
             # push the frame past the bottom edge and clip the last rows.
             out.append('\x1b[2J\x1b[H')
         for left, right in pairs:
-            line = left if right is None else '%s   %s' % (left, right)
+            line = left if right is None else '%s  %s' % (left, right)
             out.append('\x1b[2K' + self._clip(line) + '\n')
         out.append('\x1b[2K' + self._clip(self._summary()) + '\n')
         sys.stdout.write(''.join(out))
