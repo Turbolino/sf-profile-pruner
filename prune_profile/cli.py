@@ -320,10 +320,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
 
     # 6. what-is-changed: only the changed/turned-off rows, annotated.
-    change_dir = os.path.join(out_dir, 'what-is-changed')
-    os.makedirs(change_dir, exist_ok=True)
     change_path = write_what_is_changed(
-        os.path.join(change_dir, 'what-is-changed.txt'), changes, dest_org)
+        os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
     logger.log('ALIGN: what-is-changed written to %s' % change_path)
 
     # 7. validate the merged profile with a dry-run before any deploy.

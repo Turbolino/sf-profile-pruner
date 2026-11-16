@@ -13,11 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the destination on the merged profile before any deploy. A deploy is only
   attempted when the merged dry-run is clean; otherwise the run ends with
   `VALIDATION_FAILED` and reports the component failures.
-- **`what-is-changed/` report**: a new output folder listing only the changed
-  (turned-off) and removed entries, each annotated with an XML comment —
-  `old value from <org>: <field>=<value>` for turned-off entries, or
-  `removed in destination org because not present in source org` for entries
-  removed because they are not in the source org.
+- **`what-is-changed.txt` report**: a new file inside `4-merged/` listing only the
+  changed (turned-off) and removed entries, each annotated with an XML comment —
+  `old value from <org>: <value>` inline on the changed field for turned-off
+  entries, or a grouped list with `... removed in destination org because not
+  present in source org` for entries removed because they are not in the source org.
 - **`MANUAL-OPERATIONS.txt` moved inside `4-merged/`** for the alignment flow.
 
 ### Fixed
