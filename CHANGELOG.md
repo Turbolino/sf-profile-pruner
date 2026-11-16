@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-11-16
+
+### Added
+
+- **Merged profile validation**: `--align-from-source` now runs a dry-run against
+  the destination on the merged profile before any deploy. A deploy is only
+  attempted when the merged dry-run is clean; otherwise the run ends with
+  `VALIDATION_FAILED` and reports the component failures.
+- **`what-is-changed/` report**: a new output folder listing only the changed
+  (turned-off) and removed entries, each annotated with an XML comment —
+  `old value from <org>: <field>=<value>` for turned-off entries, or
+  `removed in destination org because not present in source org` for entries
+  removed because they are not in the source org.
+- **`MANUAL-OPERATIONS.txt` moved inside `4-merged/`** for the alignment flow.
+
+### Fixed
+
+- The alignment merge now carries the per-entry old values so the
+  what-is-changed report can show exactly what changed.
+
 ## [2.1.1] - 2026-11-16
 
 ### Fixed

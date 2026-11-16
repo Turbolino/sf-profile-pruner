@@ -47,9 +47,9 @@ from .constants import (
     version_ge,
 )
 from .merge import (format_ops_table, merge_profiles, removed_non_alignable,
-                    write_manual_ops)
+                    write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, find_sf, org_api_version, org_username,
+from .sfcli import (deploy, dry_run, find_sf, org_api_version, org_username,
                     set_deploy_start_interval)
 from .stage import prune_stage
 from .xmlio import write_package_xml, write_sfdx_project
@@ -306,7 +306,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
 
     # 4. merge: source authoritative; destination-only entries turned off.
     logger.log('ALIGN: merging the source (authoritative) into the destination...')
-    merged_xml, manual_ops, turned_off = merge_profiles(src_clean, dst_clean)
+    merged_xml, manual_ops, turned_off, changes = merge_profiles(
+        src_clean, dst_clean, dest_env=dest_org)
     merge_dir = os.path.join(out_dir, '4-merged')
     os.makedirs(merge_dir, exist_ok=True)
     merged_path = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
@@ -315,13 +316,47 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('ALIGN: %d permission(s) turned off; %d non-alignable entr(ies) '
                'require manual action.' % (turned_off, len(manual_ops)))
 
-    # 5. manual operations (file + end-of-run print).
-    _write_and_report_manual_ops(manual_ops, out_dir, dest_profile_name, logger, args.quiet)
+    # 5. manual operations (file inside 4-merged + end-of-run print).
+    _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
 
-    # 6. optional deploy of the merged profile.
+    # 6. what-is-changed: only the changed/turned-off rows, annotated.
+    change_dir = os.path.join(out_dir, 'what-is-changed')
+    os.makedirs(change_dir, exist_ok=True)
+    change_path = write_what_is_changed(
+        os.path.join(change_dir, 'what-is-changed.txt'), changes, dest_org)
+    logger.log('ALIGN: what-is-changed written to %s' % change_path)
+
+    # 7. validate the merged profile with a dry-run before any deploy.
+    logger.log('ALIGN: validating the merged profile with a dry-run...')
+    final_proj = os.path.join(out_dir, '.work', 'align-final')
+    write_sfdx_project(final_proj, args.api_version)
+    final_manifest = os.path.join(final_proj, 'manifest.xml')
+    write_package_xml(final_manifest, {'Profile': [dest_profile_name]}, args.api_version)
+    final_profile = os.path.join(final_proj, 'force-app', 'main', 'default',
+                                 'profiles', '%s.profile-meta.xml' % dest_profile_name)
+    os.makedirs(os.path.dirname(final_profile), exist_ok=True)
+    shutil.copyfile(merged_path, final_profile)
+    try:
+        vres, verr = dry_run(sf, final_manifest, dest_org, args.poll_interval,
+                             args.job_timeout, logger, cwd=final_proj)
+    finally:
+        shutil.rmtree(final_proj, ignore_errors=True)
+    if vres is None:
+        validation = 'FAILED: %s' % (verr or 'unparseable output')
+    elif (vres.get('result') or {}).get('success') is True:
+        validation = 'clean'
+    else:
+        cf = ((vres.get('result') or {}).get('details') or {}).get('componentFailures') or []
+        probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
+        validation = 'FAILED (%d failure(s)): %s' % (len(cf), probs)
+    logger.log('ALIGN: merged dry-run: %s' % validation)
+
+    # 8. optional deploy of the merged profile (only after a clean validation).
     deploy_detail = ''
     outcome = 'SUCCESS'
-    if do_deploy:
+    if validation != 'clean':
+        outcome = 'VALIDATION_FAILED'
+    elif do_deploy:
         logger.log('ALIGN: deploying the merged profile to %s...' % dest_org)
         ok, deploy_detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
                                             args.api_version, args.poll_interval,
@@ -335,7 +370,9 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('OUTCOME: %s' % outcome)
     logger.log('TURNED OFF: %d' % turned_off)
     logger.log('MANUAL OPERATIONS: %d' % len(manual_ops))
+    logger.log('VALIDATION: %s' % validation)
     logger.log('MERGED PROFILE: %s' % merged_path)
+    logger.log('WHAT-IS-CHANGED: %s' % change_path)
     if deploy_detail:
         logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')

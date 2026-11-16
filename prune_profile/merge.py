@@ -144,14 +144,46 @@ def _describe_entry(section, el):
             'where': 'Setup > Profiles > this profile'}
 
 
-def merge_profiles(source_path, dest_path):
+def _changed_fields(el, off_fields):
+    """Map field -> old value for the off-fields that will actually change
+    (old value present and different from the off value)."""
+    changed = {}
+    for child, off_val in off_fields.items():
+        old = _txt(el, child)
+        if old and old != off_val:
+            changed[child] = old
+    return changed
+
+
+def _element_xml(el):
+    """Serialize a single element with 4-space indentation, no declaration and
+    no trailing tail (so a comment can be appended on the same line)."""
+    el = deepcopy(el)
+    el.tail = None  # drop the whitespace tail inherited from the parent tree
+    etree.indent(el, space='    ')
+    return etree.tostring(el, encoding='unicode').rstrip('\n')
+
+
+def _change_comment(change, dest_env):
+    if change['kind'] == 'removed':
+        return 'removed in destination org because not present in source org'
+    old = change['old_values']
+    if not old:
+        return 'old value from %s: (no field changed - already off)' % dest_env
+    vals = ', '.join('%s=%s' % (k, v) for k, v in old.items())
+    return 'old value from %s: %s' % (dest_env, vals)
+
+
+def merge_profiles(source_path, dest_path, dest_env='destination org'):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
     destination-only entry is turned off (alignable sections) or recorded as a
     manual operation (non-alignable sections).
 
-    Returns ``(merged_xml_bytes, manual_ops, turned_off_count)``.
+    Returns ``(merged_xml_bytes, manual_ops, turned_off_count, changes)`` where
+    ``changes`` is a list of dicts describing every turned-off / removed entry
+    (kind, section, key, element, old_values) for the what-is-changed report.
     """
     src_root = etree.parse(source_path).getroot()
     dst_root = etree.parse(dest_path).getroot()
@@ -160,6 +192,7 @@ def merge_profiles(source_path, dest_path):
 
     out = etree.Element(M + 'Profile', nsmap={None: NS})
     manual_ops = []
+    changes = []
     turned_off = 0
 
     sections = list(src_groups)
@@ -178,8 +211,16 @@ def merge_profiles(source_path, dest_path):
                 out.append(deepcopy(el))
             for el in dst_els:
                 if _entry_key(el, [key_child]) not in src_keys:
-                    out.append(_make_off_element(section, key_child, off_fields, el))
+                    off_el = _make_off_element(section, key_child, off_fields, el)
+                    out.append(off_el)
                     turned_off += 1
+                    changes.append({
+                        'kind': 'turned_off',
+                        'section': section,
+                        'key': _txt(el, key_child),
+                        'element': off_el,
+                        'old_values': _changed_fields(el, off_fields),
+                    })
         elif section in NON_ALIGNABLE:
             keys = _keys_for(section)
             src_keys = {_entry_key(el, keys) for el in src_els}
@@ -188,6 +229,13 @@ def merge_profiles(source_path, dest_path):
             for el in dst_els:
                 if _entry_key(el, keys) not in src_keys:
                     manual_ops.append(_describe_entry(section, el))
+                    changes.append({
+                        'kind': 'removed',
+                        'section': section,
+                        'key': _txt(el, keys[0]) if keys else '',
+                        'element': el,
+                        'old_values': {},
+                    })
         else:
             # Unknown or scalar section (custom, userLicense, ...): source is
             # authoritative; keep the destination value only when source has
@@ -201,7 +249,7 @@ def merge_profiles(source_path, dest_path):
 
     etree.indent(out, space='    ')
     xml = etree.tostring(out, xml_declaration=True, encoding='UTF-8')
-    return xml, manual_ops, turned_off
+    return xml, manual_ops, turned_off, changes
 
 
 def removed_non_alignable(original_path, clean_path):
@@ -267,4 +315,45 @@ def write_manual_ops(path, ops, profile_name):
     header.append('')
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(header) + '\n')
+    return path
+
+
+def write_what_is_changed(path, changes, dest_env):
+    """Write the what-is-changed report: only the changed (turned-off) and
+    removed rows, each followed by an XML comment recording the old value in
+    the destination org (or that the entry was removed because it is not
+    present in the source org). Returns the path."""
+    turned = [c for c in changes if c['kind'] == 'turned_off']
+    removed = [c for c in changes if c['kind'] == 'removed']
+
+    lines = [
+        'WHAT IS CHANGED - alignment (destination: %s)' % dest_env,
+        '=' * 60,
+        '',
+        'Only the entries of the merged profile that differ from the destination',
+        'org are listed. The XML comment on the closing line of each entry',
+        'records the old value (what was in the destination before the alignment),',
+        'or that the entry was removed because it is not present in the source org.',
+        '',
+        'TURNED OFF: %d' % len(turned),
+        'REMOVED (not present in source org): %d' % len(removed),
+        '',
+    ]
+
+    def _emit(entries, title):
+        if not entries:
+            return
+        lines.append('=' * 60)
+        lines.append(title)
+        lines.append('=' * 60)
+        for c in entries:
+            lines.append(_element_xml(c['element']) + '  <!-- '
+                         + _change_comment(c, dest_env) + ' -->')
+            lines.append('')
+
+    _emit(turned, 'TURNED OFF')
+    _emit(removed, 'REMOVED (not present in source org)')
+
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines).rstrip() + '\n')
     return path

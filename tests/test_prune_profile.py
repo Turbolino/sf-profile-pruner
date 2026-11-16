@@ -1005,7 +1005,7 @@ class TestMerge(unittest.TestCase):
             return pp.merge_profiles(src, dst)
 
     def test_dest_only_tab_is_turned_off(self):
-        xml, manual_ops, turned_off = self._merge(
+        xml, manual_ops, turned_off, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOff</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
@@ -1017,9 +1017,12 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(tabs['TabB__c'], 'Hidden')      # dest-only -> off
         self.assertEqual(turned_off, 1)
         self.assertEqual(manual_ops, [])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'turned_off')
+        self.assertEqual(changes[0]['old_values'], {'visibility': 'DefaultOn'})
 
     def test_dest_only_layout_assignment_is_manual(self):
-        xml, manual_ops, turned_off = self._merge(
+        xml, manual_ops, turned_off, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<layoutAssignments><layout>Account-Account Layout</layout></layoutAssignments>'),
@@ -1029,6 +1032,8 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(manual_ops[0]['section'], 'layoutAssignments')
         self.assertIn('Account-Account Layout', manual_ops[0]['item'])
         self.assertIn('page layout assignment', manual_ops[0]['operation'])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'removed')
 
     def test_removed_non_alignable_detects_dropped_layout(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1052,7 +1057,7 @@ class TestMerge(unittest.TestCase):
         self.assertIn('Remove the page layout assignment', table)
 
     def test_merged_output_indented_one_entry_per_line(self):
-        xml, _, _ = self._merge(
+        xml, _, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
@@ -1066,6 +1071,21 @@ class TestMerge(unittest.TestCase):
         # 4-space indentation for sections, 8 for their children
         self.assertIn('\n    <tabVisibilities>', s)
         self.assertIn('\n        <tab>TabB__c</tab>', s)
+
+    def test_what_is_changed_annotates_old_values(self):
+        xml, _, _, changes = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>'),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            path = pp.write_what_is_changed(os.path.join(d, 'w.txt'), changes, 'devorg')
+            s = read_text(path)
+        self.assertIn('old value from devorg: visibility=DefaultOn', s)
+        self.assertIn('removed in destination org because not present in source org', s)
+        self.assertIn('TURNED OFF: 1', s)
+        self.assertIn('REMOVED (not present in source org): 1', s)
 
 
 if __name__ == '__main__':

@@ -47,6 +47,7 @@ from .merge import (
     merge_profiles,
     removed_non_alignable,
     write_manual_ops,
+    write_what_is_changed,
 )
 from .retrieve import profile_json_to_xml, retrieve_profiles
 from .sfcli import (
@@ -98,7 +99,7 @@ __all__ = [
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',
     'MERGE_TABLE', 'NON_ALIGNABLE', 'format_ops_table', 'merge_profiles',
-    'removed_non_alignable', 'write_manual_ops',
+    'removed_non_alignable', 'write_manual_ops', 'write_what_is_changed',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
     'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
