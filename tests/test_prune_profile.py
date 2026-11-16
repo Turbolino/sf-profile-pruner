@@ -1082,8 +1082,11 @@ class TestMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = pp.write_what_is_changed(os.path.join(d, 'w.txt'), changes, 'devorg')
             s = read_text(path)
-        self.assertIn('old value from devorg: visibility=DefaultOn', s)
-        self.assertIn('removed in destination org because not present in source org', s)
+        # turned-off: comment inline on the changed field line
+        self.assertIn('<visibility>Hidden</visibility> <!-- old value from devorg: DefaultOn -->', s)
+        # removed: grouped list with an enumerating comment
+        self.assertIn('<layout>Lead-Lead Layout</layout>', s)
+        self.assertIn('Lead-Lead Layout removed in destination org because not present in source org', s)
         self.assertIn('TURNED OFF: 1', s)
         self.assertIn('REMOVED (not present in source org): 1', s)
 

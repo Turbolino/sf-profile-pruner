@@ -164,14 +164,72 @@ def _element_xml(el):
     return etree.tostring(el, encoding='unicode').rstrip('\n')
 
 
-def _change_comment(change, dest_env):
-    if change['kind'] == 'removed':
-        return 'removed in destination org because not present in source org'
-    old = change['old_values']
-    if not old:
-        return 'old value from %s: (no field changed - already off)' % dest_env
-    vals = ', '.join('%s=%s' % (k, v) for k, v in old.items())
-    return 'old value from %s: %s' % (dest_env, vals)
+def _change_comment_line(dest_env, old_value):
+    """Single inline comment recording one field's old value."""
+    return ' <!-- old value from %s: %s -->' % (dest_env, old_value)
+
+
+def _entry_label(section, el):
+    """Human name of a non-alignable entry, used for the removed list."""
+    if section == 'layoutAssignments':
+        layout = _txt(el, 'layout')
+        rt = _txt(el, 'recordType')
+        return layout if not rt else '%s (record type: %s)' % (layout, rt)
+    if section == 'loginFlows':
+        return _txt(el, 'flow') or _txt(el, 'visualForcePage') or _txt(el, 'friendlyName')
+    if section == 'loginIpRanges':
+        start = _txt(el, 'startAddress')
+        end = _txt(el, 'endAddress')
+        return '%s - %s' % (start, end) if (start or end) else (_txt(el, 'description') or 'unnamed range')
+    if section == 'loginHours':
+        return 'login hours restriction'
+    return _txt(el, 'name') or ''
+
+
+def _turned_off_lines(change, dest_env):
+    """XML block for one turned-off entry, with the old-value comment placed
+    inline right after each field that actually changed."""
+    section = change['section']
+    key_child, off_fields = MERGE_TABLE[section]
+    old_values = change['old_values']
+    out = ['<%s>' % section]
+    out.append('    <%s>%s</%s>' % (key_child, change['key'], key_child))
+    for field, off_val in off_fields.items():
+        line = '    <%s>%s</%s>' % (field, off_val, field)
+        if field in old_values:
+            line += _change_comment_line(dest_env, old_values[field])
+        out.append(line)
+    if old_values:
+        out.append('</%s>' % section)
+    else:
+        out.append('</%s>  <!-- old value from %s: (no field changed - already off) -->'
+                   % (section, dest_env))
+    return out
+
+
+def _removed_block(section, entries, dest_env):
+    """One grouped block per non-alignable section: a single <section> wrapper
+    listing every removed key, plus a comment enumerating them."""
+    keys = _keys_for(section)
+    labels = [_entry_label(section, e['element']) for e in entries]
+    labels = [l for l in labels if l]
+    comment = '%s removed in destination org because not present in source org' % ', '.join(labels)
+
+    if not keys:
+        # No key children to list (e.g. loginHours): emit the element verbatim.
+        lines = [_element_xml(e['element']) for e in entries]
+        lines[-1] = lines[-1] + '  <!-- ' + comment + ' -->'
+        return lines
+
+    lines = ['<%s>' % section]
+    for e in entries:
+        el = e['element']
+        for k in keys:
+            v = _txt(el, k)
+            if v:
+                lines.append('    <%s>%s</%s>' % (k, v, k))
+    lines.append('</%s>  <!-- %s -->' % (section, comment))
+    return lines
 
 
 def merge_profiles(source_path, dest_path, dest_env='destination org'):
@@ -233,7 +291,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
                         'kind': 'removed',
                         'section': section,
                         'key': _txt(el, keys[0]) if keys else '',
-                        'element': el,
+                        'element': deepcopy(el),
                         'old_values': {},
                     })
         else:
@@ -340,19 +398,31 @@ def write_what_is_changed(path, changes, dest_env):
         '',
     ]
 
-    def _emit(entries, title):
-        if not entries:
+    def _emit_turned():
+        if not turned:
             return
         lines.append('=' * 60)
-        lines.append(title)
+        lines.append('TURNED OFF')
         lines.append('=' * 60)
-        for c in entries:
-            lines.append(_element_xml(c['element']) + '  <!-- '
-                         + _change_comment(c, dest_env) + ' -->')
+        for c in turned:
+            lines.extend(_turned_off_lines(c, dest_env))
             lines.append('')
 
-    _emit(turned, 'TURNED OFF')
-    _emit(removed, 'REMOVED (not present in source org)')
+    def _emit_removed():
+        if not removed:
+            return
+        lines.append('=' * 60)
+        lines.append('REMOVED (not present in source org)')
+        lines.append('=' * 60)
+        grouped = {}
+        for c in removed:
+            grouped.setdefault(c['section'], []).append(c)
+        for section, entries in grouped.items():
+            lines.extend(_removed_block(section, entries, dest_env))
+            lines.append('')
+
+    _emit_turned()
+    _emit_removed()
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines).rstrip() + '\n')
