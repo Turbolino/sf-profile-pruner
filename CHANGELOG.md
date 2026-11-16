@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-11-16
+
+### Fixed
+
+- Destination-only entries that are **already off** in the destination are now
+  skipped entirely by the alignment merge: they no longer appear in the merged
+  profile, no longer count as "turned off", and no longer appear in
+  `what-is-changed.txt`. Only real changes are reported.
+
 ## [2.3.0] - 2026-11-16
 
 ### Added

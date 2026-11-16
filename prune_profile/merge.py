@@ -199,11 +199,7 @@ def _turned_off_lines(change, dest_env):
         if field in old_values:
             line += _change_comment_line(dest_env, old_values[field])
         out.append(line)
-    if old_values:
-        out.append('</%s>' % section)
-    else:
-        out.append('</%s>  <!-- old value from %s: (no field changed - already off) -->'
-                   % (section, dest_env))
+    out.append('</%s>' % section)
     return out
 
 
@@ -237,7 +233,8 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
 
     Source is authoritative: every source entry is kept verbatim; every
     destination-only entry is turned off (alignable sections) or recorded as a
-    manual operation (non-alignable sections).
+    manual operation (non-alignable sections). Destination-only entries that
+    are already off are skipped entirely (no change to report).
 
     Returns ``(merged_xml_bytes, manual_ops, turned_off_count, changes)`` where
     ``changes`` is a list of dicts describing every turned-off / removed entry
@@ -269,6 +266,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
                 out.append(deepcopy(el))
             for el in dst_els:
                 if _entry_key(el, [key_child]) not in src_keys:
+                    old_values = _changed_fields(el, off_fields)
+                    if not old_values:
+                        # Already off in the destination: nothing to change.
+                        # Neither the merged profile nor the report needs it.
+                        continue
                     off_el = _make_off_element(section, key_child, off_fields, el)
                     out.append(off_el)
                     turned_off += 1
@@ -277,7 +279,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
                         'section': section,
                         'key': _txt(el, key_child),
                         'element': off_el,
-                        'old_values': _changed_fields(el, off_fields),
+                        'old_values': old_values,
                     })
         elif section in NON_ALIGNABLE:
             keys = _keys_for(section)
@@ -389,9 +391,9 @@ def write_what_is_changed(path, changes, dest_env):
         '=' * 60,
         '',
         'Only the entries of the merged profile that differ from the destination',
-        'org are listed. The XML comment on the closing line of each entry',
-        'records the old value (what was in the destination before the alignment),',
-        'or that the entry was removed because it is not present in the source org.',
+        'org are listed. Each turned-off field carries an inline XML comment',
+        'with its old value in the destination; removed entries are grouped with',
+        'a comment listing what was removed because it is not in the source org.',
         '',
         'TURNED OFF: %d' % len(turned),
         'REMOVED (not present in source org): %d' % len(removed),

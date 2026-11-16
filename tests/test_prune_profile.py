@@ -1030,6 +1030,21 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(changes[0]['kind'], 'turned_off')
         self.assertEqual(changes[0]['old_values'], {'visibility': 'DefaultOn'})
 
+    def test_dest_only_entry_already_off_is_skipped(self):
+        xml, manual_ops, turned_off, changes = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<tabVisibilities><tab>TabB__c</tab><visibility>Hidden</visibility></tabVisibilities>'),
+        )
+        # TabB is destination-only but already Hidden: no change, not in output.
+        root = pp.etree.fromstring(xml)
+        tabs = [el.find('{%s}tab' % self.NS).text
+                for el in root.findall('{%s}tabVisibilities' % self.NS)]
+        self.assertEqual(tabs, ['TabA__c'])
+        self.assertEqual(turned_off, 0)
+        self.assertEqual(changes, [])
+        self.assertEqual(manual_ops, [])
+
     def test_dest_only_layout_assignment_is_manual(self):
         xml, manual_ops, turned_off, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
