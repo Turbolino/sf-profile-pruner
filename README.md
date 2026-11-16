@@ -36,9 +36,10 @@ alignment. It prunes the source profile against the destination, then
 retrieves and prunes the *destination* profile too, and turns **OFF** every
 permission that exists only in the destination (hidden tab/app, disabled
 field/object/class/page/flow) so the destination matches the source. This lets
-you align, for example, a UAT profile to a test profile. It is **destructive
-even on dry-run** and asks for Y/N confirmation (skip with a following
-`--sure`). A **No** skips the alignment and runs the normal prune instead.
+you align, for example, a UAT profile to a test profile. It **runs
+automatically (no Y/N prompt)**: the pre-align destination profile is always
+saved in the run folder (`2-destination-retrieved/`), so the operation is
+reversible.
 
 The alignment merge is **source-authoritative**: every source entry is kept
 verbatim, and every destination-only entry is turned OFF with an explicit off
@@ -237,9 +238,8 @@ Options are grouped in the `-h` help. The two input modes are:
 | `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
-| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation (No = dry-run only); skip with `--sure`. |
-| `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Works with via 1 or via 2. Destructive even on dry-run: asks for Y/N confirmation (No = normal prune); skip with `--sure`. |
-| `--sure` | Skip the Y/N confirmation of the immediately preceding `--align-from-source` or `--deploy-on-success`. Must be placed right after it. |
+| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation (No = dry-run only). |
+| `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Works with via 1 or via 2. Runs automatically (no prompt); the pre-align destination profile is saved in the run folder. |
 | `--fresh` | Restart from the original, ignoring any previous state. |
 | `--quiet` | Suppress the progressive stdout output. |
 | `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |

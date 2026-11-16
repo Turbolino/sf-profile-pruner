@@ -16,8 +16,8 @@ Three input modes:
 `--align-from-source` upgrades via 1/via 2 into an *alignment*: after pruning,
 the destination profile is also retrieved and pruned, and every permission that
 exists only in the destination is turned off so the destination matches the
-source. It is destructive even on dry-run and asks for Y/N confirmation (skip
-with a following `--sure`).
+source. It runs automatically (no Y/N prompt) because the pre-align destination
+profile is always saved in the run folder (`2-destination-retrieved/`).
 
 This module is the orchestration layer: it parses/validates arguments, resolves
 the input mode, retrieves the profile when needed, calls the reusable prune
@@ -91,9 +91,8 @@ Examples:
   sfpp -so devorg -sp "Sales Rep" -od ./profiles
 
   # Align the destination profile to the source (turns OFF destination-only
-  # permissions); the Y/N prompt is skipped by the trailing --sure
-  sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" \
-      --align-from-source --sure --deploy-on-success --sure
+  # permissions); runs automatically, the pre-align profile is saved in the run folder
+  sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --align-from-source
 
   # Custom output dir, batch size and threads
   sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
@@ -228,10 +227,11 @@ def _deploy_profile(sf, org, profile_path, profile_name, api_version,
 
 def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quiet):
     """Write MANUAL-OPERATIONS.txt and, when there is work to do by hand, print
-    the table at the end of the run."""
+    the table at the end of the run. Returns the file path, or None when there
+    are no manual operations."""
     if not manual_ops:
         logger.log('No manual operations required (every removed/off section is deploy-safe).')
-        return
+        return None
     path = write_manual_ops(os.path.join(out_dir, 'MANUAL-OPERATIONS.txt'),
                             manual_ops, profile_name)
     logger.log('')
@@ -248,6 +248,7 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
         print('  Saved to: %s' % path)
     logger.log('Manual operations file: %s' % path)
     logger.log('========================================================')
+    return path
 
 
 def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
@@ -318,7 +319,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                'entr(ies) require manual action.' % (n_granted, n_revoked, len(manual_ops)))
 
     # 5. manual operations (file inside 4-merged + end-of-run print).
-    _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
+    manual_ops_path = _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
 
     # 6. what-is-changed: only the changed/turned-off rows, annotated.
     change_path = write_what_is_changed(
@@ -371,8 +372,16 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('REVOKED (turned OFF): %d' % n_revoked)
     logger.log('MANUAL OPERATIONS: %d' % len(manual_ops))
     logger.log('VALIDATION: %s' % validation)
-    logger.log('MERGED PROFILE: %s' % merged_path)
-    logger.log('WHAT-IS-CHANGED: %s' % change_path)
+    logger.log('')
+    logger.log('FILES:')
+    logger.log('  ORIGINAL SOURCE (retrieved): %s' % source_profile_path)
+    logger.log('  SOURCE PRUNED:               %s' % src_clean)
+    logger.log('  DESTINATION RETRIEVED:       %s' % dest_raw)
+    logger.log('  DESTINATION PRUNED:          %s' % dst_clean)
+    logger.log('  MERGED PROFILE:              %s' % merged_path)
+    if manual_ops_path:
+        logger.log('  MANUAL OPERATIONS:           %s' % manual_ops_path)
+    logger.log('  WHAT-IS-CHANGED:             %s' % change_path)
     if deploy_detail:
         logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')
@@ -393,22 +402,6 @@ def _main():
     if '--tell-me-a-story' in argv:
         print(STORY, flush=True)
         sys.exit(0)
-
-    # --sure must immediately follow --align-from-source or --deploy-on-success,
-    # and it applies only to that one operation (deploy and align are independent).
-    sure_align = False
-    sure_deploy = False
-    for i, tok in enumerate(argv):
-        if tok == '--sure':
-            prev = argv[i - 1] if i > 0 else None
-            if prev == '--align-from-source':
-                sure_align = True
-            elif prev == '--deploy-on-success':
-                sure_deploy = True
-            else:
-                print('ERROR: --sure must immediately follow --align-from-source or '
-                      '--deploy-on-success (e.g. --align-from-source --sure).')
-                sys.exit(2)
 
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
@@ -476,17 +469,12 @@ def _main():
                             'in the destination (hidden tab/app, disabled '
                             'field/object/class/page/flow), so the destination matches the '
                             'source. Without it, destination-only permissions are left '
-                            'untouched. Destructive even on dry-run: asks for Y/N '
-                            'confirmation (a No skips the alignment and runs the normal '
-                            'prune); skip with a following --sure.')
+                            'untouched. Runs automatically (no prompt): the pre-align '
+                            'destination profile is saved in the run folder.')
     g_act.add_argument('--deploy-on-success', action='store_true',
                        help='deploy the cleaned profile to --dest-org once pruning succeeds. '
                             'Modifies the org: asks for Y/N confirmation (a No runs the '
-                            'dry-run only); skip with a following --sure.')
-    g_act.add_argument('--sure', action='store_true',
-                       help='skip the Y/N confirmation of the immediately preceding '
-                            'destructive option (--align-from-source or --deploy-on-success). '
-                            'Must be placed right after it, e.g. --align-from-source --sure.')
+                            'dry-run only).')
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
     g_act.add_argument('--quiet', action='store_true',
@@ -591,18 +579,14 @@ def _main():
             print('WARNING: %s' % rerr, file=sys.stderr)
         sys.exit(0)
 
-    # ---------- destructive-op confirmations (Y/N, skippable with --sure) ----------
-    # A 'no' downgrades the operation instead of aborting the whole run:
-    #   - align 'no'  -> skip the alignment, run the normal prune flow
-    #   - deploy 'no' -> skip the deploy, run the dry-run only
+    # ---------- destructive-op confirmation (deploy only) ----------
+    # --align-from-source runs automatically: it only produces files (the
+    # pre-align destination profile is always saved in the run folder), so no
+    # prompt is needed. A 'no' on deploy downgrades to dry-run instead of
+    # aborting the whole run.
     do_align = args.align_from_source
-    if do_align and not sure_align:
-        if not _confirm('--align-from-source disables destination-only permissions '
-                        '(destructive, even on dry-run). Align? [y/N] '):
-            do_align = False
-            print('Alignment skipped: running the normal prune flow.', file=sys.stderr)
     do_deploy = args.deploy_on_success
-    if do_deploy and not sure_deploy:
+    if do_deploy:
         if not _confirm('--deploy-on-success will deploy the cleaned profile to the '
                         'destination org. Deploy? [y/N] '):
             do_deploy = False

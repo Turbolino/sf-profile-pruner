@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-11-16
+
+### Removed
+
+- `--sure` flag and the `--align-from-source` Y/N prompt. The alignment now runs
+  automatically: it only produces files (the pre-align destination profile is
+  always saved in `2-destination-retrieved/`), so no confirmation is needed.
+  `--deploy-on-success` still asks for Y/N confirmation because it modifies the
+  org.
+
+### Added
+
+- The end-of-run `ALIGNMENT RESULT` now lists the path of **every** produced
+  file, not just the merged profile and what-is-changed: original source
+  (retrieved), source pruned, destination retrieved, destination pruned,
+  merged profile, manual operations, and what-is-changed.
+
 ## [2.4.0] - 2026-11-16
 
 ### Added
