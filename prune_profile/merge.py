@@ -199,8 +199,8 @@ def merge_profiles(source_path, dest_path):
                 for el in dst_els:
                     out.append(deepcopy(el))
 
-    xml = etree.tostring(out, xml_declaration=True, encoding='UTF-8',
-                         pretty_print=True)
+    etree.indent(out, space='    ')
+    xml = etree.tostring(out, xml_declaration=True, encoding='UTF-8')
     return xml, manual_ops, turned_off
 
 

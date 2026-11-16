@@ -94,8 +94,8 @@ def profile_json_to_xml(data, clean=True):
         for section in CLEAN_SECTIONS:
             for el in root.findall('{%s}%s' % (METADATA_NS, section)):
                 root.remove(el)
-    return etree.tostring(root, encoding='UTF-8', xml_declaration=True,
-                          pretty_print=True)
+    etree.indent(root, space='    ')
+    return etree.tostring(root, encoding='UTF-8', xml_declaration=True)
 
 
 def retrieve_profiles(username, profile_names, clean=True,

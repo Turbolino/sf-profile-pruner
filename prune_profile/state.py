@@ -169,6 +169,7 @@ class SharedState:
         os.makedirs(os.path.dirname(self.common_profile_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.missing_pkg_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.todeploy_path), exist_ok=True)
+        etree.indent(root, space='    ')
         tree = etree.ElementTree(root)
         tree.write(self.common_profile_path, encoding='utf-8', xml_declaration=True)
         # Standard metadata cannot be packaged: keep it in the log/report but

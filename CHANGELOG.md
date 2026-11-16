@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-11-16
+
+### Fixed
+
+- **Merged profile formatting**: the "turned off" entries added by the merge
+  were serialized concatenated on a single line (no newline/indentation) and
+  the first section sat on the same line as `<Profile>`. The merged output is
+  now normalized so every section/entry is on its own line.
+- **4-space indentation**: retrieved, pruned (COMMON) and merged profile files
+  now use a consistent 4-space indent (matching `package.xml`).
+
 ## [2.1.0] - 2026-11-04
 
 ### Added

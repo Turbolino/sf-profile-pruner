@@ -1051,6 +1051,22 @@ class TestMerge(unittest.TestCase):
         self.assertIn('X-Y Layout', table)
         self.assertIn('Remove the page layout assignment', table)
 
+    def test_merged_output_indented_one_entry_per_line(self):
+        xml, _, _ = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
+        )
+        s = xml.decode('utf-8')
+        # every section tag sits on its own line (no concatenation)
+        lines = [ln for ln in s.split('\n') if '<tabVisibilities>' in ln]
+        self.assertEqual(len(lines), 2)
+        for ln in lines:
+            self.assertEqual(ln.count('<tabVisibilities>'), 1)
+        # 4-space indentation for sections, 8 for their children
+        self.assertIn('\n    <tabVisibilities>', s)
+        self.assertIn('\n        <tab>TabB__c</tab>', s)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
