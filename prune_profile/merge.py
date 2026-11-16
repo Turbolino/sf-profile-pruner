@@ -100,17 +100,25 @@ def _make_off_element(section, key_child, off_fields, template):
     return el
 
 
+def _layout_object(el):
+    """Object API name a layoutAssignments entry refers to (the part before
+    the first '-' of the layout full name)."""
+    layout = _txt(el, 'layout')
+    return layout.split('-', 1)[0] if '-' in layout else layout
+
+
 def _describe_entry(section, el):
     """Human description of a non-alignable entry, for the manual-ops report."""
     if section == 'layoutAssignments':
         layout = _txt(el, 'layout')
         rt = _txt(el, 'recordType')
         item = layout if not rt else '%s (record type: %s)' % (layout, rt)
-        obj = layout.split('-', 1)[0] if '-' in layout else layout
+        obj = _layout_object(el)
         return {
             'section': section,
+            'object': obj,
             'item': item,
-            'operation': 'Remove the page layout assignment',
+            'operation': 'Align the page layout assignment with the source',
             'where': ('Setup > Object Manager > %s > Page Layouts > '
                       'Page Layout Assignment' % obj),
         }
@@ -216,13 +224,16 @@ def _render_alignable_change(change, dest_env):
     return out
 
 
-def _removed_block(section, entries, dest_env):
+def _removed_block(section, entries, dest_env, verdict_note=None):
     """One grouped block per non-alignable section: a single <section> wrapper
-    listing every removed key, plus a comment enumerating them."""
+    listing every removed key, plus a comment enumerating them. ``verdict_note``
+    (when given) replaces the default "removed because not present" tail so the
+    layoutAssignment redundancy/check classification is readable inline."""
     keys = _keys_for(section)
     labels = [_entry_label(section, e['element']) for e in entries]
     labels = [l for l in labels if l]
-    comment = '%s removed in destination org because not present in source org' % ', '.join(labels)
+    tail = verdict_note or 'removed in destination org because not present in source org'
+    comment = '%s %s' % (', '.join(labels), tail)
 
     if not keys:
         # No key children to list (e.g. loginHours): emit the element verbatim.
@@ -328,13 +339,16 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
             for el in dst_els:
                 if _entry_key(el, keys) not in src_keys:
                     manual_ops.append(_describe_entry(section, el))
-                    changes.append({
+                    change = {
                         'kind': 'removed',
                         'section': section,
                         'key': _txt(el, keys[0]) if keys else '',
                         'element': deepcopy(el),
                         'old_values': {},
-                    })
+                    }
+                    if section == 'layoutAssignments':
+                        change['object'] = _layout_object(el)
+                    changes.append(change)
         else:
             # Unknown or scalar section (custom, userLicense, ...): source is
             # authoritative; keep the destination value only when source has
@@ -378,10 +392,55 @@ def removed_non_alignable(original_path, clean_path):
     return ops
 
 
+def classify_layout_ops(manual_ops, changes, layout_count):
+    """Annotate layoutAssignments entries with a redundancy verdict.
+
+    ``layout_count`` maps an object API name -> number of Layout components it
+    has in the destination org. A destination-only explicit layout assignment
+    is **redundant/ignorable** when the object has exactly one layout (it can
+    only point at the single default); with zero or several layouts the
+    assignment must be **checked** against the default by hand. The verdict is
+    written onto both the manual-ops dicts and the ``removed`` change dicts so
+    every report (MANUAL-OPERATIONS.txt and what-is-changed.txt) shows it.
+    """
+    for op in manual_ops:
+        if op.get('section') != 'layoutAssignments':
+            continue
+        n = layout_count.get(op.get('object'), 0)
+        if n == 1:
+            op['verdict'] = 'REDUNDANT (ignorable)'
+            op['operation'] = ('Explicit assignment is the object\'s ONLY layout '
+                               '(= its default); source inherits the same default')
+        else:
+            op['verdict'] = 'NEEDS CHECK'
+            op['operation'] = ('Object has %d layouts; verify this assignment '
+                               'matches the default and change it if it does not' % n)
+    for c in changes:
+        if c.get('section') != 'layoutAssignments':
+            continue
+        n = layout_count.get(c.get('object'), 0)
+        c['verdict'] = 'redundant' if n == 1 else 'check'
+    return manual_ops, changes
+
+
 def format_ops_table(ops):
-    """Render manual operations as an aligned plain-text table."""
-    header = ('SECTION', 'ITEM', 'MANUAL OPERATION', 'WHERE')
-    rows = [(o['section'], o['item'], o['operation'], o['where']) for o in ops]
+    """Render manual operations as an aligned plain-text table. When the ops
+    carry a ``verdict`` (layoutAssignments redundancy/check classification) an
+    extra VERDICT column is added."""
+    has_verdict = any('verdict' in o for o in ops)
+    header = ['SECTION', 'ITEM', 'MANUAL OPERATION']
+    if has_verdict:
+        header.append('VERDICT')
+    header.append('WHERE')
+
+    def _row(o):
+        r = [o['section'], o['item'], o['operation']]
+        if has_verdict:
+            r.append(o.get('verdict', '-'))
+        r.append(o['where'])
+        return r
+
+    rows = [_row(o) for o in ops]
     widths = [max(len(str(h)), max((len(str(r[i])) for r in rows), default=0))
               for i, h in enumerate(header)]
 
@@ -442,6 +501,12 @@ def write_what_is_changed(path, changes, dest_env):
         '  REVOKED (spento) : the destination was ON and is turned OFF.',
         '  MANUAL  (a mano) : cannot be changed by a Profile deploy - do it in Setup.',
         '',
+        'Layout assignments in MANUAL are split into:',
+        '  REDUNDANT  : the object has ONE layout, so the explicit assignment IS',
+        '               the default - redundant, you can ignore it.',
+        '  NEEDS CHECK: the object has several layouts - verify the assignment',
+        '               matches the default and correct it if it does not.',
+        '',
         'GRANTED: %d' % len(granted),
         'REVOKED: %d' % len(revoked),
         'MANUAL: %d' % len(removed),
@@ -465,12 +530,38 @@ def write_what_is_changed(path, changes, dest_env):
         lines.append('=' * 78)
         lines.append('MANUAL (cannot be changed by a Profile deploy)')
         lines.append('=' * 78)
-        grouped = {}
-        for c in removed:
-            grouped.setdefault(c['section'], []).append(c)
-        for section, entries in grouped.items():
-            lines.extend(_removed_block(section, entries, dest_env))
-            lines.append('')
+        layouts = [c for c in removed if c.get('section') == 'layoutAssignments']
+        others = [c for c in removed if c.get('section') != 'layoutAssignments']
+        has_verdict = any('verdict' in c for c in layouts)
+
+        if has_verdict:
+            redundant = [c for c in layouts if c.get('verdict') == 'redundant']
+            check = [c for c in layouts if c.get('verdict') != 'redundant']
+            if redundant:
+                lines.append('')
+                lines.append('REDUNDANT (ignorable): the object has a single layout, so this')
+                lines.append('explicit assignment is the default; the source inherits the same')
+                lines.append('default. Nothing to do.')
+                lines.extend(_removed_block(
+                    'layoutAssignments', redundant, dest_env,
+                    verdict_note='explicit assignment = the object\'s only layout '
+                                 '(its default) - redundant, ignorable'))
+                lines.append('')
+            if check:
+                lines.append('')
+                lines.append('NEEDS CHECK: the object has several layouts - verify this explicit')
+                lines.append('assignment matches the default and correct it if it does not.')
+                lines.extend(_removed_block(
+                    'layoutAssignments', check, dest_env,
+                    verdict_note='object has several layouts - verify it matches the default'))
+                lines.append('')
+        else:
+            grouped = {}
+            for c in removed:
+                grouped.setdefault(c['section'], []).append(c)
+            for section, entries in grouped.items():
+                lines.extend(_removed_block(section, entries, dest_env))
+                lines.append('')
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines).rstrip() + '\n')

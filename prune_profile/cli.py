@@ -46,11 +46,11 @@ from .constants import (
     __version__,
     version_ge,
 )
-from .merge import (format_ops_table, merge_profiles, removed_non_alignable,
-                    write_manual_ops, write_what_is_changed)
+from .merge import (classify_layout_ops, format_ops_table, merge_profiles,
+                    removed_non_alignable, write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, dry_run, find_sf, org_api_version, org_username,
-                    set_deploy_start_interval)
+from .sfcli import (deploy, dry_run, find_sf, list_metadata, org_api_version,
+                    org_username, set_deploy_start_interval)
 from .stage import prune_stage
 from .xmlio import write_package_xml, write_sfdx_project
 
@@ -317,6 +317,20 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         _f.write(merged_xml)
     logger.log('ALIGN: %d permission(s) granted (ON), %d revoked (OFF); %d non-alignable '
                'entr(ies) require manual action.' % (n_granted, n_revoked, len(manual_ops)))
+
+    # 4b. classify layoutAssignments manual ops (redundant vs needs check) using
+    #     the destination org's Layout components.
+    if any(op['section'] == 'layoutAssignments' for op in manual_ops):
+        layout_names, lerr = list_metadata(sf, dest_org, 'Layout')
+        layout_count = {}
+        if layout_names:
+            for name in layout_names:
+                obj = name.split('-', 1)[0] if '-' in name else name
+                layout_count[obj] = layout_count.get(obj, 0) + 1
+        elif lerr:
+            logger.log('ALIGN: warning: could not list Layout metadata (%s); '
+                       'layoutAssignments marked for manual check.' % lerr)
+        classify_layout_ops(manual_ops, changes, layout_count)
 
     # 5. manual operations (file inside 4-merged + end-of-run print).
     manual_ops_path = _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)

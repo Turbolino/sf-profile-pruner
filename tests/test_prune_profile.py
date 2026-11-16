@@ -1121,6 +1121,34 @@ class TestMerge(unittest.TestCase):
         self.assertIn('X-Y Layout', table)
         self.assertIn('Remove the page layout assignment', table)
 
+    def test_classify_layout_ops_redundant_vs_check(self):
+        ops = [
+            {'section': 'layoutAssignments', 'object': 'SingleObj',
+             'item': 'SingleObj-One Layout', 'operation': 'x', 'where': 'y'},
+            {'section': 'layoutAssignments', 'object': 'MultiObj',
+             'item': 'MultiObj-Picked Layout', 'operation': 'x', 'where': 'y'},
+        ]
+        changes = [
+            {'kind': 'removed', 'section': 'layoutAssignments', 'object': 'SingleObj'},
+            {'kind': 'removed', 'section': 'layoutAssignments', 'object': 'MultiObj'},
+            {'kind': 'removed', 'section': 'loginFlows'},  # untouched
+        ]
+        pp.classify_layout_ops(ops, changes, {'SingleObj': 1, 'MultiObj': 4})
+        self.assertEqual(ops[0]['verdict'], 'REDUNDANT (ignorable)')
+        self.assertEqual(ops[1]['verdict'], 'NEEDS CHECK')
+        self.assertEqual(changes[0]['verdict'], 'redundant')
+        self.assertEqual(changes[1]['verdict'], 'check')
+        self.assertNotIn('verdict', changes[2])
+
+    def test_format_ops_table_adds_verdict_column(self):
+        ops = [{'section': 'layoutAssignments', 'object': 'A', 'item': 'A-Layout',
+                'operation': 'Explicit assignment is the only layout',
+                'verdict': 'REDUNDANT (ignorable)',
+                'where': 'Setup > Object Manager'}]
+        table = pp.format_ops_table(ops)
+        self.assertIn('VERDICT', table)
+        self.assertIn('REDUNDANT (ignorable)', table)
+
     def test_merged_output_indented_one_entry_per_line(self):
         xml, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
@@ -1167,6 +1195,26 @@ class TestMerge(unittest.TestCase):
         self.assertIn('GRANTED (turned ON in the destination)', s)
         self.assertIn('<editable>true</editable> <!-- old value from devorg: not present -->', s)
         self.assertIn('GRANTED: 1', s)
+
+    def test_what_is_changed_splits_layout_verdicts(self):
+        xml, _, changes = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<layoutAssignments><layout>Single-One Layout</layout></layoutAssignments>\n'
+             '<layoutAssignments><layout>Multi-Picked Layout</layout></layoutAssignments>'),
+        )
+        ops = [c for c in changes if c.get('section') == 'layoutAssignments']
+        # set objects + verdicts as classify_layout_ops would in the real flow
+        for c, obj in zip(ops, ['Single', 'Multi']):
+            c['object'] = obj
+        pp.classify_layout_ops([], changes, {'Single': 1, 'Multi': 3})
+        with tempfile.TemporaryDirectory() as d:
+            path = pp.write_what_is_changed(os.path.join(d, 'w.txt'), changes, 'devorg')
+            s = read_text(path)
+        self.assertIn('REDUNDANT (ignorable)', s)
+        self.assertIn('NEEDS CHECK', s)
+        self.assertIn('Single-One Layout explicit assignment = the object\'s only layout', s)
+        self.assertIn('Multi-Picked Layout object has several layouts - verify it matches the default', s)
 
 
 if __name__ == '__main__':

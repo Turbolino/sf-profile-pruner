@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-11-16
+
+### Added
+
+- `layoutAssignments` manual operations are now classified automatically:
+  - **`REDUNDANT (ignorable)`** when the object has a single page layout (the
+    explicit assignment is necessarily the default; the source inherits the
+    same default, so there is nothing to do);
+  - **`NEEDS CHECK`** when the object has several layouts (verify the explicit
+    assignment matches the default and correct it if it does not).
+  The verdict appears both in `MANUAL-OPERATIONS.txt` (new VERDICT column) and
+  in the `MANUAL` section of `what-is-changed.txt`. The classification uses the
+  destination org's `Layout` components (via `sf org list metadata`).
+
+### Fixed
+
+- The manual-operation wording for `layoutAssignments` no longer says "Remove
+  the page layout assignment" (a page layout assignment cannot be deleted;
+  when one exists it must remain). It now says the assignment must be aligned
+  with the source, and the verdict tells you whether it is redundant or needs
+  a real change.
+
 ## [2.5.0] - 2026-11-16
 
 ### Removed

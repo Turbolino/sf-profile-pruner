@@ -277,9 +277,15 @@ run/
 ├── 4-merged/
 │   ├── <name>.profile-meta.xml    # source-authoritative merged profile
 │   ├── MANUAL-OPERATIONS.txt      # sections with no deploy-able "off" value
-│   └── what-is-changed.txt        # only the changed/turned-off + removed entries
+│   └── what-is-changed.txt        # the full diff the deploy will apply
 └── run.log                        # full log
 ```
+
+`layoutAssignments` manual operations are auto-classified in both reports:
+**`REDUNDANT (ignorable)`** when the object has a single page layout (the
+assignment is necessarily the default), or **`NEEDS CHECK`** when the object
+has several layouts. This keeps you from chasing assignments that would have
+no effect.
 
 ## Repository structure
 

@@ -43,6 +43,7 @@ from .engine import prefetch_dangling, prefetch_standard_dangling, process_secti
 from .merge import (
     MERGE_TABLE,
     NON_ALIGNABLE,
+    classify_layout_ops,
     format_ops_table,
     merge_profiles,
     removed_non_alignable,
@@ -98,8 +99,8 @@ __all__ = [
     '__email__', 'is_standard_api_name', 'version_ge',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',
-    'MERGE_TABLE', 'NON_ALIGNABLE', 'format_ops_table', 'merge_profiles',
-    'removed_non_alignable', 'write_manual_ops', 'write_what_is_changed',
+    'MERGE_TABLE', 'NON_ALIGNABLE', 'classify_layout_ops', 'format_ops_table',
+    'merge_profiles', 'removed_non_alignable', 'write_manual_ops', 'write_what_is_changed',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
     'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
