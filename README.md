@@ -199,9 +199,9 @@ Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
   resolved and removed in one pass (not one error per run).
 - **Alignment report (`--align-from-source`)**: the merged profile lives in
   `4-merged/` together with `MANUAL-OPERATIONS.txt` (sections with no
-  deploy-able "off" value) and `what-is-changed.txt` (only the changed /
-  turned-off and removed entries, each annotated with `old value from <org>:
-  <value>` or `removed in destination org because not present in source org`).
+  deploy-able "off" value) and `what-is-changed.txt` (the full diff the deploy
+  will apply, split into `GRANTED` / `REVOKED` / `MANUAL` sections, each
+  changed field annotated with `old value from <org>: <value>`).
 - **Merged-profile validation**: before any deploy, the merged profile is
   dry-run against the destination; the deploy only runs when that dry-run is
   clean, otherwise the run ends with `VALIDATION_FAILED`.

@@ -1014,9 +1014,9 @@ class TestMerge(unittest.TestCase):
             return pp.merge_profiles(src, dst)
 
     def test_dest_only_tab_is_turned_off(self):
-        xml, manual_ops, turned_off, changes = self._merge(
+        xml, manual_ops, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
-            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOff</visibility></tabVisibilities>\n'
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
         )
         root = pp.etree.fromstring(xml)
@@ -1024,14 +1024,13 @@ class TestMerge(unittest.TestCase):
                 for el in root.findall('{%s}tabVisibilities' % self.NS)}
         self.assertEqual(tabs['TabA__c'], 'DefaultOn')   # source value wins
         self.assertEqual(tabs['TabB__c'], 'Hidden')      # dest-only -> off
-        self.assertEqual(turned_off, 1)
         self.assertEqual(manual_ops, [])
         self.assertEqual(len(changes), 1)
-        self.assertEqual(changes[0]['kind'], 'turned_off')
+        self.assertEqual(changes[0]['kind'], 'revoke')
         self.assertEqual(changes[0]['old_values'], {'visibility': 'DefaultOn'})
 
     def test_dest_only_entry_already_off_is_skipped(self):
-        xml, manual_ops, turned_off, changes = self._merge(
+        xml, manual_ops, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>Hidden</visibility></tabVisibilities>'),
@@ -1041,17 +1040,59 @@ class TestMerge(unittest.TestCase):
         tabs = [el.find('{%s}tab' % self.NS).text
                 for el in root.findall('{%s}tabVisibilities' % self.NS)]
         self.assertEqual(tabs, ['TabA__c'])
-        self.assertEqual(turned_off, 0)
         self.assertEqual(changes, [])
         self.assertEqual(manual_ops, [])
 
+    def test_source_only_entry_is_granted(self):
+        xml, manual_ops, changes = self._merge(
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+        )
+        # TabB exists only in the source and is ON: deploying the merged
+        # profile turns it ON in the destination -> grant.
+        root = pp.etree.fromstring(xml)
+        tabs = {el.find('{%s}tab' % self.NS).text: el.find('{%s}visibility' % self.NS).text
+                for el in root.findall('{%s}tabVisibilities' % self.NS)}
+        self.assertEqual(tabs['TabB__c'], 'DefaultOn')
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'grant')
+        self.assertEqual(changes[0]['old_values'], {'visibility': None})
+
+    def test_shared_entry_source_off_dest_on_is_revoked(self):
+        xml, manual_ops, changes = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>Hidden</visibility></tabVisibilities>',
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+        )
+        # Same tab in both, source OFF (Hidden), dest ON: merged keeps the
+        # source OFF value -> revoke.
+        root = pp.etree.fromstring(xml)
+        tab = root.findall('{%s}tabVisibilities' % self.NS)[0]
+        self.assertEqual(tab.find('{%s}visibility' % self.NS).text, 'Hidden')
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'revoke')
+        self.assertEqual(changes[0]['old_values'], {'visibility': 'DefaultOn'})
+
+    def test_shared_entry_source_on_dest_off_is_granted(self):
+        xml, manual_ops, changes = self._merge(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+            '<tabVisibilities><tab>TabA__c</tab><visibility>Hidden</visibility></tabVisibilities>',
+        )
+        # Same tab in both, source ON, dest OFF (Hidden): merged keeps the
+        # source ON value -> grant.
+        root = pp.etree.fromstring(xml)
+        tab = root.findall('{%s}tabVisibilities' % self.NS)[0]
+        self.assertEqual(tab.find('{%s}visibility' % self.NS).text, 'DefaultOn')
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'grant')
+        self.assertEqual(changes[0]['old_values'], {'visibility': 'Hidden'})
+
     def test_dest_only_layout_assignment_is_manual(self):
-        xml, manual_ops, turned_off, changes = self._merge(
+        xml, manual_ops, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<layoutAssignments><layout>Account-Account Layout</layout></layoutAssignments>'),
         )
-        self.assertEqual(turned_off, 0)
         self.assertEqual(len(manual_ops), 1)
         self.assertEqual(manual_ops[0]['section'], 'layoutAssignments')
         self.assertIn('Account-Account Layout', manual_ops[0]['item'])
@@ -1081,7 +1122,7 @@ class TestMerge(unittest.TestCase):
         self.assertIn('Remove the page layout assignment', table)
 
     def test_merged_output_indented_one_entry_per_line(self):
-        xml, _, _, _ = self._merge(
+        xml, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'),
@@ -1097,7 +1138,7 @@ class TestMerge(unittest.TestCase):
         self.assertIn('\n        <tab>TabB__c</tab>', s)
 
     def test_what_is_changed_annotates_old_values(self):
-        xml, _, _, changes = self._merge(
+        xml, _, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
@@ -1106,13 +1147,26 @@ class TestMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = pp.write_what_is_changed(os.path.join(d, 'w.txt'), changes, 'devorg')
             s = read_text(path)
-        # turned-off: comment inline on the changed field line
+        # revoked: comment inline on the changed field line
         self.assertIn('<visibility>Hidden</visibility> <!-- old value from devorg: DefaultOn -->', s)
+        self.assertIn('REVOKED (turned OFF in the destination)', s)
         # removed: grouped list with an enumerating comment
         self.assertIn('<layout>Lead-Lead Layout</layout>', s)
         self.assertIn('Lead-Lead Layout removed in destination org because not present in source org', s)
-        self.assertIn('TURNED OFF: 1', s)
-        self.assertIn('REMOVED (not present in source org): 1', s)
+        self.assertIn('REVOKED: 1', s)
+        self.assertIn('MANUAL: 1', s)
+
+    def test_what_is_changed_reports_grants(self):
+        xml, _, changes = self._merge(
+            '<fieldPermissions><field>Acc.Skill__c</field><editable>true</editable><readable>true</readable></fieldPermissions>',
+            '',
+        )
+        with tempfile.TemporaryDirectory() as d:
+            path = pp.write_what_is_changed(os.path.join(d, 'w.txt'), changes, 'devorg')
+            s = read_text(path)
+        self.assertIn('GRANTED (turned ON in the destination)', s)
+        self.assertIn('<editable>true</editable> <!-- old value from devorg: not present -->', s)
+        self.assertIn('GRANTED: 1', s)
 
 
 if __name__ == '__main__':

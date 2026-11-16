@@ -19,6 +19,7 @@ kept verbatim, every destination-only entry is turned off (alignable sections)
 or reported as a manual operation (non-alignable sections).
 """
 
+from collections import Counter
 from copy import deepcopy
 
 from lxml import etree
@@ -144,15 +145,23 @@ def _describe_entry(section, el):
             'where': 'Setup > Profiles > this profile'}
 
 
-def _changed_fields(el, off_fields):
-    """Map field -> old value for the off-fields that will actually change
-    (old value present and different from the off value)."""
-    changed = {}
-    for child, off_val in off_fields.items():
-        old = _txt(el, child)
-        if old and old != off_val:
-            changed[child] = old
-    return changed
+_VISIBILITY_ORDER = {'Hidden': 0, 'DefaultOff': 1, 'DefaultOn': 2}
+
+
+def _field_direction(field, old, new, off_val):
+    """Direction of one field change: ``'grant'`` (turned ON) or ``'revoke'``
+    (turned OFF). ``old`` is the destination value or ``None`` when the entry
+    (or field) is absent; ``new`` is the merged (aligned) value."""
+    if new == off_val:
+        return 'revoke'
+    if old == off_val or old is None:
+        return 'grant'
+    # Both are non-off and different (multi-state fields only, e.g.
+    # tabVisibilities.visibility: Hidden / DefaultOff / DefaultOn).
+    if field == 'visibility':
+        order = _VISIBILITY_ORDER
+        return 'grant' if order.get(new, 0) > order.get(old, 0) else 'revoke'
+    return 'grant'
 
 
 def _element_xml(el):
@@ -162,11 +171,6 @@ def _element_xml(el):
     el.tail = None  # drop the whitespace tail inherited from the parent tree
     etree.indent(el, space='    ')
     return etree.tostring(el, encoding='unicode').rstrip('\n')
-
-
-def _change_comment_line(dest_env, old_value):
-    """Single inline comment recording one field's old value."""
-    return ' <!-- old value from %s: %s -->' % (dest_env, old_value)
 
 
 def _entry_label(section, el):
@@ -186,18 +190,27 @@ def _entry_label(section, el):
     return _txt(el, 'name') or ''
 
 
-def _turned_off_lines(change, dest_env):
-    """XML block for one turned-off entry, with the old-value comment placed
-    inline right after each field that actually changed."""
+def _render_alignable_change(change, dest_env):
+    """XML block for one granted/revoked entry, with the old destination value
+    inline right after each field that actually changed (``not present`` when
+    the field did not exist in the destination)."""
     section = change['section']
     key_child, off_fields = MERGE_TABLE[section]
+    el = change['element']
     old_values = change['old_values']
     out = ['<%s>' % section]
     out.append('    <%s>%s</%s>' % (key_child, change['key'], key_child))
-    for field, off_val in off_fields.items():
-        line = '    <%s>%s</%s>' % (field, off_val, field)
+    for field, _off in off_fields.items():
+        new = _txt(el, field)
+        if new == '':
+            continue
+        line = '    <%s>%s</%s>' % (field, new, field)
         if field in old_values:
-            line += _change_comment_line(dest_env, old_values[field])
+            old = old_values[field]
+            if old is None:
+                line += ' <!-- old value from %s: not present -->' % dest_env
+            else:
+                line += ' <!-- old value from %s: %s -->' % (dest_env, old)
         out.append(line)
     out.append('</%s>' % section)
     return out
@@ -234,11 +247,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
     Source is authoritative: every source entry is kept verbatim; every
     destination-only entry is turned off (alignable sections) or recorded as a
     manual operation (non-alignable sections). Destination-only entries that
-    are already off are skipped entirely (no change to report).
+    are already off are skipped (no change).
 
-    Returns ``(merged_xml_bytes, manual_ops, turned_off_count, changes)`` where
-    ``changes`` is a list of dicts describing every turned-off / removed entry
-    (kind, section, key, element, old_values) for the what-is-changed report.
+    Returns ``(merged_xml_bytes, manual_ops, changes)`` where ``changes`` is the
+    full list of differences the deploy will apply, each ``kind`` being
+    ``grant`` (turned ON in the destination), ``revoke`` (turned OFF) or
+    ``removed`` (non-alignable, manual action).
     """
     src_root = etree.parse(source_path).getroot()
     dst_root = etree.parse(dest_path).getroot()
@@ -248,7 +262,6 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
     out = etree.Element(M + 'Profile', nsmap={None: NS})
     manual_ops = []
     changes = []
-    turned_off = 0
 
     sections = list(src_groups)
     for s in dst_groups:
@@ -261,26 +274,52 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
 
         if section in MERGE_TABLE:
             key_child, off_fields = MERGE_TABLE[section]
-            src_keys = {_entry_key(el, [key_child]) for el in src_els}
-            for el in src_els:
-                out.append(deepcopy(el))
-            for el in dst_els:
-                if _entry_key(el, [key_child]) not in src_keys:
-                    old_values = _changed_fields(el, off_fields)
-                    if not old_values:
-                        # Already off in the destination: nothing to change.
-                        # Neither the merged profile nor the report needs it.
+            src_by_key = {_entry_key(el, [key_child]): el for el in src_els}
+            dst_by_key = {_entry_key(el, [key_child]): el for el in dst_els}
+
+            # Merged section: source entries verbatim + an explicit off element
+            # for each destination-only entry.
+            merged_section = [deepcopy(el) for el in src_els]
+            for key, el in dst_by_key.items():
+                if key in src_by_key:
+                    continue
+                # Skip destination-only entries that are already fully off:
+                # turning them off again is a no-op, not a change to report.
+                if all(_txt(el, f) in ('', off_val) for f, off_val in off_fields.items()):
+                    continue
+                merged_section.append(_make_off_element(section, key_child, off_fields, el))
+            for m_el in merged_section:
+                out.append(m_el)
+
+            # Field-level diff between the merged section and the destination:
+            # every difference is a deploy-time change (grant or revoke).
+            merged_by_key = {_entry_key(e, [key_child]): e for e in merged_section}
+            for key in sorted(set(merged_by_key) | set(dst_by_key)):
+                m_el = merged_by_key.get(key)
+                d_el = dst_by_key.get(key)
+                old_values = {}
+                directions = Counter()
+                for field, off_val in off_fields.items():
+                    new = _txt(m_el, field) if m_el is not None else ''
+                    if new == '':
+                        continue  # source omits the field: deploy omits -> no-op
+                    old = _txt(d_el, field) if d_el is not None else None
+                    if old == '':
+                        old = None
+                    if old == new:
                         continue
-                    off_el = _make_off_element(section, key_child, off_fields, el)
-                    out.append(off_el)
-                    turned_off += 1
-                    changes.append({
-                        'kind': 'turned_off',
-                        'section': section,
-                        'key': _txt(el, key_child),
-                        'element': off_el,
-                        'old_values': old_values,
-                    })
+                    old_values[field] = old
+                    directions[_field_direction(field, old, new, off_val)] += 1
+                if not old_values:
+                    continue
+                kind = 'revoke' if directions['revoke'] >= directions['grant'] else 'grant'
+                changes.append({
+                    'kind': kind,
+                    'section': section,
+                    'key': key[0],
+                    'element': deepcopy(m_el) if m_el is not None else deepcopy(d_el),
+                    'old_values': old_values,
+                })
         elif section in NON_ALIGNABLE:
             keys = _keys_for(section)
             src_keys = {_entry_key(el, keys) for el in src_els}
@@ -309,7 +348,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
 
     etree.indent(out, space='    ')
     xml = etree.tostring(out, xml_declaration=True, encoding='UTF-8')
-    return xml, manual_ops, turned_off, changes
+    return xml, manual_ops, changes
 
 
 def removed_non_alignable(original_path, clean_path):
@@ -379,52 +418,59 @@ def write_manual_ops(path, ops, profile_name):
 
 
 def write_what_is_changed(path, changes, dest_env):
-    """Write the what-is-changed report: only the changed (turned-off) and
-    removed rows, each followed by an XML comment recording the old value in
-    the destination org (or that the entry was removed because it is not
-    present in the source org). Returns the path."""
-    turned = [c for c in changes if c['kind'] == 'turned_off']
+    """Write the what-is-changed report: every difference the alignment deploy
+    will apply, grouped into GRANTED (turned ON), REVOKED (turned OFF) and
+    MANUAL (non-alignable) sections. Each changed field is annotated inline
+    with its old destination value. Returns the path."""
+    granted = [c for c in changes if c['kind'] == 'grant']
+    revoked = [c for c in changes if c['kind'] == 'revoke']
     removed = [c for c in changes if c['kind'] == 'removed']
 
     lines = [
         'WHAT IS CHANGED - alignment (destination: %s)' % dest_env,
-        '=' * 60,
+        '=' * 78,
         '',
-        'Only the entries of the merged profile that differ from the destination',
-        'org are listed. Each turned-off field carries an inline XML comment',
-        'with its old value in the destination; removed entries are grouped with',
-        'a comment listing what was removed because it is not in the source org.',
+        'Every entry below is a difference between the destination org and the',
+        'aligned (merged) profile. Each changed field is followed by an inline',
+        'XML comment recording its OLD value in the destination:',
         '',
-        'TURNED OFF: %d' % len(turned),
-        'REMOVED (not present in source org): %d' % len(removed),
+        '    <!-- old value from %s: <old value> -->' % dest_env,
+        '    <!-- old value from %s: not present -->   (entry/field did not exist)' % dest_env,
+        '',
+        'Sections',
+        '  GRANTED (acceso) : the destination was OFF (or missing) and is turned ON.',
+        '  REVOKED (spento) : the destination was ON and is turned OFF.',
+        '  MANUAL  (a mano) : cannot be changed by a Profile deploy - do it in Setup.',
+        '',
+        'GRANTED: %d' % len(granted),
+        'REVOKED: %d' % len(revoked),
+        'MANUAL: %d' % len(removed),
         '',
     ]
 
-    def _emit_turned():
-        if not turned:
+    def _emit_change_group(group, title):
+        if not group:
             return
-        lines.append('=' * 60)
-        lines.append('TURNED OFF')
-        lines.append('=' * 60)
-        for c in turned:
-            lines.extend(_turned_off_lines(c, dest_env))
+        lines.append('=' * 78)
+        lines.append(title)
+        lines.append('=' * 78)
+        for c in group:
+            lines.extend(_render_alignable_change(c, dest_env))
             lines.append('')
 
-    def _emit_removed():
-        if not removed:
-            return
-        lines.append('=' * 60)
-        lines.append('REMOVED (not present in source org)')
-        lines.append('=' * 60)
+    _emit_change_group(granted, 'GRANTED (turned ON in the destination)')
+    _emit_change_group(revoked, 'REVOKED (turned OFF in the destination)')
+
+    if removed:
+        lines.append('=' * 78)
+        lines.append('MANUAL (cannot be changed by a Profile deploy)')
+        lines.append('=' * 78)
         grouped = {}
         for c in removed:
             grouped.setdefault(c['section'], []).append(c)
         for section, entries in grouped.items():
             lines.extend(_removed_block(section, entries, dest_env))
             lines.append('')
-
-    _emit_turned()
-    _emit_removed()
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines).rstrip() + '\n')

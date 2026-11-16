@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-11-16
+
+### Added
+
+- `what-is-changed.txt` now reports the **complete** set of differences the
+  alignment deploy will apply, not just the turned-off rows. It is split into
+  three clearly commented sections:
+  - `GRANTED (acceso)` — the destination was OFF (or missing) and is turned ON;
+  - `REVOKED (spento)` — the destination was ON and is turned OFF;
+  - `MANUAL (a mano)` — sections with no deploy-able "off" value (do them in Setup).
+  Each changed field keeps an inline `old value from <org>: <old value>` comment
+  (`not present` when the entry/field did not exist in the destination).
+
+### Changed
+
+- `merge_profiles` now returns `(merged_xml, manual_ops, changes)` where
+  `changes` classifies every deploy-time difference as `grant`, `revoke` or
+  `removed`, instead of only tracking destination-only turn-offs.
+- The alignment log and final summary report `GRANTED` and `REVOKED` counts
+  instead of a single `TURNED OFF` count.
+
 ## [2.3.1] - 2026-11-16
 
 ### Fixed

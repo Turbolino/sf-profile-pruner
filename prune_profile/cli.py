@@ -306,15 +306,16 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
 
     # 4. merge: source authoritative; destination-only entries turned off.
     logger.log('ALIGN: merging the source (authoritative) into the destination...')
-    merged_xml, manual_ops, turned_off, changes = merge_profiles(
-        src_clean, dst_clean, dest_env=dest_org)
+    merged_xml, manual_ops, changes = merge_profiles(src_clean, dst_clean, dest_env=dest_org)
+    n_granted = sum(1 for c in changes if c['kind'] == 'grant')
+    n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
     merge_dir = os.path.join(out_dir, '4-merged')
     os.makedirs(merge_dir, exist_ok=True)
     merged_path = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
     with open(merged_path, 'wb') as _f:
         _f.write(merged_xml)
-    logger.log('ALIGN: %d permission(s) turned off; %d non-alignable entr(ies) '
-               'require manual action.' % (turned_off, len(manual_ops)))
+    logger.log('ALIGN: %d permission(s) granted (ON), %d revoked (OFF); %d non-alignable '
+               'entr(ies) require manual action.' % (n_granted, n_revoked, len(manual_ops)))
 
     # 5. manual operations (file inside 4-merged + end-of-run print).
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
@@ -366,7 +367,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('  ALIGNMENT RESULT')
     logger.log('========================================================')
     logger.log('OUTCOME: %s' % outcome)
-    logger.log('TURNED OFF: %d' % turned_off)
+    logger.log('GRANTED (turned ON): %d' % n_granted)
+    logger.log('REVOKED (turned OFF): %d' % n_revoked)
     logger.log('MANUAL OPERATIONS: %d' % len(manual_ops))
     logger.log('VALIDATION: %s' % validation)
     logger.log('MERGED PROFILE: %s' % merged_path)
