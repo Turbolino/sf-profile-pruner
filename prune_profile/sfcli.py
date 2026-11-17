@@ -239,25 +239,32 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
-def field_data_types(sf, org, entities, cwd=None, control=None):
+def field_data_types(sf, org, entities, cwd=None, control=None, batch=40):
     """Return ``{fieldFullName: DataType}`` for every field of ``entities`` via
     FieldDefinition (Tooling API). Returns (dict_or_None, error).
 
-    One query per entity is used because FieldDefinition requires a reified
-    filter (EntityDefinitionId). Field full names are reconstructed as
-    ``<entity>.<QualifiedApiName>`` so they match the Profile XML."""
+    FieldDefinition requires a reified filter on ``EntityDefinitionId``, so
+    entities are queried in batches with ``EntityDefinitionId IN (...)``. This
+    keeps the number of `sf` round-trips to ``ceil(len(entities)/batch)``
+    instead of one per entity (which stalls for hundreds of objects). Field full
+    names are reconstructed as ``<EntityDefinitionId>.<QualifiedApiName>`` so
+    they match the Profile XML."""
     out = {}
-    for ent in entities:
+    entities = [str(e) for e in entities if e]
+    for i in range(0, len(entities), batch):
+        chunk = entities[i:i + batch]
+        in_list = ', '.join("'%s'" % e.replace("'", "\\'") for e in chunk)
         records, err = tooling_query(
             sf, org,
-            "SELECT QualifiedApiName, DataType FROM FieldDefinition "
-            "WHERE EntityDefinitionId = '%s'" % str(ent).replace("'", "\\'"),
+            "SELECT EntityDefinitionId, QualifiedApiName, DataType "
+            "FROM FieldDefinition WHERE EntityDefinitionId IN (%s)" % in_list,
             cwd=cwd, control=control)
         if err:
             return None, err
         for r in records:
+            ent = r.get('EntityDefinitionId')
             qn = r.get('QualifiedApiName')
-            if qn:
+            if ent and qn:
                 out['%s.%s' % (ent, qn)] = str(r.get('DataType') or '')
     return out, None
 

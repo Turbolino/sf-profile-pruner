@@ -175,6 +175,28 @@ class TestRepairMangledArgv(unittest.TestCase):
 
 
 class TestOrgApiVersion(unittest.TestCase):
+    def test_field_data_types_batches_entities(self):
+        calls = []
+        def fake_tooling(sf, org, soql, cwd=None, control=None):
+            calls.append(soql)
+            # echo back the EntityDefinitionIds as fake records
+            import re
+            ids = re.findall(r"'([^']+)'", soql)
+            return [{'EntityDefinitionId': i, 'QualifiedApiName': 'F__c',
+                     'DataType': 'Text(80)'} for i in ids], None
+        orig = pp.sfcli.tooling_query
+        pp.sfcli.tooling_query = fake_tooling
+        try:
+            entities = ['Obj%02d' % i for i in range(85)]
+            out, err = pp.sfcli.field_data_types('sf', 'devorg', entities, batch=40)
+        finally:
+            pp.sfcli.tooling_query = orig
+        self.assertIsNone(err)
+        self.assertEqual(len(out), 85)
+        # 85 entities at batch 40 -> 3 queries
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all('EntityDefinitionId IN (' in c for c in calls))
+
     def test_extracts_api_version(self):
         calls = []
         def fake_run(cmd, sf, what, cwd=None, control=None):

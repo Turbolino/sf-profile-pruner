@@ -122,6 +122,8 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
         ent = n.split('.', 1)[0]
         if ent and ent not in entities:
             entities.append(ent)
+    logger.log('ALIGN: fetching field types for %d object(s) to normalize '
+               'read-only fields...' % len(entities))
     types, terr = field_data_types(sf, org, entities)
     if types is None:
         logger.log('ALIGN: warning: could not fetch field types (%s); '
