@@ -271,16 +271,9 @@ def _render_diff_key(key):
     return ' / '.join(str(x) for x in key if x)
 
 
-def render_diff_report(sections, src_label, dst_label, tool_version=None):
-    """Render the full diff report as a string."""
-    tv = tool_version or __version__
+def _diff_summary_table(sections):
+    """Render only the per-section summary counts as a multi-line string."""
     lines = []
-    lines.append('PROFILE DIFF - source -> destination')
-    lines.append('=' * 66)
-    lines.append('source      : %s' % src_label)
-    lines.append('destination : %s' % dst_label)
-    lines.append('tool        : sf-profile-pruner v%s' % tv)
-    lines.append('')
     lines.append('SUMMARY')
     lines.append('=' * 66)
     lines.append('%-30s %8s %8s %10s %10s %8s %8s' % (
@@ -291,6 +284,34 @@ def render_diff_report(sections, src_label, dst_label, tool_version=None):
             s, d['source_count'], d['dest_count'],
             len(d['only_source']), len(d['only_dest']),
             len(d['common']), len(d['different'])))
+    return '\n'.join(lines)
+
+
+def render_diff_summary(sections, src_label, dst_label, tool_version=None):
+    """Render only the header + summary counts (no per-entry details)."""
+    tv = tool_version or __version__
+    return '\n'.join([
+        'PROFILE DIFF - source -> destination',
+        '=' * 66,
+        'source      : %s' % src_label,
+        'destination : %s' % dst_label,
+        'tool        : sf-profile-pruner v%s' % tv,
+        '',
+        _diff_summary_table(sections),
+    ])
+
+
+def render_diff_report(sections, src_label, dst_label, tool_version=None):
+    """Render the full diff report as a string."""
+    tv = tool_version or __version__
+    lines = []
+    lines.append('PROFILE DIFF - source -> destination')
+    lines.append('=' * 66)
+    lines.append('source      : %s' % src_label)
+    lines.append('destination : %s' % dst_label)
+    lines.append('tool        : sf-profile-pruner v%s' % tv)
+    lines.append('')
+    lines.append(_diff_summary_table(sections))
     lines.append('')
     lines.append('DETAILS')
     lines.append('=' * 66)

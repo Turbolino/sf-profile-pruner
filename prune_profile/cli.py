@@ -50,8 +50,8 @@ from .constants import (
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, diff_profiles, field_permissions_names,
                     format_ops_table, merge_profiles, removed_non_alignable,
-                    render_diff_report, write_diff_json, write_diff_xml,
-                    write_manual_ops, write_what_is_changed)
+                    render_diff_report, render_diff_summary, write_diff_json,
+                    write_diff_xml, write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, dry_run, field_data_types, find_sf, list_metadata,
                     org_api_version, org_username, set_deploy_start_interval)
@@ -76,32 +76,42 @@ _VALUE_FLAGS = {
 
 EXAMPLES = '''\
 Examples:
-  # Prune a profile file and dry-run against the destination org (output in the current dir)
+  # 1) CLEAN a profile file: remove references to metadata that does not exist
+  #    in the destination org. Dry-run only - the org is never modified.
   sfpp -pp "Admin.profile-meta.xml" -do mysandbox
 
-  # Prune and deploy under the same name (creates the profile if it does not exist)
-  sfpp -pp "Admin.profile-meta.xml" -do prod [--deploy-on-success [--sure]]
+  # 2) CLEAN AND DEPLOY: after the profile is clean, deploy it to the
+  #    destination org (asks Y/N). Add --sure to skip the confirmation.
+  sfpp -pp "Admin.profile-meta.xml" -do prod --deploy-on-success
 
-  # Deploy the cleaned profile under a different name
+  # 3) CLEAN, RENAME AND DEPLOY: deploy the cleaned profile under a new name
+  #    (creates it if it does not exist in the org).
   sfpp -pp "Admin.profile-meta.xml" -do prod -dp "Admin_Clean" --deploy-on-success --sure
 
-  # Retrieve from a source org, prune and deploy to a destination org
+  # 4) RETRIEVE + CLEAN + DEPLOY: pull a profile from a source org, clean it
+  #    against a destination org, then deploy it there.
   sfpp -so devorg -sp "Sales Rep" -do mysandbox -dp "Sales Rep" --deploy-on-success
 
-  # Same org, full (non-stripped) retrieve, dry-run only
+  # 5) FULL RETRIEVE (no stripping): keep loginIpRanges/loginHours/userLicense
+  #    in the retrieved profile; dry-run only.
   sfpp -so mysandbox -sp "Sales Rep" -do mysandbox -dp "Sales Rep" -fp
 
-  # Retrieve only (no prune): download the profile from a source org
+  # 6) RETRIEVE ONLY: download the profile from a source org without any
+  #    cleaning or deploy.
   sfpp -so devorg -sp "Sales Rep" -od ./profiles
 
-  # Align the destination profile to the source (turns OFF destination-only
-  # permissions); runs automatically, the pre-align profile is saved in the run folder
+  # 7) ALIGN: make the destination profile match the source (turns OFF
+  #    destination-only permissions). Runs automatically, no prompt; the
+  #    pre-align destination profile is always saved in the run folder.
   sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --align-from-source
 
-  # Compare two profiles without changing anything (diff/diff-report.txt)
+  # 8) COMPARE: diff the source profile against the destination profile without
+  #    changing anything. Writes diff/diff-report.txt + diff/diff-data.json +
+  #    diff/diff-data.xml (what is only in one, only in the other, identical,
+  #    and what differs field-by-field).
   sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --diff -od ./out
 
-  # Custom output dir, batch size and threads
+  # 9) TUNE the pruning: custom output dir, batch size and threads.
   sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
 '''
 
@@ -494,15 +504,16 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('  ✓ diff data (JSON):     %s' % json_path)
     logger.log('  ✓ diff data (XML):      %s' % xml_path)
 
-    # Full report to screen: summary counts AND the actual entries (what is
-    # only in one, only in the other, and what differs field-by-field).
-    # Identical entries are NOT spammed to the console: they live in the
-    # diff-data.json / diff-data.xml files.
+    # Screen output: only the summary counts + the paths of the three files.
+    # The full per-entry detail lives in the files (diff-report.txt has the
+    # human-readable detail; diff-data.json/.xml are machine-readable).
     print('')
-    print(report_text)
-    print('Machine-readable data (identical + only-* + different, with values):')
-    print('  JSON : %s' % json_path)
-    print('  XML  : %s' % xml_path)
+    print(render_diff_summary(sections, src_label, dst_label))
+    print('')
+    print('Files (full detail + machine-readable data):')
+    print('  report : %s' % report_path)
+    print('  JSON   : %s' % json_path)
+    print('  XML    : %s' % xml_path)
     print('')
     logger.log('RESULT:SUCCESS')
     sys.exit(0)

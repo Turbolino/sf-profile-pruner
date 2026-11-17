@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.3] - 2026-11-18
+
+### Changed
+
+- `--diff` now prints only the summary counts and the paths of the three output
+  files to the console (the full per-entry detail is no longer dumped to the
+  terminal; it lives in `diff-report.txt`, `diff-data.json`, `diff-data.xml`).
+- Help examples rewritten to explain the PURPOSE of each command (clean, clean
+  + deploy, rename + deploy, retrieve + clean + deploy, full retrieve, retrieve
+  only, align, compare, tune), including a full `--diff` example.
+
 ## [2.12.2] - 2026-11-18
 
 ### Added
