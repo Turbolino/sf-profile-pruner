@@ -1321,21 +1321,75 @@ class TestMerge(unittest.TestCase):
         tv = res['tabVisibilities']
         self.assertEqual(tv['source_count'], 2)
         self.assertEqual(tv['dest_count'], 2)
-        self.assertEqual(tv['only_source'], [('TabB__c',)])
-        self.assertEqual(tv['only_dest'], [('TabC__c',)])
+        self.assertEqual([x['key'] for x in tv['only_source']], [('TabB__c',)])
+        self.assertEqual([x['key'] for x in tv['only_dest']], [('TabC__c',)])
         self.assertEqual(tv['different'], [])
+        self.assertEqual([x['key'] for x in tv['common']], [('TabA__c',)])
         fp = res['fieldPermissions']
-        self.assertEqual(fp['only_source'], [('Acc.E__c',)])
+        self.assertEqual([x['key'] for x in fp['only_source']], [('Acc.E__c',)])
+        self.assertEqual(len(fp['common']), 0)
         self.assertEqual(len(fp['different']), 1)
         self.assertEqual(fp['different'][0]['key'], ('Acc.F__c',))
         self.assertEqual(fp['different'][0]['diffs'], [('editable', 'true', 'false')])
+        self.assertEqual(fp['different'][0]['source']['readable'], 'true')
+        self.assertEqual(fp['different'][0]['dest']['editable'], 'false')
+
+    def test_diff_profiles_common_entries_with_values(self):
+        src = TestMerge._profile(
+            '<fieldPermissions><field>Acc.F__c</field><readable>true</readable><editable>true</editable></fieldPermissions>\n'
+            '<fieldPermissions><field>Acc.G__c</field><readable>false</readable><editable>false</editable></fieldPermissions>')
+        dst = TestMerge._profile(
+            '<fieldPermissions><field>Acc.F__c</field><readable>true</readable><editable>true</editable></fieldPermissions>\n'
+            '<fieldPermissions><field>Acc.G__c</field><readable>false</readable><editable>false</editable></fieldPermissions>')
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, 's.xml'); dp = os.path.join(d, 'd.xml')
+            write_text(sp, src); write_text(dp, dst)
+            res = pp.diff_profiles(sp, dp)
+        fp = res['fieldPermissions']
+        self.assertEqual(fp['different'], [])
+        self.assertEqual(len(fp['common']), 2)
+        common_by_key = {x['key']: x['values'] for x in fp['common']}
+        self.assertEqual(common_by_key[('Acc.F__c',)],
+                         {'field': 'Acc.F__c', 'readable': 'true', 'editable': 'true'})
+        self.assertEqual(common_by_key[('Acc.G__c',)],
+                         {'field': 'Acc.G__c', 'readable': 'false', 'editable': 'false'})
+
+    def test_diff_json_and_xml_written(self):
+        sections = {
+            'fieldPermissions': {
+                'source_count': 3, 'dest_count': 2,
+                'only_source': [{'key': ('Acc.X__c',), 'values': {'field': 'Acc.X__c', 'readable': 'true', 'editable': 'true'}}],
+                'only_dest': [{'key': ('Acc.Y__c',), 'values': {'field': 'Acc.Y__c', 'readable': 'true', 'editable': 'true'}}],
+                'common': [{'key': ('Acc.Z__c',), 'values': {'field': 'Acc.Z__c', 'readable': 'false', 'editable': 'false'}}],
+                'different': [{'key': ('Acc.W__c',),
+                               'source': {'field': 'Acc.W__c', 'editable': 'true'},
+                               'dest': {'field': 'Acc.W__c', 'editable': 'false'},
+                               'diffs': [('editable', 'true', 'false')]}],
+                'key_spec': ['field'],
+            },
+        }
+        with tempfile.TemporaryDirectory() as d:
+            jp = pp.write_diff_json(sections, 'a', 'b', d)
+            xp = pp.write_diff_xml(sections, 'a', 'b', d)
+            import json as _json
+            data = _json.load(open(jp, encoding='utf-8'))
+            self.assertEqual(data['sections']['fieldPermissions']['common_count'], 1)
+            self.assertEqual(
+                data['sections']['fieldPermissions']['common'][0]['values']['editable'],
+                'false')
+            xml_text = open(xp, encoding='utf-8').read()
+            self.assertIn('Acc.Z__c', xml_text)
+            self.assertIn('common', xml_text)
 
     def test_diff_report_renders_summary_and_details(self):
         sections = {
             'fieldPermissions': {
                 'source_count': 3, 'dest_count': 2,
-                'only_source': [('Acc.X__c',)], 'only_dest': [('Acc.Y__c',)],
-                'different': [{'key': ('Acc.Z__c',), 'diffs': [('editable', 'true', 'false')]}],
+                'only_source': [{'key': ('Acc.X__c',), 'values': {}}],
+                'only_dest': [{'key': ('Acc.Y__c',), 'values': {}}],
+                'common': [{'key': ('Acc.C__c',), 'values': {}}],
+                'different': [{'key': ('Acc.Z__c',), 'source': {}, 'dest': {},
+                               'diffs': [('editable', 'true', 'false')]}],
                 'key_spec': ['field'],
             },
         }

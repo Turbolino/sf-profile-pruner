@@ -50,7 +50,8 @@ from .constants import (
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, diff_profiles, field_permissions_names,
                     format_ops_table, merge_profiles, removed_non_alignable,
-                    render_diff_report, write_manual_ops, write_what_is_changed)
+                    render_diff_report, write_diff_json, write_diff_xml,
+                    write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, dry_run, field_data_types, find_sf, list_metadata,
                     org_api_version, org_username, set_deploy_start_interval)
@@ -486,13 +487,23 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     report_path = os.path.join(diff_dir, 'diff-report.txt')
     with open(report_path, 'w', encoding='utf-8') as _f:
         _f.write(report_text + '\n')
+    json_path = write_diff_json(sections, src_label, dst_label, diff_dir)
+    xml_path = write_diff_xml(sections, src_label, dst_label, diff_dir)
     logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
     logger.log('  ✓ diff report written: %s' % report_path)
+    logger.log('  ✓ diff data (JSON):     %s' % json_path)
+    logger.log('  ✓ diff data (XML):      %s' % xml_path)
 
     # Full report to screen: summary counts AND the actual entries (what is
     # only in one, only in the other, and what differs field-by-field).
+    # Identical entries are NOT spammed to the console: they live in the
+    # diff-data.json / diff-data.xml files.
     print('')
     print(report_text)
+    print('Machine-readable data (identical + only-* + different, with values):')
+    print('  JSON : %s' % json_path)
+    print('  XML  : %s' % xml_path)
+    print('')
     logger.log('RESULT:SUCCESS')
     sys.exit(0)
 

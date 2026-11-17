@@ -22,6 +22,7 @@ or reported as a manual operation (non-alignable sections).
 from collections import Counter, OrderedDict
 from copy import deepcopy
 
+import json
 import os
 
 from lxml import etree
@@ -190,12 +191,15 @@ def diff_profiles(source_path, dest_path):
     """Compare two profiles section by section.
 
     Returns ``{section: {...}}`` where each section maps to
-    ``{source_count, dest_count, only_source, only_dest, different,
-    key_spec}``. ``only_source`` / ``only_dest`` are key tuples of entries
-    present in exactly one profile; ``different`` is a list of
-    ``{'key': ..., 'diffs': [(field, src, dst), ...]}`` for entries present in
-    both profiles whose values differ. Pure comparison: no org access, no
-    mutation, no deploy.
+    ``{source_count, dest_count, only_source, only_dest, common, different,
+    key_spec}``. ``only_source`` / ``only_dest`` are lists of
+    ``{'key': ..., 'values': {...}}`` for entries present in exactly one
+    profile; ``common`` is the same shape for entries present in both profiles
+    with IDENTICAL values; ``different`` is a list of
+    ``{'key': ..., 'source': {...}, 'dest': {...},
+    'diffs': [(field, src, dst), ...]}`` for entries present in both profiles
+    whose values differ. Pure comparison: no org access, no mutation, no
+    deploy.
     """
     src_root = etree.parse(source_path).getroot()
     dst_root = etree.parse(dest_path).getroot()
@@ -221,18 +225,37 @@ def diff_profiles(source_path, dest_path):
         dst_by_key = {}
         for el in dst_els:
             dst_by_key.setdefault(_diff_key(el, spec), el)
-        only_source = [k for k in src_by_key if k not in dst_by_key]
-        only_dest = [k for k in dst_by_key if k not in src_by_key]
+        only_source = []
+        only_dest = []
+        common = []
         different = []
+        for k in src_by_key:
+            if k not in dst_by_key:
+                only_source.append({'key': k, 'values': _element_leaf_fields(src_by_key[k])})
+        for k in dst_by_key:
+            if k not in src_by_key:
+                only_dest.append({'key': k, 'values': _element_leaf_fields(dst_by_key[k])})
         for k in set(src_by_key) & set(dst_by_key):
             diffs = _diff_entry_fields(src_by_key[k], dst_by_key[k])
             if diffs:
-                different.append({'key': k, 'diffs': diffs})
+                different.append({'key': k,
+                                  'source': _element_leaf_fields(src_by_key[k]),
+                                  'dest': _element_leaf_fields(dst_by_key[k]),
+                                  'diffs': diffs})
+            else:
+                common.append({'key': k, 'values': _element_leaf_fields(src_by_key[k])})
+        # Deterministic order (set iteration order is unstable across runs).
+        _rk = _render_diff_key
+        only_source.sort(key=lambda x: _rk(x['key']))
+        only_dest.sort(key=lambda x: _rk(x['key']))
+        common.sort(key=lambda x: _rk(x['key']))
+        different.sort(key=lambda x: _rk(x['key']))
         out[s] = {
             'source_count': len(src_els),
             'dest_count': len(dst_els),
             'only_source': only_source,
             'only_dest': only_dest,
+            'common': common,
             'different': different,
             'key_spec': spec,
         }
@@ -260,30 +283,34 @@ def render_diff_report(sections, src_label, dst_label, tool_version=None):
     lines.append('')
     lines.append('SUMMARY')
     lines.append('=' * 66)
-    lines.append('%-30s %8s %8s %10s %10s %8s' % (
-        'section', 'source', 'dest', 'only_src', 'only_dst', 'diff'))
-    lines.append('-' * 74)
+    lines.append('%-30s %8s %8s %10s %10s %8s %8s' % (
+        'section', 'source', 'dest', 'only_src', 'only_dst', 'common', 'diff'))
+    lines.append('-' * 82)
     for s, d in sections.items():
-        lines.append('%-30s %8d %8d %10d %10d %8d' % (
+        lines.append('%-30s %8d %8d %10d %10d %8d %8d' % (
             s, d['source_count'], d['dest_count'],
-            len(d['only_source']), len(d['only_dest']), len(d['different'])))
+            len(d['only_source']), len(d['only_dest']),
+            len(d['common']), len(d['different'])))
     lines.append('')
     lines.append('DETAILS')
     lines.append('=' * 66)
     for s, d in sections.items():
         lines.append('')
-        lines.append('[%s]  source=%d dest=%d only_src=%d only_dst=%d diff=%d'
+        lines.append('[%s]  source=%d dest=%d only_src=%d only_dst=%d common=%d diff=%d'
                      % (s, d['source_count'], d['dest_count'],
                         len(d['only_source']), len(d['only_dest']),
-                        len(d['different'])))
+                        len(d['common']), len(d['different'])))
         if d['only_source']:
             lines.append('  only in source (%d):' % len(d['only_source']))
-            for k in sorted(d['only_source'], key=_render_diff_key):
-                lines.append('    - %s' % _render_diff_key(k))
+            for item in sorted(d['only_source'], key=lambda x: _render_diff_key(x['key'])):
+                lines.append('    - %s' % _render_diff_key(item['key']))
         if d['only_dest']:
             lines.append('  only in destination (%d):' % len(d['only_dest']))
-            for k in sorted(d['only_dest'], key=_render_diff_key):
-                lines.append('    - %s' % _render_diff_key(k))
+            for item in sorted(d['only_dest'], key=lambda x: _render_diff_key(x['key'])):
+                lines.append('    - %s' % _render_diff_key(item['key']))
+        if d['common']:
+            lines.append('  identical in both (%d): see diff-data.json / diff-data.xml'
+                        % len(d['common']))
         if d['different']:
             lines.append('  different (%d):' % len(d['different']))
             for item in sorted(d['different'], key=lambda x: _render_diff_key(x['key'])):
@@ -302,6 +329,112 @@ def write_diff_report(sections, src_label, dst_label, diff_dir,
     path = os.path.join(diff_dir, 'diff-report.txt')
     with open(path, 'w', encoding='utf-8') as f:
         f.write(text + '\n')
+    return path
+
+
+def _diff_data_structure(sections, src_label, dst_label, tool_version=None):
+    """Build the full machine-readable diff structure (identical entries
+    included with their values)."""
+    tv = tool_version or __version__
+    out = {
+        'tool': 'sf-profile-pruner',
+        'tool_version': tv,
+        'source': src_label,
+        'destination': dst_label,
+        'sections': {},
+    }
+    for s, d in sections.items():
+        def _entries(items):
+            return [{'key': _render_diff_key(it['key']), 'values': it['values']}
+                    for it in items]
+        def _diff_entries(items):
+            res = []
+            for it in items:
+                res.append({
+                    'key': _render_diff_key(it['key']),
+                    'source': it['source'],
+                    'dest': it['dest'],
+                    'diffs': {f: {'source': sv, 'dest': dv}
+                              for f, sv, dv in it['diffs']},
+                })
+            return res
+        out['sections'][s] = {
+            'source_count': d['source_count'],
+            'dest_count': d['dest_count'],
+            'only_source_count': len(d['only_source']),
+            'only_dest_count': len(d['only_dest']),
+            'common_count': len(d['common']),
+            'different_count': len(d['different']),
+            'only_source': _entries(d['only_source']),
+            'only_dest': _entries(d['only_dest']),
+            'common': _entries(d['common']),
+            'different': _diff_entries(d['different']),
+        }
+    return out
+
+
+def write_diff_json(sections, src_label, dst_label, diff_dir,
+                    tool_version=None):
+    """Write the diff as a machine-readable JSON file and return its path."""
+    data = _diff_data_structure(sections, src_label, dst_label, tool_version)
+    os.makedirs(diff_dir, exist_ok=True)
+    path = os.path.join(diff_dir, 'diff-data.json')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+    return path
+
+
+def write_diff_xml(sections, src_label, dst_label, diff_dir,
+                   tool_version=None):
+    """Write the diff as an XML file and return its path."""
+    data = _diff_data_structure(sections, src_label, dst_label, tool_version)
+    os.makedirs(diff_dir, exist_ok=True)
+
+    root = etree.Element('profile-diff')
+    etree.SubElement(root, 'tool').text = data['tool']
+    etree.SubElement(root, 'tool_version').text = data['tool_version']
+    etree.SubElement(root, 'source').text = data['source']
+    etree.SubElement(root, 'destination').text = data['destination']
+
+    def _values(parent, tag, values):
+        node = etree.SubElement(parent, tag)
+        for name, val in values.items():
+            f = etree.SubElement(node, 'field', name=name)
+            f.text = val
+        return node
+
+    def _entries(parent, tag, items):
+        node = etree.SubElement(parent, tag)
+        for it in items:
+            e = etree.SubElement(node, 'entry', key=it['key'])
+            _values(e, 'values', it['values'])
+        return node
+
+    for s, d in data['sections'].items():
+        sec = etree.SubElement(root, 'section', name=s)
+        for attr in ('source_count', 'dest_count', 'only_source_count',
+                     'only_dest_count', 'common_count', 'different_count'):
+            sec.set(attr, str(d[attr]))
+        _entries(sec, 'common', d['common'])
+        _entries(sec, 'only_source', d['only_source'])
+        _entries(sec, 'only_dest', d['only_dest'])
+        node = etree.SubElement(sec, 'different')
+        for it in d['different']:
+            e = etree.SubElement(node, 'entry', key=it['key'])
+            _values(e, 'source', it['source'])
+            _values(e, 'dest', it['dest'])
+            df = etree.SubElement(e, 'diffs')
+            for f, vals in it['diffs'].items():
+                fd = etree.SubElement(df, 'field', name=f)
+                fd.set('source', vals['source'])
+                fd.set('dest', vals['dest'])
+
+    etree.indent(root, space='    ')
+    path = os.path.join(diff_dir, 'diff-data.xml')
+    with open(path, 'wb') as f:
+        f.write(etree.tostring(root, encoding='utf-8', xml_declaration=True,
+                               pretty_print=True))
     return path
 
 
