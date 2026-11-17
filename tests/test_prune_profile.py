@@ -186,9 +186,12 @@ class TestOrgApiVersion(unittest.TestCase):
                      'DataType': 'Text(80)'} for i in ids], None
         orig = pp.sfcli.tooling_query
         pp.sfcli.tooling_query = fake_tooling
+        progress = []
         try:
             entities = ['Obj%02d' % i for i in range(85)]
-            out, err = pp.sfcli.field_data_types('sf', 'devorg', entities, batch=40)
+            out, err = pp.sfcli.field_data_types(
+                'sf', 'devorg', entities, batch=40,
+                on_progress=lambda d, t: progress.append((d, t)))
         finally:
             pp.sfcli.tooling_query = orig
         self.assertIsNone(err)
@@ -196,6 +199,8 @@ class TestOrgApiVersion(unittest.TestCase):
         # 85 entities at batch 40 -> 3 queries
         self.assertEqual(len(calls), 3)
         self.assertTrue(all('EntityDefinitionId IN (' in c for c in calls))
+        # progress: (40, 85), (80, 85), (85, 85)
+        self.assertEqual(progress, [(40, 85), (80, 85), (85, 85)])
 
     def test_extracts_api_version(self):
         calls = []

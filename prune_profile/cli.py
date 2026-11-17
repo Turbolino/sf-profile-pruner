@@ -124,7 +124,15 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
             entities.append(ent)
     logger.log('ALIGN: fetching field types for %d object(s) to normalize '
                'read-only fields...' % len(entities))
-    types, terr = field_data_types(sf, org, entities)
+    progress = {'last': -1}
+
+    def _on_progress(done, total):
+        pct = (done * 100) // total if total else 100
+        if pct != progress['last']:
+            progress['last'] = pct
+            logger.log('ALIGN: field types: %d/%d object(s) (%d%%)' % (done, total, pct))
+
+    types, terr = field_data_types(sf, org, entities, on_progress=_on_progress)
     if types is None:
         logger.log('ALIGN: warning: could not fetch field types (%s); '
                    'editable flags left as-is.' % terr)

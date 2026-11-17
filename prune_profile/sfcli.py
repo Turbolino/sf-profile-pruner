@@ -239,7 +239,8 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
-def field_data_types(sf, org, entities, cwd=None, control=None, batch=40):
+def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
+                     on_progress=None):
     """Return ``{fieldFullName: DataType}`` for every field of ``entities`` via
     FieldDefinition (Tooling API). Returns (dict_or_None, error).
 
@@ -248,10 +249,15 @@ def field_data_types(sf, org, entities, cwd=None, control=None, batch=40):
     keeps the number of `sf` round-trips to ``ceil(len(entities)/batch)``
     instead of one per entity (which stalls for hundreds of objects). Field full
     names are reconstructed as ``<EntityDefinitionId>.<QualifiedApiName>`` so
-    they match the Profile XML."""
+    they match the Profile XML.
+
+    ``on_progress(done, total)`` is called after every batch (``done`` = number
+    of entities whose fields have been fetched so far)."""
     out = {}
     entities = [str(e) for e in entities if e]
-    for i in range(0, len(entities), batch):
+    total = len(entities)
+    done = 0
+    for i in range(0, total, batch):
         chunk = entities[i:i + batch]
         in_list = ', '.join("'%s'" % e.replace("'", "\\'") for e in chunk)
         records, err = tooling_query(
@@ -266,6 +272,9 @@ def field_data_types(sf, org, entities, cwd=None, control=None, batch=40):
             qn = r.get('QualifiedApiName')
             if ent and qn:
                 out['%s.%s' % (ent, qn)] = str(r.get('DataType') or '')
+        done += len(chunk)
+        if on_progress:
+            on_progress(done, total)
     return out, None
 
 
