@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-11-17
+
+### Added
+
+- Alignment resume: a completed align run now saves `align-state.json` in the
+  output folder. Re-running `--align-from-source` on that folder with the same
+  `-so`/`-do`/`-sp`/`-dp` deploys the cached `4-merged/` profile directly
+  (with `--deploy-on-success`) instead of redoing the whole pipeline. Different
+  parameters fail with a clear error; `--fresh` discards the state and restarts
+  from scratch.
+
 ## [2.8.1] - 2026-11-17
 
 ### Fixed

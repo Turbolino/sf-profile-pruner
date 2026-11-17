@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -12,7 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
 from prune_profile.cli import (_check_for_update, _clamp_batch_size,
-                              _repair_mangled_argv, _validate_profile_dry_run)  # noqa: E402
+                              _load_align_state, _repair_mangled_argv,
+                              _resume_alignment, _validate_profile_dry_run)  # noqa: E402
 from prune_profile.retrieve import profile_json_to_xml  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -256,6 +258,80 @@ class TestOrgApiVersion(unittest.TestCase):
             pp.sfcli._run_sf = orig
         self.assertIsNone(v)
         self.assertIsNotNone(err)
+
+
+class TestAlignResume(unittest.TestCase):
+    def _write_state(self, d, merged='4-merged/Sales Rep.profile-meta.xml', **over):
+        state = {
+            'version': 1,
+            'src_org': 'mysandbox',
+            'dest_org': 'devorg',
+            'src_profile': 'Sales Rep',
+            'dest_profile': 'Sales Rep',
+            'api_version': '68.0',
+            'merged_profile': merged,
+            'validation': 'clean',
+        }
+        state.update(over)
+        with open(os.path.join(d, 'align-state.json'), 'w', encoding='utf-8') as f:
+            json.dump(state, f)
+
+    def _args(self, fresh=False):
+        return types.SimpleNamespace(
+            fresh=fresh, api_version='68.0', poll_interval=3.0, job_timeout=0)
+
+    def test_resume_matching_params_deploys_cached_merge(self):
+        with tempfile.TemporaryDirectory() as d:
+            merged = os.path.join(d, '4-merged', 'Sales Rep.profile-meta.xml')
+            os.makedirs(os.path.dirname(merged), exist_ok=True)
+            write_text(merged, '<Profile/>')
+            self._write_state(d)
+            with mock.patch.object(pp.cli, '_deploy_profile',
+                                   return_value=(True, 'deployed')) as dp:
+                code = _resume_alignment(
+                    self._args(), 'mysandbox', 'Sales Rep', 'Sales Rep', 'devorg',
+                    True, d, pp.Logger(True), 'sf')
+            self.assertEqual(code, 0)
+            dp.assert_called_once()
+            self.assertEqual(dp.call_args[0][2], merged)
+
+    def test_resume_matching_params_without_deploy_reports_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            merged = os.path.join(d, '4-merged', 'Sales Rep.profile-meta.xml')
+            os.makedirs(os.path.dirname(merged), exist_ok=True)
+            write_text(merged, '<Profile/>')
+            self._write_state(d)
+            code = _resume_alignment(
+                self._args(), 'mysandbox', 'Sales Rep', 'Sales Rep', 'devorg',
+                False, d, pp.Logger(True), 'sf')
+            self.assertEqual(code, 0)
+
+    def test_resume_mismatched_params_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_state(d)
+            code = _resume_alignment(
+                self._args(), 'OTHER_ORG', 'Sales Rep', 'Sales Rep', 'devorg',
+                True, d, pp.Logger(True), 'sf')
+            self.assertEqual(code, 2)
+
+    def test_resume_fresh_skips_to_full_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_state(d)
+            code = _resume_alignment(
+                self._args(fresh=True), 'mysandbox', 'Sales Rep', 'Sales Rep',
+                'devorg', True, d, pp.Logger(True), 'sf')
+            self.assertIsNone(code)
+
+    def test_resume_no_state_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            code = _resume_alignment(
+                self._args(), 'mysandbox', 'Sales Rep', 'Sales Rep', 'devorg',
+                True, d, pp.Logger(True), 'sf')
+            self.assertIsNone(code)
+
+    def test_load_align_state_missing_file_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(_load_align_state(d))
 
 
 class TestRunSfInterrupt(unittest.TestCase):

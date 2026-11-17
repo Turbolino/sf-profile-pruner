@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import sys
+import time
 
 from .board import Logger
 from .constants import (
@@ -334,6 +335,118 @@ def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
     return 'FAILED (%d failure(s)): %s' % (len(cf), probs), cf
 
 
+ALIGN_STATE_FILE = 'align-state.json'
+
+
+def _write_align_state(out_dir, args, src_profile_name, dest_profile_name,
+                       dest_org, merged_path, validation, n_granted, n_revoked,
+                       n_manual):
+    """Persist the run identity + validated merged profile of a completed
+    alignment, so a later invocation on the same folder can deploy the cached
+    merge instead of redoing the whole pipeline."""
+    state = {
+        'version': 1,
+        'tool_version': __version__,
+        'src_org': args.src_org,
+        'dest_org': dest_org,
+        'src_profile': src_profile_name,
+        'dest_profile': dest_profile_name,
+        'api_version': args.api_version,
+        'merged_profile': os.path.relpath(merged_path, out_dir),
+        'validation': validation,
+        'granted': n_granted,
+        'revoked': n_revoked,
+        'manual': n_manual,
+        'completed_at': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime()),
+    }
+    path = os.path.join(out_dir, ALIGN_STATE_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+    return path
+
+
+def _load_align_state(out_dir):
+    path = os.path.join(out_dir, ALIGN_STATE_FILE)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
+                      dest_org, do_deploy, out_dir, logger, sf):
+    """Resume an alignment whose folder already holds a completed, validated
+    merge. Returns an exit code when the invocation is handled here (deploy the
+    cached merge, report done, or fail on a parameter mismatch), or None to run
+    the full pipeline. ``--fresh`` always returns None (restart from scratch)."""
+    state = _load_align_state(out_dir)
+    if state is None or state.get('version') != 1:
+        return None
+    if args.fresh:
+        return None
+
+    saved = {
+        'src_org': state.get('src_org'),
+        'dest_org': state.get('dest_org'),
+        'src_profile': state.get('src_profile'),
+        'dest_profile': state.get('dest_profile'),
+    }
+    current = {
+        'src_org': src_org,
+        'dest_org': dest_org,
+        'src_profile': src_profile_name,
+        'dest_profile': dest_profile_name,
+    }
+    mismatches = sorted(k for k in saved if saved[k] != current.get(k))
+    if mismatches:
+        print('ERROR: this output folder already contains a completed alignment run')
+        print('       whose parameters do not match the current invocation:')
+        for k in mismatches:
+            print('         %s: previous run = %r, now = %r' % (k, saved[k], current.get(k)))
+        print('       Use --fresh to discard the previous run and start over, or')
+        print('       point --out-dir (-od) at the folder of the run you meant.')
+        return 2
+
+    merged_rel = state.get('merged_profile') or os.path.join(
+        '4-merged', '%s.profile-meta.xml' % dest_profile_name)
+    merged_path = os.path.normpath(os.path.join(out_dir, merged_rel))
+    if not os.path.isfile(merged_path):
+        print('ERROR: a completed alignment run was found in this folder, but its')
+        print('       merged profile is missing: %s' % merged_path)
+        print('       Use --fresh to restart from scratch.')
+        return 2
+
+    api_version = state.get('api_version') or args.api_version
+    logger.log('Resuming a completed alignment (folder %s).' % out_dir)
+    logger.log('  src_org      : %s' % (src_org or '(profile file)'))
+    logger.log('  dest_org     : %s' % dest_org)
+    logger.log('  src_profile  : %s' % src_profile_name)
+    logger.log('  dest_profile : %s' % dest_profile_name)
+    logger.log('  merged       : %s' % merged_path)
+
+    if not do_deploy:
+        print('This folder already contains a completed, validated alignment.')
+        print('Merged profile: %s' % merged_path)
+        print('Re-run with --deploy-on-success to deploy it (asks Y/N first).')
+        return 0
+
+    logger.log('Deploying the cached merged profile %r to %s...'
+               % (dest_profile_name, dest_org))
+    ok, detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
+                                 api_version, args.poll_interval, args.job_timeout,
+                                 logger, out_dir)
+    if ok:
+        logger.log('DEPLOY: %s' % detail)
+        logger.log('RESULT:SUCCESS')
+        print('Deployed the cached merged profile to %s.' % dest_org)
+        return 0
+    print('ERROR: deploy of the cached merged profile failed: %s' % detail)
+    logger.log('DEPLOY: %s' % detail)
+    logger.log('RESULT:DEPLOY_FAILED')
+    return 1
+
+
 def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                    dest_profile_name, dest_org, do_deploy, logger):
     """Run --align-from-source: prune the source against the destination,
@@ -460,6 +573,15 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
     logger.log('ALIGN: what-is-changed written to %s' % change_path)
 
+    # 7b. persist the run identity + validated merge, so a later invocation on
+    #     this folder can deploy the cache instead of redoing the pipeline.
+    state_path = None
+    if validation == 'clean':
+        state_path = _write_align_state(
+            out_dir, args, src_profile_name, dest_profile_name, dest_org,
+            merged_path, validation, n_granted, n_revoked, len(manual_ops))
+        logger.log('ALIGN: run state saved to %s' % state_path)
+
     # 8. optional deploy of the merged profile (only after a clean validation).
     deploy_detail = ''
     outcome = 'SUCCESS'
@@ -491,6 +613,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     if manual_ops_path:
         logger.log('  MANUAL OPERATIONS:           %s' % manual_ops_path)
     logger.log('  WHAT-IS-CHANGED:             %s' % change_path)
+    if state_path:
+        logger.log('  RUN STATE:                   %s' % state_path)
     if deploy_detail:
         logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')
@@ -579,7 +703,10 @@ def _main():
                             'field/object/class/page/flow), so the destination matches the '
                             'source. Without it, destination-only permissions are left '
                             'untouched. Runs automatically (no prompt): the pre-align '
-                            'destination profile is saved in the run folder.')
+                            'destination profile is saved in the run folder. Re-running '
+                            'on the same output folder with the same -so/-do/-sp/-dp '
+                            'deploys the cached merge; use --fresh to restart from '
+                            'scratch.')
     g_act.add_argument('--deploy-on-success', action='store_true',
                        help='deploy the cleaned profile to --dest-org once pruning succeeds. '
                             'Modifies the org: asks for Y/N confirmation (a No runs the '
@@ -749,6 +876,17 @@ def _main():
     logger.log('Startup: locating the Salesforce CLI (sf)...')
     sf = find_sf(args.sf)
     logger.log('sf          : %s' % sf)
+
+    # ---------- resume a completed alignment (same folder + same parameters) ----------
+    # If this folder already holds a validated alignment with identical
+    # -so/-do/-sp/-dp, deploy the cached merge (or just report it) instead of
+    # redoing the whole pipeline. --fresh bypasses this and restarts from scratch.
+    if do_align:
+        resume_code = _resume_alignment(
+            args, src_org, src_profile_name, dest_profile_name, dest_org,
+            do_deploy, out_dir, logger, sf)
+        if resume_code is not None:
+            sys.exit(resume_code)
 
     # ---------- API version: explicit or detected from the destination org ----------
     api_source = 'explicit'
