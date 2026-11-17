@@ -464,19 +464,21 @@ def classify_layout_ops(manual_ops, changes, layout_count):
     return manual_ops, changes
 
 
-def format_ops_table(ops):
+def format_ops_table(ops, show_verdict=None):
     """Render manual operations as an aligned plain-text table. When the ops
     carry a ``verdict`` (layoutAssignments redundancy/check classification) an
-    extra VERDICT column is added."""
-    has_verdict = any('verdict' in o for o in ops)
+    extra VERDICT column is added, unless ``show_verdict`` is explicitly False
+    (e.g. when the section header already states the verdict)."""
+    if show_verdict is None:
+        show_verdict = any('verdict' in o for o in ops)
     header = ['SECTION', 'ITEM', 'MANUAL OPERATION']
-    if has_verdict:
+    if show_verdict:
         header.append('VERDICT')
     header.append('WHERE')
 
     def _row(o):
         r = [o['section'], o['item'], o['operation']]
-        if has_verdict:
+        if show_verdict:
             r.append(o.get('verdict', '-'))
         r.append(o['where'])
         return r
@@ -494,7 +496,8 @@ def format_ops_table(ops):
 
 
 def write_manual_ops(path, ops, profile_name):
-    """Write the manual-operations file. Returns its path."""
+    """Write the manual-operations file, split into REDUNDANT (ignorable) and
+    NEEDS CHECK (real action) groups. Returns its path."""
     header = [
         'MANUAL OPERATIONS REQUIRED FOR A COMPLETE ALIGNMENT',
         '==================================================',
@@ -510,10 +513,41 @@ def write_manual_ops(path, ops, profile_name):
     if not ops:
         header.append('(none - every section was handled automatically)')
     else:
-        header.append(format_ops_table(ops))
+        redundant = [o for o in ops if (o.get('verdict') or '').startswith('REDUNDANT')]
+        check = [o for o in ops if (o.get('verdict') or '') == 'NEEDS CHECK']
+        other = [o for o in ops if (o.get('verdict') or '') not in
+                 ('REDUNDANT (ignorable)', 'NEEDS CHECK')]
+
+        def _section(title, note, items):
+            if not items:
+                return
+            header.append('=' * 60)
+            header.append(title + ' (%d)' % len(items))
+            header.append('=' * 60)
+            if note:
+                header.append(note)
+                header.append('')
+            header.append(format_ops_table(items, show_verdict=False))
+            header.append('')
+
+        _section(
+            'REDUNDANT (ignorable)',
+            'These explicit assignments point at the object\'s ONLY layout '
+            '(= its default), which the source inherits implicitly. Removing or '
+            'ignoring them changes nothing functional.',
+            redundant)
+        _section(
+            'NEEDS CHECK',
+            'These need a real decision: verify each assignment against the '
+            'object\'s default layout and change it if it differs.',
+            check)
+        _section(
+            'OTHER MANUAL OPERATIONS',
+            'Non-alignable sections with no redundancy classification.',
+            other)
     header.append('')
     with open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(header) + '\n')
+        f.write('\n'.join(header).rstrip() + '\n')
     return path
 
 

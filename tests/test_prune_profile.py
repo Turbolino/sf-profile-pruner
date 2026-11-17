@@ -1223,6 +1223,30 @@ class TestMerge(unittest.TestCase):
         table = pp.format_ops_table(ops)
         self.assertIn('VERDICT', table)
         self.assertIn('REDUNDANT (ignorable)', table)
+        # explicit show_verdict=False drops the column
+        table2 = pp.format_ops_table(ops, show_verdict=False)
+        self.assertNotIn('VERDICT', table2)
+
+    def test_write_manual_ops_splits_redundant_vs_check(self):
+        ops = [
+            {'section': 'layoutAssignments', 'object': 'Single',
+             'item': 'Single-One Layout', 'operation': 'only layout',
+             'verdict': 'REDUNDANT (ignorable)', 'where': 'a'},
+            {'section': 'layoutAssignments', 'object': 'Multi',
+             'item': 'Multi-Picked Layout', 'operation': 'check default',
+             'verdict': 'NEEDS CHECK', 'where': 'b'},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            p = pp.write_manual_ops(os.path.join(d, 'm.txt'), ops, 'X')
+            s = read_text(p)
+        self.assertIn('REDUNDANT (ignorable) (1)', s)
+        self.assertIn('NEEDS CHECK (1)', s)
+        # the redundant row is under the redundant section, not the check one
+        red_pos = s.index('REDUNDANT (ignorable) (1)')
+        check_pos = s.index('NEEDS CHECK (1)')
+        self.assertLess(red_pos, check_pos)
+        self.assertIn('Single-One Layout', s)
+        self.assertIn('Multi-Picked Layout', s)
 
     def test_merged_output_indented_one_entry_per_line(self):
         xml, _, _ = self._merge(

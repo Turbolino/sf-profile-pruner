@@ -280,9 +280,25 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
         print('')
         print('  MANUAL OPERATIONS REQUIRED FOR A COMPLETE ALIGNMENT')
         print('  ' + '-' * 68)
-        for line in format_ops_table(manual_ops).split('\n'):
-            print('  ' + line)
-        print('')
+
+        redundant = [o for o in manual_ops
+                     if (o.get('verdict') or '').startswith('REDUNDANT')]
+        check = [o for o in manual_ops
+                 if (o.get('verdict') or '') == 'NEEDS CHECK']
+        other = [o for o in manual_ops
+                 if (o.get('verdict') or '') not in ('REDUNDANT (ignorable)', 'NEEDS CHECK')]
+
+        def _print_group(title, items):
+            if not items:
+                return
+            print('  ' + title + ' (%d)' % len(items))
+            for line in format_ops_table(items, show_verdict=False).split('\n'):
+                print('  ' + line)
+            print('')
+
+        _print_group('REDUNDANT (ignorable)', redundant)
+        _print_group('NEEDS CHECK', check)
+        _print_group('OTHER MANUAL OPERATIONS', other)
         print('  Saved to: %s' % path)
     logger.log('Manual operations file: %s' % path)
     logger.log('========================================================')
