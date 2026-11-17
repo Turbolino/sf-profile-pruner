@@ -234,8 +234,8 @@ Options are grouped in the `-h` help. The two input modes are:
 | `-tn`, `--thread-number` | Max parallel workers, `1`–`64`. Default: `16`. |
 | `--job-timeout` | Minutes to wait for a deploy job before aborting (`1`–`60`; `0` = no timeout). Default: `0`. |
 | `-av`, `--api-version` | Manifest API version. Default: detected from the destination org. |
-| `--deploy-throttle-ms` | Min interval between deploy starts, in ms. Default: `1000`; `0` disables. |
-| `--poll-interval` | Seconds between status polls of a deploy job. Default: `5`. |
+| `--deploy-throttle-ms` | Min interval between deploy starts, in ms. Default: `500`; `0` disables. |
+| `--poll-interval` | Seconds between status polls of a deploy job. Default: `3`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
 | `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation (No = dry-run only). |

@@ -520,11 +520,11 @@ def _main():
     g_tune.add_argument('-av', '--api-version', default=None,
                         help='manifest API version (default: the latest version supported '
                              'by the destination org, detected automatically)')
-    g_tune.add_argument('--deploy-throttle-ms', type=int, default=1000, metavar='MS',
+    g_tune.add_argument('--deploy-throttle-ms', type=int, default=500, metavar='MS',
                         help='minimum interval between deploy start submissions, in ms '
-                             '(default: 1000); 0 disables the throttle')
-    g_tune.add_argument('--poll-interval', type=float, default=5.0,
-                        help='seconds to wait between status polls of a deploy job (default: 5)')
+                             '(default: 500); 0 disables the throttle')
+    g_tune.add_argument('--poll-interval', type=float, default=3.0,
+                        help='seconds to wait between status polls of a deploy job (default: 3)')
     g_tune.add_argument('--max-iter', type=int, default=5000,
                         help='iteration cap (default: 5000)')
     g_tune.add_argument('--sf', default='sf',
