@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.2] - 2026-11-17
+
+### Fixed
+
+- Reverted the SObject `describe()` `updateable` read-only detection introduced
+  in 2.11.1: that flag reflects the running user's field-level security, not the
+  field's inherent type, so it marked hundreds of ordinary editable fields (e.g.
+  `Campaign.Status`, `Campaign.Description`) as read-only and produced phantom
+  "revoked" entries. Read-only detection is again driven only by
+  `FieldDefinition.DataType`, now also covering compound `Address`/`Location`
+  fields (whose parent `editable` flag is always ignored by Salesforce).
+- The field-level diff no longer reports `editable` for read-only fields, so the
+  normalization (forced `false`) never surfaces a phantom revoke against a
+  destination that holds the dead `true` value. `readable` is still diffed
+  normally for these fields.
+
 ## [2.11.1] - 2026-11-17
 
 ### Fixed

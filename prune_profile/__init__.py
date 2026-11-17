@@ -46,7 +46,6 @@ from .merge import (
     READ_ONLY_FIELD_TYPE_EXACT,
     READ_ONLY_FIELD_TYPE_PREFIXES,
     classify_layout_ops,
-    field_permissions_editable,
     field_permissions_names,
     format_ops_table,
     merge_profiles,
@@ -54,7 +53,7 @@ from .merge import (
     write_manual_ops,
     write_what_is_changed,
 )
-from .retrieve import describe_field_updateable, profile_json_to_xml, retrieve_profiles
+from .retrieve import profile_json_to_xml, retrieve_profiles
 from .sfcli import (
     _candidate_dirs,
     _node_version,
@@ -106,11 +105,10 @@ __all__ = [
     'prune_stage',
     'MERGE_TABLE', 'NON_ALIGNABLE', 'READ_ONLY_FIELD_TYPE_EXACT',
     'READ_ONLY_FIELD_TYPE_PREFIXES', 'classify_layout_ops', 'field_permissions_names',
-    'field_permissions_editable',
     'format_ops_table', 'merge_profiles', 'removed_non_alignable', 'write_manual_ops',
     'write_what_is_changed',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
-    'profile_json_to_xml', 'retrieve_profiles', 'describe_field_updateable',
+    'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
     'deploy', 'dry_run', 'field_data_types', 'find_node', 'find_sf', 'find_sf_node_modules',
     'list_metadata', 'org_api_version', 'org_username',

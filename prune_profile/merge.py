@@ -66,11 +66,13 @@ NON_ALIGNABLE = ('layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours
 # metadata (the effective value is false). The alignment normalizes them to
 # `false` instead of reporting a fake "grant" that the platform will ignore.
 #
-# These prefixes are a FAST heuristic only: the authoritative check (SObject
-# describe `updateable`) is applied on top for the remaining editable=true
-# fields (see cli._read_only_field_set / retrieve.describe_field_updateable).
+# Detected from FieldDefinition.DataType, which is user-independent and
+# reliable (unlike the SObject describe `updateable` flag, which reflects the
+# running user's field-level security and produces false positives on ordinary
+# editable fields).
 READ_ONLY_FIELD_TYPE_PREFIXES = ('Formula',)
-READ_ONLY_FIELD_TYPE_EXACT = frozenset({'Roll-Up Summary', 'Auto Number'})
+READ_ONLY_FIELD_TYPE_EXACT = frozenset(
+    {'Roll-Up Summary', 'Auto Number', 'Address', 'Location'})
 
 
 def _txt(el, child):
@@ -95,20 +97,6 @@ def field_permissions_names(path):
         if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
             names.append(_txt(el, 'field'))
     return names
-
-
-def field_permissions_editable(path):
-    """Map ``fieldPermissions`` field full name -> editable bool (``True`` only
-    when the source literally says ``<editable>true</editable>``). Used to know
-    which fields can carry a phantom grant when the org marks them read-only."""
-    root = etree.parse(path).getroot()
-    out = {}
-    for el in root:
-        if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
-            name = _txt(el, 'field')
-            if name:
-                out[name] = _txt(el, 'editable') == 'true'
-    return out
 
 
 def _keys_for(section):
@@ -384,6 +372,13 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                     new = _txt(m_el, field) if m_el is not None else ''
                     if new == '':
                         continue  # source omits the field: deploy omits -> no-op
+                    # `editable` is meaningless for read-only fields (the org
+                    # ignores it on both sides): never diff it, or the
+                    # normalization (forced false) would surface a phantom
+                    # revoke against a destination that has the dead true value.
+                    if (section == 'fieldPermissions' and field == 'editable'
+                            and key[0] in read_only_fields):
+                        continue
                     old = _txt(d_el, field) if d_el is not None else None
                     if old == '':
                         old = None

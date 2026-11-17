@@ -1271,17 +1271,38 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(changes, [])
         self.assertEqual(manual_ops, [])
 
-    def test_field_permissions_editable_map(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, 'p.xml')
-            write_text(p, TestMerge._profile(
-                '<fieldPermissions><field>Account.Name</field>'
-                '<editable>true</editable><readable>true</readable></fieldPermissions>\n'
-                '<fieldPermissions><field>Account.AnnualRevenue</field>'
-                '<editable>false</editable><readable>true</readable></fieldPermissions>'))
-            self.assertEqual(
-                pp.field_permissions_editable(p),
-                {'Account.Name': True, 'Account.AnnualRevenue': False})
+    def test_read_only_field_editable_not_diffed(self):
+        # A read-only field (e.g. compound address) with editable=true on BOTH
+        # sides: normalization forces false in the merged, but the editable
+        # flag must NOT be diffed against the destination's dead true value
+        # (it would surface a phantom revoke).
+        xml, manual_ops, changes = TestMerge._merge_with_read_only(
+            '<fieldPermissions><field>Account.BillingAddress</field>'
+            '<readable>true</readable><editable>true</editable></fieldPermissions>',
+            '<fieldPermissions><field>Account.BillingAddress</field>'
+            '<readable>true</readable><editable>true</editable></fieldPermissions>',
+            {'Account.BillingAddress'},
+        )
+        self.assertEqual(changes, [])
+        self.assertEqual(manual_ops, [])
+        # The merged still normalizes editable to false (correct effective value).
+        root = pp.etree.fromstring(xml)
+        fp = root.findall('{%s}fieldPermissions' % self.NS)[0]
+        self.assertEqual(fp.find('{%s}editable' % self.NS).text, 'false')
+
+    def test_read_only_field_readable_still_diffed(self):
+        # `readable` remains meaningful for read-only fields: a readable
+        # difference must still be reported (as a grant, here).
+        xml, manual_ops, changes = TestMerge._merge_with_read_only(
+            '<fieldPermissions><field>Account.BillingAddress</field>'
+            '<readable>true</readable><editable>false</editable></fieldPermissions>',
+            '<fieldPermissions><field>Account.BillingAddress</field>'
+            '<readable>false</readable><editable>true</editable></fieldPermissions>',
+            {'Account.BillingAddress'},
+        )
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'grant')
+        self.assertEqual(changes[0]['old_values'], {'readable': 'false'})
 
     def test_source_only_entry_is_granted(self):
         xml, manual_ops, changes = self._merge(

@@ -48,11 +48,10 @@ from .constants import (
     version_ge,
 )
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
-                    classify_layout_ops, field_permissions_editable,
-                    field_permissions_names, format_ops_table,
+                    classify_layout_ops, field_permissions_names, format_ops_table,
                     merge_profiles, removed_non_alignable, write_manual_ops,
                     write_what_is_changed)
-from .retrieve import describe_field_updateable, retrieve_profiles
+from .retrieve import retrieve_profiles
 from .sfcli import (deploy, dry_run, field_data_types, find_sf, list_metadata,
                     org_api_version, org_username, set_deploy_start_interval)
 from .stage import prune_stage
@@ -115,21 +114,17 @@ def _clamp_batch_size(n):
 
 
 def _read_only_field_set(sf, org, src_clean_path, logger):
-    """Detect fieldPermissions fields whose `editable` flag is meaningless
-    (read-only in the org), so the alignment normalizes them to false instead
-    of reporting a phantom grant. Uses a fast DataType heuristic first, then
-    the authoritative SObject describe `updateable` flag for the rest."""
-    editable = field_permissions_editable(src_clean_path)
-    names = list(editable)
+    """Detect fieldPermissions fields whose type is inherently read-only
+    (formula / roll-up summary / auto number / compound address & location),
+    so the alignment normalizes their `editable` flag to false instead of
+    reporting a fake grant. Uses FieldDefinition.DataType, which is
+    user-independent and reliable."""
+    names = field_permissions_names(src_clean_path)
     entities = []
     for n in names:
         ent = n.split('.', 1)[0]
         if ent and ent not in entities:
             entities.append(ent)
-
-    read_only = set()
-
-    # Fast pass: DataType heuristic (formula / roll-up / auto number).
     logger.log('  ▸ fetching field types for %d object(s) to normalize '
                'read-only fields...' % len(entities))
     progress = {'last': -1}
@@ -142,45 +137,16 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
 
     types, terr = field_data_types(sf, org, entities, on_progress=_on_progress)
     if types is None:
-        logger.log('  ⚠ could not fetch field types (%s).' % terr)
-    else:
-        for n in names:
-            dt = types.get(n, '')
-            if dt.startswith(READ_ONLY_FIELD_TYPE_PREFIXES) or dt in READ_ONLY_FIELD_TYPE_EXACT:
-                read_only.add(n)
-
-    # Authoritative pass: any remaining editable=true field the org reports as
-    # not updateable is read-only (system fields, controlled lookups, ...).
-    remaining = [n for n in names
-                 if editable.get(n) is True and n not in read_only]
-    if remaining:
-        rem_objs = []
-        for n in remaining:
-            ent = n.split('.', 1)[0]
-            if ent and ent not in rem_objs:
-                rem_objs.append(ent)
-        username, uerr = org_username(sf, org)
-        if not username:
-            logger.log('  ⚠ could not resolve the org username (%s); %d read-only '
-                       'check(s) skipped.' % (uerr or 'unknown', len(remaining)))
-        else:
-            logger.log('  ▸ describing %d object(s) to verify updateability of %d '
-                       'field(s)...' % (len(rem_objs), len(remaining)))
-            upd, derr = describe_field_updateable(username, rem_objs)
-            if upd is None:
-                logger.log('  ⚠ could not describe fields (%s); %d field(s) left as-is.'
-                           % (derr or 'unknown', len(remaining)))
-            else:
-                for n in remaining:
-                    obj, _sep, field = n.partition('.')
-                    if obj in upd and upd[obj].get(field) is False:
-                        read_only.add(n)
-                if derr:
-                    logger.log('  ⚠ some describes failed: %s' % derr)
-
+        logger.log('  ⚠ could not fetch field types (%s); editable flags left as-is.' % terr)
+        return set()
+    read_only = set()
+    for n in names:
+        dt = types.get(n, '')
+        if dt.startswith(READ_ONLY_FIELD_TYPE_PREFIXES) or dt in READ_ONLY_FIELD_TYPE_EXACT:
+            read_only.add(n)
     if read_only:
-        logger.log('  ✓ %d field(s) are read-only in the org; their editable flag '
-                   'is normalized to false.' % len(read_only))
+        logger.log('  ✓ %d field(s) are read-only by type (formula/roll-up/auto-number/address); '
+                   'their editable flag is normalized to false.' % len(read_only))
     return read_only
 
 
