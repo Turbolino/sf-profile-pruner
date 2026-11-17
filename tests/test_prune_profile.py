@@ -1255,6 +1255,34 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(changes, [])
         self.assertEqual(manual_ops, [])
 
+    def test_source_only_entry_already_off_is_skipped(self):
+        xml, manual_ops, changes = self._merge(
+            ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+             '<tabVisibilities><tab>TabB__c</tab><visibility>Hidden</visibility></tabVisibilities>'),
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
+        )
+        # TabB exists only in the source and is already Hidden (off): the
+        # destination already denies it implicitly, so there is nothing to
+        # change and it must not be reported as a revoke.
+        root = pp.etree.fromstring(xml)
+        tabs = [el.find('{%s}tab' % self.NS).text
+                for el in root.findall('{%s}tabVisibilities' % self.NS)]
+        self.assertEqual(tabs, ['TabA__c'])
+        self.assertEqual(changes, [])
+        self.assertEqual(manual_ops, [])
+
+    def test_field_permissions_editable_map(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, TestMerge._profile(
+                '<fieldPermissions><field>Account.Name</field>'
+                '<editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Account.AnnualRevenue</field>'
+                '<editable>false</editable><readable>true</readable></fieldPermissions>'))
+            self.assertEqual(
+                pp.field_permissions_editable(p),
+                {'Account.Name': True, 'Account.AnnualRevenue': False})
+
     def test_source_only_entry_is_granted(self):
         xml, manual_ops, changes = self._merge(
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'

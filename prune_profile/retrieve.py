@@ -160,3 +160,70 @@ def retrieve_profiles(username, profile_names, clean=True,
     if errs:
         err_text = '; '.join(e.get('error', '') for e in errs)
     return profiles, err_text
+
+
+def _describe_helper_path():
+    return os.path.join(os.path.dirname(__file__), 'node', 'describe_fields.cjs')
+
+
+def describe_field_updateable(username, objects, sf_node_modules=None,
+                              node=None, timeout=900):
+    """Return ``{ObjectApiName: {FieldApiName: updateable_bool}}`` via the
+    SObject describe REST call (the only authoritative source of a field's
+    updateability). Returns (result_or_None, error).
+
+    ``result`` is None on a hard failure; ``error`` is None on full success or
+    a human-readable string when some objects could not be described (a partial
+    result is still returned alongside it).
+    """
+    helper = _describe_helper_path()
+    if not os.path.isfile(helper):
+        return None, 'describe helper not found: %s' % helper
+
+    node = node or find_node()
+    if not node:
+        return None, 'no compatible Node.js installation found'
+
+    env = os.environ.copy()
+    nm = sf_node_modules or find_sf_node_modules()
+    if not nm:
+        return None, ('could not locate the Salesforce CLI node_modules '
+                      '(@salesforce/core + @jsforce/jsforce-node)')
+    existing = env.get('NODE_PATH', '')
+    env['NODE_PATH'] = nm + (os.pathsep + existing if existing else '')
+
+    cmd = [node, helper, '--username', username]
+    for o in objects:
+        cmd += ['--object', o]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding='utf-8', errors='replace',
+                              env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, 'describe timed out after %ds' % timeout
+    except OSError as e:
+        return None, 'failed to run the describe helper: %s' % e
+
+    if proc.returncode != 0:
+        return None, 'describe helper failed: %s' % (proc.stderr or '').strip()[:400]
+
+    out = (proc.stdout or '').strip()
+    if not out:
+        return None, 'describe helper returned no output'
+
+    try:
+        payload = json.loads(out)
+    except Exception as e:
+        return None, 'unparseable describe helper JSON (%s): %s' % (e, out[:300])
+
+    result = {}
+    errs = []
+    for o in payload.get('objects', []):
+        result[o.get('name')] = o.get('fields', {})
+    for e in payload.get('errors', []):
+        errs.append('%s: %s' % (e.get('name'), e.get('error', '')))
+    err_text = '; '.join(errs) if errs else None
+    if not result and err_text:
+        return None, err_text
+    return result, err_text

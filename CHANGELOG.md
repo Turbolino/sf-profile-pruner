@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.1] - 2026-11-17
+
+### Fixed
+
+- Alignment no longer reports phantom "revoked" entries that never converge:
+  a source entry that is already fully OFF (e.g. `readable=false`/`editable=false`)
+  and ABSENT from the destination is already aligned (both deny) and is now
+  skipped — the destination does not store explicit off values, so they used to
+  reappear on every re-run after the deploy.
+- Read-only field detection now uses the org's authoritative SObject describe
+  `updateable` flag, not just the `Formula`/`Roll-Up Summary`/`Auto Number`
+  DataType heuristic. This catches system fields (e.g. `LiveChatTranscript.ChatKey`)
+  and controlled lookups (e.g. `ServiceAppointment.AccountId`) whose `editable=true`
+  is dead metadata, so they are no longer reported as phantom grants that never
+  converge after deploy.
+
 ## [2.11.0] - 2026-11-17
 
 ### Added

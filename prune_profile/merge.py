@@ -65,6 +65,10 @@ NON_ALIGNABLE = ('layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours
 # these as read-only, so an `editable=true` in the source profile is dead
 # metadata (the effective value is false). The alignment normalizes them to
 # `false` instead of reporting a fake "grant" that the platform will ignore.
+#
+# These prefixes are a FAST heuristic only: the authoritative check (SObject
+# describe `updateable`) is applied on top for the remaining editable=true
+# fields (see cli._read_only_field_set / retrieve.describe_field_updateable).
 READ_ONLY_FIELD_TYPE_PREFIXES = ('Formula',)
 READ_ONLY_FIELD_TYPE_EXACT = frozenset({'Roll-Up Summary', 'Auto Number'})
 
@@ -91,6 +95,20 @@ def field_permissions_names(path):
         if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
             names.append(_txt(el, 'field'))
     return names
+
+
+def field_permissions_editable(path):
+    """Map ``fieldPermissions`` field full name -> editable bool (``True`` only
+    when the source literally says ``<editable>true</editable>``). Used to know
+    which fields can carry a phantom grant when the org marks them read-only."""
+    root = etree.parse(path).getroot()
+    out = {}
+    for el in root:
+        if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
+            name = _txt(el, 'field')
+            if name:
+                out[name] = _txt(el, 'editable') == 'true'
+    return out
 
 
 def _keys_for(section):
@@ -323,15 +341,26 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             src_by_key = {_entry_key(el, [key_child]): el for el in src_els}
             dst_by_key = {_entry_key(el, [key_child]): el for el in dst_els}
 
-            # Merged section: source entries verbatim + an explicit off element
-            # for each destination-only entry.
-            merged_section = [deepcopy(el) for el in src_els]
-            if section == 'fieldPermissions' and read_only_fields:
-                # Normalize read-only field types: `editable=true` is dead
-                # metadata (Salesforce always keeps them read-only).
-                for m_el in merged_section:
-                    if _txt(m_el, key_child) in read_only_fields:
-                        _set_child_text(m_el, 'editable', 'false')
+            # Merged section: source entries verbatim (minus no-op entries) + an
+            # explicit off element for each destination-only entry.
+            merged_section = []
+            for el in src_els:
+                m_el = deepcopy(el)
+                if (section == 'fieldPermissions' and read_only_fields
+                        and _txt(m_el, key_child) in read_only_fields):
+                    # Normalize read-only fields: `editable=true` is dead
+                    # metadata (Salesforce always keeps them read-only).
+                    _set_child_text(m_el, 'editable', 'false')
+                key = _entry_key(m_el, [key_child])
+                # Skip source entries that are already fully OFF and absent from
+                # the destination: they are already aligned (both deny) and
+                # deploying an explicit off value is a no-op that never persists,
+                # so it would be reported forever without converging.
+                if (key not in dst_by_key
+                        and all(_txt(m_el, f) in ('', off_val)
+                                for f, off_val in off_fields.items())):
+                    continue
+                merged_section.append(m_el)
             for key, el in dst_by_key.items():
                 if key in src_by_key:
                     continue
