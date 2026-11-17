@@ -157,6 +157,9 @@ sfpp -pp "path/to/My Profile.profile-meta.xml" -do myorg
 # via 1 — deploy the cleaned profile (renamed) to the destination org
 sfpp -pp "path/to/My Profile.profile-meta.xml" -do prod -dp "My Profile Clean" --deploy-on-success
 
+# via 1 — same, but skip the Y/N confirmation
+sfpp -pp "path/to/My Profile.profile-meta.xml" -do prod -dp "My Profile Clean" --deploy-on-success --sure
+
 # via 2 — retrieve from a source org, prune, deploy to the destination org
 sfpp -so devorg -sp "My Profile" -do mysandbox -dp "My Profile" --deploy-on-success
 
@@ -238,7 +241,8 @@ Options are grouped in the `-h` help. The two input modes are:
 | `--poll-interval` | Seconds between status polls of a deploy job. Default: `3`. |
 | `--max-iter` | Iteration cap. Default: `5000`. |
 | `--sf` | Path to the Salesforce CLI. Default: `sf`. |
-| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation (No = dry-run only). |
+| `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation (No = dry-run only). Use as `[--deploy-on-success [--sure]]`. |
+| `--sure` | Skip the Y/N confirmation of `--deploy-on-success` and deploy without asking. No effect without `--deploy-on-success`. |
 | `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Works with via 1 or via 2. Runs automatically (no prompt); the pre-align destination profile is saved in the run folder. |
 | `--fresh` | Restart from the original, ignoring any previous state. |
 | `--quiet` | Suppress the progressive stdout output. |

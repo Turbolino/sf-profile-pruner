@@ -5,7 +5,7 @@ Removes from a Salesforce Profile every reference to metadata that does NOT
 exist in the destination org. Pruning combines a Metadata API + Tooling API
 pre-pass with an authoritative `sf project deploy start --dry-run`, and never
 modifies the org; with `--deploy-on-success` the cleaned profile is deployed at
-the end.
+the end (add `--sure` to skip the Y/N confirmation).
 
 Three input modes:
   * via 1 (file):   `--profile-path`  + `--dest-org`
@@ -79,10 +79,10 @@ Examples:
   sfpp -pp "Admin.profile-meta.xml" -do mysandbox
 
   # Prune and deploy under the same name (creates the profile if it does not exist)
-  sfpp -pp "Admin.profile-meta.xml" -do prod --deploy-on-success
+  sfpp -pp "Admin.profile-meta.xml" -do prod [--deploy-on-success [--sure]]
 
   # Deploy the cleaned profile under a different name
-  sfpp -pp "Admin.profile-meta.xml" -do prod -dp "Admin_Clean" --deploy-on-success
+  sfpp -pp "Admin.profile-meta.xml" -do prod -dp "Admin_Clean" --deploy-on-success --sure
 
   # Retrieve from a source org, prune and deploy to a destination org
   sfpp -so devorg -sp "Sales Rep" -do mysandbox -dp "Sales Rep" --deploy-on-success
@@ -427,7 +427,8 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
     if not do_deploy:
         print('This folder already contains a completed, validated alignment.')
         print('Merged profile: %s' % merged_path)
-        print('Re-run with --deploy-on-success to deploy it (asks Y/N first).')
+        print('Re-run with --deploy-on-success [--sure] to deploy it (asks Y/N '
+              'unless --sure).')
         return 0
 
     logger.log('Deploying the cached merged profile %r to %s...'
@@ -656,7 +657,8 @@ def _main():
         prog=APP_NAME,
         description='Removes from a Salesforce Profile every reference to metadata that '
                     'does not exist in the destination org. Dry-run only by default; use '
-                    '--deploy-on-success to deploy the cleaned profile at the end.',
+                    '--deploy-on-success to deploy the cleaned profile at the end '
+                    '(add --sure to skip the Y/N confirmation).',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EXAMPLES,
     )
@@ -726,7 +728,11 @@ def _main():
     g_act.add_argument('--deploy-on-success', action='store_true',
                        help='deploy the cleaned profile to --dest-org once pruning succeeds. '
                             'Modifies the org: asks for Y/N confirmation (a No runs the '
-                            'dry-run only).')
+                            'dry-run only). Use as [--deploy-on-success [--sure]]: with '
+                            '--sure the deploy runs immediately without the Y/N prompt.')
+    g_act.add_argument('--sure', action='store_true',
+                       help='skip the Y/N confirmation of --deploy-on-success and deploy '
+                            'without asking. Has no effect without --deploy-on-success.')
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
     g_act.add_argument('--quiet', action='store_true',
@@ -838,7 +844,7 @@ def _main():
     # aborting the whole run.
     do_align = args.align_from_source
     do_deploy = args.deploy_on_success
-    if do_deploy:
+    if do_deploy and not args.sure:
         if not _confirm('--deploy-on-success will deploy the cleaned profile to the '
                         'destination org. Deploy? [y/N] '):
             do_deploy = False
