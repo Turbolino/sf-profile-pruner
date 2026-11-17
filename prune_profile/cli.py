@@ -50,7 +50,7 @@ from .constants import (
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, diff_profiles, field_permissions_names,
                     format_ops_table, merge_profiles, removed_non_alignable,
-                    write_diff_report, write_manual_ops, write_what_is_changed)
+                    render_diff_report, write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, dry_run, field_data_types, find_sf, list_metadata,
                     org_api_version, org_username, set_deploy_start_interval)
@@ -482,25 +482,17 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     src_label = '%s "%s"' % (src_org or 'file', src_profile_name)
     dst_label = '%s "%s"' % (dest_org, dest_profile_name)
     sections = diff_profiles(source_profile_path, dest_path)
-    report_path = write_diff_report(sections, src_label, dst_label, diff_dir)
+    report_text = render_diff_report(sections, src_label, dst_label)
+    report_path = os.path.join(diff_dir, 'diff-report.txt')
+    with open(report_path, 'w', encoding='utf-8') as _f:
+        _f.write(report_text + '\n')
     logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
     logger.log('  ✓ diff report written: %s' % report_path)
 
-    # --- screen summary (clean, no timestamps: it is a final table) ---
+    # Full report to screen: summary counts AND the actual entries (what is
+    # only in one, only in the other, and what differs field-by-field).
     print('')
-    print('PROFILE DIFF - source -> destination')
-    print('  source      : %s' % src_label)
-    print('  destination : %s' % dst_label)
-    print('  report      : %s' % report_path)
-    print('')
-    print('%-30s %8s %8s %10s %10s %8s' % (
-        'section', 'source', 'dest', 'only_src', 'only_dst', 'diff'))
-    print('-' * 74)
-    for s, d in sections.items():
-        print('%-30s %8d %8d %10d %10d %8d' % (
-            s, d['source_count'], d['dest_count'],
-            len(d['only_source']), len(d['only_dest']), len(d['different'])))
-    print('')
+    print(report_text)
     logger.log('RESULT:SUCCESS')
     sys.exit(0)
 
