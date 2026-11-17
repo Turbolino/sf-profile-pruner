@@ -11,7 +11,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import prune_profile as pp  # noqa: E402
-from prune_profile.cli import _check_for_update, _clamp_batch_size, _repair_mangled_argv  # noqa: E402
+from prune_profile.cli import (_check_for_update, _clamp_batch_size,
+                              _repair_mangled_argv, _validate_profile_dry_run)  # noqa: E402
 from prune_profile.retrieve import profile_json_to_xml  # noqa: E402
 
 SYNTH = ('<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -232,6 +233,40 @@ class TestOrgApiVersion(unittest.TestCase):
 
 
 class TestRunSfInterrupt(unittest.TestCase):
+    def test_validate_profile_dry_run_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            profile = os.path.join(d, 'X.profile-meta.xml')
+            write_text(profile, '<Profile/>')
+            with mock.patch.object(pp.cli, 'dry_run',
+                                   return_value=({'result': {'success': True}}, None)):
+                val, cf = _validate_profile_dry_run(
+                    'sf', 'org', profile, 'X', '68.0', 3.0, 0, pp.Logger(True), d)
+        self.assertEqual(val, 'clean')
+        self.assertEqual(cf, [])
+
+    def test_validate_profile_dry_run_failure_lists_problems(self):
+        with tempfile.TemporaryDirectory() as d:
+            profile = os.path.join(d, 'X.profile-meta.xml')
+            write_text(profile, '<Profile/>')
+            res = {'result': {'success': False,
+                              'details': {'componentFailures': [
+                                  {'problem': 'field not found: X'}]}}}
+            with mock.patch.object(pp.cli, 'dry_run', return_value=(res, None)):
+                val, cf = _validate_profile_dry_run(
+                    'sf', 'org', profile, 'X', '68.0', 3.0, 0, pp.Logger(True), d)
+        self.assertIn('FAILED', val)
+        self.assertEqual(len(cf), 1)
+
+    def test_validate_profile_dry_run_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            profile = os.path.join(d, 'X.profile-meta.xml')
+            write_text(profile, '<Profile/>')
+            with mock.patch.object(pp.cli, 'dry_run', return_value=(None, 'boom')):
+                val, cf = _validate_profile_dry_run(
+                    'sf', 'org', profile, 'X', '68.0', 3.0, 0, pp.Logger(True), d)
+        self.assertIn('FAILED', val)
+        self.assertIn('boom', val)
+
     def test_ctrl_c_terminates_child_and_reraises(self):
         # A Ctrl-C during a blocking sf call (control=None, e.g. `sf org
         # display`) must kill the child tree and re-raise the interrupt so the

@@ -305,6 +305,35 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
     return path
 
 
+def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
+                              poll_interval, job_timeout, logger, out_dir):
+    """Dry-run a single Profile package. Returns (validation, component_failures)
+    where ``validation`` is ``'clean'`` on success or a failure description, and
+    ``component_failures`` is the list of raw component-failure dicts (empty on
+    clean)."""
+    proj = os.path.join(out_dir, '.work', 'align-final')
+    write_sfdx_project(proj, api_version)
+    manifest = os.path.join(proj, 'manifest.xml')
+    write_package_xml(manifest, {'Profile': [profile_name]}, api_version)
+    dst = os.path.join(proj, 'force-app', 'main', 'default', 'profiles',
+                       '%s.profile-meta.xml' % profile_name)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(profile_path, dst)
+    try:
+        vres, verr = dry_run(sf, manifest, org, poll_interval, job_timeout,
+                             logger, cwd=proj)
+    finally:
+        shutil.rmtree(proj, ignore_errors=True)
+    if vres is None:
+        return 'FAILED: %s' % (verr or 'unparseable output'), []
+    result = vres.get('result') or {}
+    if result.get('success') is True:
+        return 'clean', []
+    cf = (result.get('details') or {}).get('componentFailures') or []
+    probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
+    return 'FAILED (%d failure(s)): %s' % (len(cf), probs), cf
+
+
 def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                    dest_profile_name, dest_org, do_deploy, logger):
     """Run --align-from-source: prune the source against the destination,
@@ -364,18 +393,54 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     read_only_fields = _read_only_field_set(sf, dest_org, src_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
-    n_granted = sum(1 for c in changes if c['kind'] == 'grant')
-    n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
     merge_dir = os.path.join(out_dir, '4-merged')
     os.makedirs(merge_dir, exist_ok=True)
     merged_path = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
     with open(merged_path, 'wb') as _f:
         _f.write(merged_xml)
+
+    # 5. validate the merged profile BEFORE writing any report. If the dry-run
+    #    surfaces residual dangling references, self-heal by re-pruning the
+    #    merged profile and recomputing the diff, so MANUAL-OPERATIONS.txt and
+    #    what-is-changed.txt always describe the FINAL (deployable) profile.
+    logger.log('ALIGN: validating the merged profile with a dry-run...')
+    validation, _cf = _validate_profile_dry_run(
+        sf, dest_org, merged_path, dest_profile_name, args.api_version,
+        args.poll_interval, args.job_timeout, logger, out_dir)
+    if validation != 'clean':
+        logger.log('ALIGN: merged dry-run not clean (%s); self-healing the merged '
+                   'profile...' % validation)
+        heal_out = os.path.join(out_dir, '.work', 'align-heal')
+        heal_res = prune_stage(
+            sf=sf, org=dest_org, source_profile_path=merged_path,
+            profile_name=dest_profile_name, out_dir=heal_out,
+            api_version=args.api_version, poll_interval=args.poll_interval,
+            job_timeout=args.job_timeout, thread_number=args.thread_number,
+            batch_size=args.batch_size, max_iter=args.max_iter,
+            quiet=args.quiet, fresh=True, logger=logger)
+        if heal_res['outcome'] != 'SUCCESS':
+            print('ERROR: merged self-heal prune failed: %s'
+                  % (heal_res.get('reason') or 'unknown error'))
+            sys.exit(2)
+        shutil.copyfile(heal_res['common_profile_path'], merged_path)
+        shutil.rmtree(heal_out, ignore_errors=True)
+        # Recompute the diff against the healed (final) merged profile.
+        merged_xml, manual_ops, changes = merge_profiles(
+            merged_path, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
+        with open(merged_path, 'wb') as _f:
+            _f.write(merged_xml)
+        validation, _cf = _validate_profile_dry_run(
+            sf, dest_org, merged_path, dest_profile_name, args.api_version,
+            args.poll_interval, args.job_timeout, logger, out_dir)
+    logger.log('ALIGN: merged dry-run: %s' % validation)
+
+    n_granted = sum(1 for c in changes if c['kind'] == 'grant')
+    n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
     logger.log('ALIGN: %d permission(s) granted (ON), %d revoked (OFF); %d non-alignable '
                'entr(ies) require manual action.' % (n_granted, n_revoked, len(manual_ops)))
 
-    # 4b. classify layoutAssignments manual ops (redundant vs needs check) using
-    #     the destination org's Layout components.
+    # 6. classify layoutAssignments manual ops (redundant vs needs check) using
+    #    the destination org's Layout components.
     if any(op['section'] == 'layoutAssignments' for op in manual_ops):
         layout_names, lerr = list_metadata(sf, dest_org, 'Layout')
         layout_count = {}
@@ -388,38 +453,12 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                        'layoutAssignments marked for manual check.' % lerr)
         classify_layout_ops(manual_ops, changes, layout_count)
 
-    # 5. manual operations (file inside 4-merged + end-of-run print).
-    manual_ops_path = _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
-
-    # 6. what-is-changed: only the changed/turned-off rows, annotated.
+    # 7. reports (only now, on the final validated merged profile).
+    manual_ops_path = _write_and_report_manual_ops(
+        manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
     change_path = write_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
     logger.log('ALIGN: what-is-changed written to %s' % change_path)
-
-    # 7. validate the merged profile with a dry-run before any deploy.
-    logger.log('ALIGN: validating the merged profile with a dry-run...')
-    final_proj = os.path.join(out_dir, '.work', 'align-final')
-    write_sfdx_project(final_proj, args.api_version)
-    final_manifest = os.path.join(final_proj, 'manifest.xml')
-    write_package_xml(final_manifest, {'Profile': [dest_profile_name]}, args.api_version)
-    final_profile = os.path.join(final_proj, 'force-app', 'main', 'default',
-                                 'profiles', '%s.profile-meta.xml' % dest_profile_name)
-    os.makedirs(os.path.dirname(final_profile), exist_ok=True)
-    shutil.copyfile(merged_path, final_profile)
-    try:
-        vres, verr = dry_run(sf, final_manifest, dest_org, args.poll_interval,
-                             args.job_timeout, logger, cwd=final_proj)
-    finally:
-        shutil.rmtree(final_proj, ignore_errors=True)
-    if vres is None:
-        validation = 'FAILED: %s' % (verr or 'unparseable output')
-    elif (vres.get('result') or {}).get('success') is True:
-        validation = 'clean'
-    else:
-        cf = ((vres.get('result') or {}).get('details') or {}).get('componentFailures') or []
-        probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
-        validation = 'FAILED (%d failure(s)): %s' % (len(cf), probs)
-    logger.log('ALIGN: merged dry-run: %s' % validation)
 
     # 8. optional deploy of the merged profile (only after a clean validation).
     deploy_detail = ''

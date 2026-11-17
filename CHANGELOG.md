@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-11-17
+
+### Changed
+
+- The alignment now validates the merged profile with a dry-run **before**
+  writing `MANUAL-OPERATIONS.txt` and `what-is-changed.txt`. If the dry-run
+  surfaces residual dangling references, the merged profile is self-healed
+  (re-pruned against the destination) and the reports are regenerated from the
+  final deployable profile — so the reports always describe what will actually
+  be deployed.
+
 ## [2.7.4] - 2026-11-17
 
 ### Changed
