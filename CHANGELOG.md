@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-17
+
+### Added
+
+- Transient network failures from the Salesforce CLI (`fetch failed`,
+  `connection reset`, DNS/TLS/timeout, …) are now retried automatically **up to
+  5 attempts** with a short backoff, instead of aborting the whole run on the
+  first blip. Each retry is logged on stderr; on final failure the error is
+  reported with a clear message that it is a connection problem (not a
+  profile/org-content error) and suggests checking connectivity/VPN.
+
+### Fixed
+
+- `--align-from-source` no longer forces a clean run: the two internal prune
+  stages now honour `--fresh`. Without `--fresh` a re-run resumes from the
+  previous partial state (via `missing_log.txt`) instead of clearing the
+  `1-source-pruned/` and `3-destination-pruned/` folders. Only passing
+  `--fresh` clears previous outputs.
+
 ## [2.5.2] - 2026-11-16
 
 ### Fixed

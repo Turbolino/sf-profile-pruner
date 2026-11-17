@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -81,6 +82,11 @@ def _terminate_proc(proc):
 def _run_sf(cmd, sf, what, cwd=None, control=None):
     """Run an sf command and parse its JSON. Returns (data_or_None, error).
 
+    Transient network failures ("fetch failed", connection reset, DNS, TLS,
+    timeout, …) are retried automatically up to ``NETWORK_RETRIES`` attempts
+    with a short backoff, because a single blip should not abort a whole run.
+    Non-network errors are returned immediately.
+
     When `control` is provided, the child is polled in a loop so a stop request
     terminates it promptly (otherwise a slow `sf deploy report` would block the
     worker and, in turn, the Ctrl-C shutdown)."""
@@ -91,6 +97,56 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
         # version sf supports (sf needs Node >= 18.11).
         env['PATH'] = os.path.dirname(os.path.abspath(good_node)) + os.pathsep + env.get('PATH', '')
     run_cmd = _sf_invocation(cmd, good_node)
+
+    attempt = 0
+    while True:
+        attempt += 1
+        res, err = _run_sf_once(run_cmd, sf, what, env, cwd, control)
+        if not _is_network_error(res, err):
+            return res, err
+        if attempt >= NETWORK_RETRIES:
+            detail = err or (json.dumps(res)[:300] if res else 'unknown network failure')
+            return None, ('NETWORK ERROR running %s after %d attempts: %s. '
+                          'This is a connection problem (org/network), not a '
+                          'profile or org-content error; check your connection, '
+                          'VPN/proxy and that the org is reachable, then retry.'
+                          % (what, attempt, detail))
+        if control is not None and control.stop.is_set():
+            return None, 'stopped by user'
+        delay = 2.0 * attempt
+        hint = err or (json.dumps(res)[:120] if isinstance(res, (dict, list)) else str(res)[:120])
+        print('NETWORK ERROR running %s (attempt %d/%d): %s - retrying in %.0fs...'
+              % (what, attempt, NETWORK_RETRIES, hint, delay),
+              file=sys.stderr, flush=True)
+        time.sleep(delay)
+
+
+NETWORK_RETRIES = 5
+_NETWORK_HINTS = (
+    'fetch failed', 'connection reset', 'econnreset', 'econnrefused',
+    'etimedout', 'timed out', 'enotfound', 'getaddrinfo', 'socket hang up',
+    'network error', 'network', 'proxy', 'dns', 'unreachable', 'certificate',
+    'tls', 'ssl',
+)
+
+
+def _is_network_error(res, err):
+    """True when an sf result/error is a transient network failure (as opposed
+    to a real org/metadata error)."""
+    text = ''
+    if err:
+        text += str(err)
+    if isinstance(res, dict):
+        for key in ('message', 'stack', 'name'):
+            v = res.get(key)
+            if isinstance(v, str):
+                text += ' ' + v
+    low = text.lower()
+    return any(h in low for h in _NETWORK_HINTS)
+
+
+def _run_sf_once(run_cmd, sf, what, env, cwd, control):
+    """Single sf invocation: spawn, wait (interruptibly), parse JSON."""
     try:
         proc = subprocess.Popen(run_cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True,

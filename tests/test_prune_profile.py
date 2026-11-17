@@ -231,6 +231,50 @@ class TestRunSfInterrupt(unittest.TestCase):
         self.assertIsInstance(terminated[0], FakeProc)
 
 
+class TestNetworkRetry(unittest.TestCase):
+    def test_is_network_error_detection(self):
+        self.assertTrue(pp.sfcli._is_network_error({'message': 'fetch failed'}, None))
+        self.assertTrue(pp.sfcli._is_network_error(
+            {'name': 'TypeError', 'message': 'fetch failed', 'exitCode': 10}, None))
+        self.assertTrue(pp.sfcli._is_network_error(None, 'connection reset by peer'))
+        self.assertTrue(pp.sfcli._is_network_error(None, 'getaddrinfo ENOTFOUND login.salesforce.com'))
+        self.assertFalse(pp.sfcli._is_network_error({'message': 'No such column'}, None))
+        self.assertFalse(pp.sfcli._is_network_error(None, 'profile not found'))
+
+    def test_network_retry_recovers(self):
+        with mock.patch.object(pp.sfcli, 'find_node', return_value=r'C:\node.exe'), \
+                mock.patch.object(pp.sfcli.time, 'sleep'), \
+                mock.patch.object(pp.sfcli, '_run_sf_once',
+                                  side_effect=[(None, 'fetch failed'),
+                                               (None, 'connection reset'),
+                                               ({'result': {'id': 'j1'}}, None)]) as once:
+            res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
+        self.assertEqual(res, {'result': {'id': 'j1'}})
+        self.assertIsNone(err)
+        self.assertEqual(once.call_count, 3)
+
+    def test_network_retry_gives_up_with_message(self):
+        with mock.patch.object(pp.sfcli, 'find_node', return_value=r'C:\node.exe'), \
+                mock.patch.object(pp.sfcli.time, 'sleep'), \
+                mock.patch.object(pp.sfcli, '_run_sf_once',
+                                  return_value=(None, 'fetch failed')) as once:
+            res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
+        self.assertIsNone(res)
+        self.assertIn('NETWORK ERROR', err)
+        self.assertIn('5 attempts', err)
+        self.assertEqual(once.call_count, pp.sfcli.NETWORK_RETRIES)
+
+    def test_non_network_error_not_retried(self):
+        with mock.patch.object(pp.sfcli, 'find_node', return_value=r'C:\node.exe'), \
+                mock.patch.object(pp.sfcli.time, 'sleep'), \
+                mock.patch.object(pp.sfcli, '_run_sf_once',
+                                  return_value=(None, 'No such column on entity')) as once:
+            res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
+        self.assertIsNone(res)
+        self.assertEqual(err, 'No such column on entity')
+        self.assertEqual(once.call_count, 1)
+
+
 class TestUpdateCheck(unittest.TestCase):
     def _patch_pypi(self, payload):
         class FakeResp:

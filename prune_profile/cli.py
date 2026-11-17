@@ -266,7 +266,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         api_version=args.api_version, poll_interval=args.poll_interval,
         job_timeout=args.job_timeout, thread_number=args.thread_number,
         batch_size=args.batch_size, max_iter=args.max_iter,
-        quiet=args.quiet, fresh=True, logger=logger)
+        quiet=args.quiet, fresh=args.fresh, logger=logger)
     if src_res['outcome'] != 'SUCCESS':
         print('ERROR: source prune failed: %s' % (src_res.get('reason') or 'unknown error'))
         sys.exit(2)
@@ -299,7 +299,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         api_version=args.api_version, poll_interval=args.poll_interval,
         job_timeout=args.job_timeout, thread_number=args.thread_number,
         batch_size=args.batch_size, max_iter=args.max_iter,
-        quiet=args.quiet, fresh=True, logger=logger)
+        quiet=args.quiet, fresh=args.fresh, logger=logger)
     if dst_res['outcome'] != 'SUCCESS':
         print('ERROR: destination prune failed: %s' % (dst_res.get('reason') or 'unknown error'))
         sys.exit(2)
