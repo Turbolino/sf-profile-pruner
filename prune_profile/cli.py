@@ -123,7 +123,7 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
         ent = n.split('.', 1)[0]
         if ent and ent not in entities:
             entities.append(ent)
-    logger.log('ALIGN: fetching field types for %d object(s) to normalize '
+    logger.log('  ▸ fetching field types for %d object(s) to normalize '
                'read-only fields...' % len(entities))
     progress = {'last': -1}
 
@@ -131,12 +131,11 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
         pct = (done * 100) // total if total else 100
         if pct != progress['last']:
             progress['last'] = pct
-            logger.log('ALIGN: field types: %d/%d object(s) (%d%%)' % (done, total, pct))
+            logger.log('  ▸ field types: %d/%d object(s) (%d%%)' % (done, total, pct))
 
     types, terr = field_data_types(sf, org, entities, on_progress=_on_progress)
     if types is None:
-        logger.log('ALIGN: warning: could not fetch field types (%s); '
-                   'editable flags left as-is.' % terr)
+        logger.log('  ⚠ could not fetch field types (%s); editable flags left as-is.' % terr)
         return set()
     read_only = set()
     for n in names:
@@ -144,7 +143,7 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
         if dt.startswith(READ_ONLY_FIELD_TYPE_PREFIXES) or dt in READ_ONLY_FIELD_TYPE_EXACT:
             read_only.add(n)
     if read_only:
-        logger.log('ALIGN: %d field(s) are read-only by type (formula/roll-up/auto-number); '
+        logger.log('  ✓ %d field(s) are read-only by type (formula/roll-up/auto-number); '
                    'their editable flag is normalized to false.' % len(read_only))
     return read_only
 
@@ -455,7 +454,11 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     # 1. prune the source against the destination (drop source references that
     #    do not exist in the destination org).
     src_out = os.path.join(out_dir, '1-source-pruned')
-    logger.log('ALIGN: pruning the source profile against the destination org...')
+    logger.log('')
+    logger.log('── PHASE 1/4 · PRUNE SOURCE ───────────────────────────')
+    logger.log('  purpose: drop every reference in %r that does not exist in %s'
+               % (src_profile_name, dest_org))
+    logger.log('  ▸ pruning the source profile against %s...' % dest_org)
     src_res = prune_stage(
         sf=sf, org=dest_org, source_profile_path=source_profile_path,
         profile_name=src_profile_name, out_dir=src_out,
@@ -467,15 +470,20 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         print('ERROR: source prune failed: %s' % (src_res.get('reason') or 'unknown error'))
         sys.exit(2)
     src_clean = src_res['common_profile_path']
+    logger.log('  ✓ source pruned (%d reference(s) removed)' % src_res['total_removed'])
 
     # 2. retrieve the destination profile (same clean/full choice as the source).
+    logger.log('')
+    logger.log('── PHASE 2/4 · RETRIEVE + PRUNE DESTINATION ───────────')
+    logger.log('  purpose: get a copy of the destination profile and strip its own dangling')
+    logger.log('           references, so the merge starts from two valid profiles')
     username, uerr = org_username(sf, dest_org)
     if not username:
         print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
         sys.exit(2)
     dest_dir = os.path.join(out_dir, '2-destination-retrieved')
     os.makedirs(dest_dir, exist_ok=True)
-    logger.log('ALIGN: retrieving the destination profile %r from %s...'
+    logger.log('  ▸ retrieving the destination profile %r from %s...'
                % (dest_profile_name, dest_org))
     clean = not args.full_profile
     dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean)
@@ -485,10 +493,11 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     dest_raw = os.path.join(dest_dir, '%s.profile-meta.xml' % dest_profile_name)
     with open(dest_raw, 'wb') as _f:
         _f.write(dest_profiles[0][1])
+    logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
 
     # 3. prune the destination against itself (drop its own dangling references).
     dst_out = os.path.join(out_dir, '3-destination-pruned')
-    logger.log('ALIGN: pruning the destination profile against itself...')
+    logger.log('  ▸ pruning the destination profile against itself...')
     dst_res = prune_stage(
         sf=sf, org=dest_org, source_profile_path=dest_raw,
         profile_name=dest_profile_name, out_dir=dst_out,
@@ -500,9 +509,13 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         print('ERROR: destination prune failed: %s' % (dst_res.get('reason') or 'unknown error'))
         sys.exit(2)
     dst_clean = dst_res['common_profile_path']
+    logger.log('  ✓ destination pruned (%d reference(s) removed)' % dst_res['total_removed'])
 
     # 4. merge: source authoritative; destination-only entries turned off.
-    logger.log('ALIGN: merging the source (authoritative) into the destination...')
+    logger.log('')
+    logger.log('── PHASE 3/4 · MERGE (source authoritative) ───────────')
+    logger.log('  purpose: keep every source entry verbatim and turn OFF every destination-only entry')
+    logger.log('  ▸ merging source → destination...')
     read_only_fields = _read_only_field_set(sf, dest_org, src_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
@@ -516,13 +529,15 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     #    surfaces residual dangling references, self-heal by re-pruning the
     #    merged profile and recomputing the diff, so MANUAL-OPERATIONS.txt and
     #    what-is-changed.txt always describe the FINAL (deployable) profile.
-    logger.log('ALIGN: validating the merged profile with a dry-run...')
+    logger.log('')
+    logger.log('── PHASE 4/4 · VALIDATE + DEPLOY ──────────────────────')
+    logger.log('  purpose: confirm the merged profile is deployable before writing reports (and deploying)')
+    logger.log('  ▸ validating the merged profile with a dry-run...')
     validation, _cf = _validate_profile_dry_run(
         sf, dest_org, merged_path, dest_profile_name, args.api_version,
         args.poll_interval, args.job_timeout, logger, out_dir)
     if validation != 'clean':
-        logger.log('ALIGN: merged dry-run not clean (%s); self-healing the merged '
-                   'profile...' % validation)
+        logger.log('  ⚠ dry-run not clean (%s); self-healing the merged profile...' % validation)
         heal_out = os.path.join(out_dir, '.work', 'align-heal')
         heal_res = prune_stage(
             sf=sf, org=dest_org, source_profile_path=merged_path,
@@ -545,12 +560,12 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         validation, _cf = _validate_profile_dry_run(
             sf, dest_org, merged_path, dest_profile_name, args.api_version,
             args.poll_interval, args.job_timeout, logger, out_dir)
-    logger.log('ALIGN: merged dry-run: %s' % validation)
+    logger.log('  ✓ merged dry-run: %s' % validation)
 
     n_granted = sum(1 for c in changes if c['kind'] == 'grant')
     n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
-    logger.log('ALIGN: %d permission(s) granted (ON), %d revoked (OFF); %d non-alignable '
-               'entr(ies) require manual action.' % (n_granted, n_revoked, len(manual_ops)))
+    logger.log('  ✓ merge result: %d granted (ON), %d revoked (OFF), %d manual'
+               % (n_granted, n_revoked, len(manual_ops)))
 
     # 6. classify layoutAssignments manual ops (redundant vs needs check) using
     #    the destination org's Layout components.
@@ -562,16 +577,17 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                 obj = name.split('-', 1)[0] if '-' in name else name
                 layout_count[obj] = layout_count.get(obj, 0) + 1
         elif lerr:
-            logger.log('ALIGN: warning: could not list Layout metadata (%s); '
+            logger.log('  ⚠ could not list Layout metadata (%s); '
                        'layoutAssignments marked for manual check.' % lerr)
         classify_layout_ops(manual_ops, changes, layout_count)
 
     # 7. reports (only now, on the final validated merged profile).
+    logger.log('  ▸ writing reports...')
     manual_ops_path = _write_and_report_manual_ops(
         manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
     change_path = write_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
-    logger.log('ALIGN: what-is-changed written to %s' % change_path)
+    logger.log('  ✓ what-is-changed written: %s' % change_path)
 
     # 7b. persist the run identity + validated merge, so a later invocation on
     #     this folder can deploy the cache instead of redoing the pipeline.
@@ -580,7 +596,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         state_path = _write_align_state(
             out_dir, args, src_profile_name, dest_profile_name, dest_org,
             merged_path, validation, n_granted, n_revoked, len(manual_ops))
-        logger.log('ALIGN: run state saved to %s' % state_path)
+        logger.log('  ✓ run state saved: %s' % state_path)
 
     # 8. optional deploy of the merged profile (only after a clean validation).
     deploy_detail = ''
@@ -588,7 +604,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     if validation != 'clean':
         outcome = 'VALIDATION_FAILED'
     elif do_deploy:
-        logger.log('ALIGN: deploying the merged profile to %s...' % dest_org)
+        logger.log('  ▸ deploying the merged profile to %s...' % dest_org)
         ok, deploy_detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
                                             args.api_version, args.poll_interval,
                                             args.job_timeout, logger, out_dir)
@@ -866,16 +882,17 @@ def _main():
 
     logger = Logger(args.quiet, run_log)
 
+    logger.log('── SETUP ───────────────────────────────────────────────')
+    logger.log('  purpose: locate the CLI, resolve the API version and confirm the org context')
+    logger.log('  ▸ locating the Salesforce CLI (sf)...')
+    sf = find_sf(args.sf)
+    logger.file_log('sf          : %s' % sf)
+    logger.log('  ✓ Salesforce CLI ready')
+
     # Informational, non-blocking upgrade notice (stderr so it never disturbs
     # the stdout progress/board; skipped silently on any network failure).
-    logger.log('Startup: checking for a newer release...')
     for line in _check_for_update():
         print(line, file=sys.stderr)
-    logger.log('Startup: update check done.')
-
-    logger.log('Startup: locating the Salesforce CLI (sf)...')
-    sf = find_sf(args.sf)
-    logger.log('sf          : %s' % sf)
 
     # ---------- resume a completed alignment (same folder + same parameters) ----------
     # If this folder already holds a validated alignment with identical
@@ -891,7 +908,7 @@ def _main():
     # ---------- API version: explicit or detected from the destination org ----------
     api_source = 'explicit'
     if args.api_version is None:
-        logger.log('Startup: detecting the latest API version from org %s...' % dest_org)
+        logger.log('  ▸ detecting the latest API version from org %s...' % dest_org)
         args.api_version, averr = org_api_version(sf, dest_org)
         if args.api_version is None:
             print('ERROR: could not detect the latest API version from org %r:' % dest_org)
@@ -899,7 +916,7 @@ def _main():
             print('       Pass --api-version <X.Y> explicitly to continue.')
             sys.exit(2)
         api_source = 'auto (latest for org)'
-    logger.log('API version : %s (%s)' % (args.api_version, api_source))
+    logger.log('  ✓ API v%s (%s)' % (args.api_version, api_source))
 
     # ---------- retrieve the source profile (via 2) ----------
     if mode == 'org':
@@ -908,7 +925,7 @@ def _main():
             print('ERROR: could not resolve the org username for %r: %s' % (src_org, uerr))
             sys.exit(2)
         clean = not args.full_profile
-        logger.log('Retrieve : fetching profile %r from org %s (%s)...' %
+        logger.log('  ▸ retrieving profile %r from org %s (%s)...' %
                    (src_profile_name, src_org, 'full' if args.full_profile else 'clean'))
         profiles, rerr = retrieve_profiles(username, [src_profile_name], clean=clean)
         if not profiles:
@@ -918,14 +935,16 @@ def _main():
         with open(original_copy, 'wb') as _f:
             _f.write(xml)
         profile_path = original_copy
-        logger.log('Retrieve : %s -> %s (%d bytes)' % (full_name, original_copy, len(xml)))
+        logger.log('  ✓ retrieved %s (%d bytes)' % (full_name, len(xml)))
         if rerr:
-            logger.log('Retrieve : warning: %s' % rerr)
+            logger.log('  ⚠ %s' % rerr)
 
-    logger.log('Deploy as   : %s' % dest_profile_name)
-    logger.log('Dest org    : %s' % dest_org)
     if mode == 'org':
-        logger.log('Source org  : %s' % src_org)
+        logger.log('  context: source %r @ %s  →  destination %r @ %s' %
+                   (src_profile_name, src_org, dest_profile_name, dest_org))
+    else:
+        logger.log('  context: source file %r  →  destination %r @ %s' %
+                   (src_profile_name, dest_profile_name, dest_org))
 
     # ---------- alignment (--align-from-source): separate flow ----------
     if do_align:

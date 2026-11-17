@@ -29,6 +29,14 @@ class Logger:
                 with open(self.log_path, 'a', encoding='utf-8') as f:
                     f.write(line + '\n')
 
+    def file_log(self, msg):
+        """Append a line to run.log only (never printed to the console)."""
+        line = '[%s] %s' % (timestamp(), msg)
+        with self._lock:
+            if self.log_path:
+                with open(self.log_path, 'a', encoding='utf-8') as f:
+                    f.write(line + '\n')
+
 
 class StatusBoard:
     """A live progress board: two worker cells per line (side by side), plus a

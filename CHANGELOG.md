@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] - 2026-11-17
+
+### Changed
+
+- Reorganized the console output into numbered phases (`── PHASE 1/4 · … ──`)
+  with a purpose line and explicit `▸`/`✓`/`⚠` sub-steps, written as each step
+  runs. The banner/header and the `[HH:MM:SS]` timestamps are untouched, as are
+  the live progress board and worker threads. Verbose details (the full `sf`
+  binary path, etc.) now go to `run.log` only.
+
 ## [2.9.0] - 2026-11-17
 
 ### Added
