@@ -1050,12 +1050,16 @@ class TestMerge(unittest.TestCase):
 
     @staticmethod
     def _merge(src_sections, dst_sections):
+        return TestMerge._merge_with_read_only(src_sections, dst_sections, None)
+
+    @staticmethod
+    def _merge_with_read_only(src_sections, dst_sections, read_only):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, 'src.xml')
             dst = os.path.join(d, 'dst.xml')
             write_text(src, TestMerge._profile(src_sections))
             write_text(dst, TestMerge._profile(dst_sections))
-            return pp.merge_profiles(src, dst)
+            return pp.merge_profiles(src, dst, read_only_fields=read_only)
 
     def test_dest_only_tab_is_turned_off(self):
         xml, manual_ops, changes = self._merge(
@@ -1208,6 +1212,40 @@ class TestMerge(unittest.TestCase):
         # 4-space indentation for sections, 8 for their children
         self.assertIn('\n    <tabVisibilities>', s)
         self.assertIn('\n        <tab>TabB__c</tab>', s)
+
+    def test_field_permissions_names_extraction(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<fieldPermissions><field>User.F__c</field></fieldPermissions>\n'
+                '<fieldPermissions><field>et4ae5__O__c.et4ae5__F__c</field></fieldPermissions>\n'
+                '<tabVisibilities><tab>T__c</tab></tabVisibilities>'))
+            self.assertEqual(pp.field_permissions_names(p),
+                             ['User.F__c', 'et4ae5__O__c.et4ae5__F__c'])
+
+    def test_read_only_fields_normalized_to_false(self):
+        xml, _, changes = self._merge_with_read_only(
+            '<fieldPermissions><field>Obj.F__c</field><editable>true</editable><readable>true</readable></fieldPermissions>',
+            '<fieldPermissions><field>Obj.F__c</field><editable>false</editable><readable>true</readable></fieldPermissions>',
+            read_only={'Obj.F__c'},
+        )
+        root = pp.etree.fromstring(xml)
+        fp = root.findall('{%s}fieldPermissions' % self.NS)[0]
+        self.assertEqual(fp.find('{%s}editable' % self.NS).text, 'false')
+        # editable now matches the destination -> no fake grant reported
+        self.assertEqual(changes, [])
+
+    def test_editable_fields_unchanged_when_not_read_only(self):
+        xml, _, changes = self._merge_with_read_only(
+            '<fieldPermissions><field>Obj.F__c</field><editable>true</editable><readable>true</readable></fieldPermissions>',
+            '<fieldPermissions><field>Obj.F__c</field><editable>false</editable><readable>true</readable></fieldPermissions>',
+            read_only=set(),
+        )
+        root = pp.etree.fromstring(xml)
+        fp = root.findall('{%s}fieldPermissions' % self.NS)[0]
+        self.assertEqual(fp.find('{%s}editable' % self.NS).text, 'true')
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'grant')
 
     def test_what_is_changed_annotates_old_values(self):
         xml, _, changes = self._merge(

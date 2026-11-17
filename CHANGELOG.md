@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-11-17
+
+### Added
+
+- Fields whose type is inherently read-only (`Formula`, `Roll-Up Summary`,
+  `Auto Number`) are now normalized by the alignment: their `editable` flag is
+  forced to `false` in the merged profile and in `what-is-changed.txt`, instead
+  of copying an `editable=true` from the source that Salesforce silently
+  ignores. This removes fake "grant" entries and keeps the package consistent
+  with the effective permission. The field types are looked up from the
+  destination org via `FieldDefinition` (Tooling API).
+
 ## [2.6.0] - 2026-11-17
 
 ### Added

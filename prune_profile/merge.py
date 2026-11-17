@@ -61,10 +61,36 @@ MERGE_TABLE = {
 # never turned off by a Profile deploy.
 NON_ALIGNABLE = ('layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours')
 
+# Field types whose `editable` flag is meaningless: Salesforce always treats
+# these as read-only, so an `editable=true` in the source profile is dead
+# metadata (the effective value is false). The alignment normalizes them to
+# `false` instead of reporting a fake "grant" that the platform will ignore.
+READ_ONLY_FIELD_TYPE_PREFIXES = ('Formula',)
+READ_ONLY_FIELD_TYPE_EXACT = frozenset({'Roll-Up Summary', 'Auto Number'})
+
 
 def _txt(el, child):
     ce = el.find(M + child)
     return (ce.text or '').strip() if ce is not None else ''
+
+
+def _set_child_text(el, child, value):
+    """Set (or create) a child element's text on `el`."""
+    ce = el.find(M + child)
+    if ce is None:
+        ce = etree.SubElement(el, M + child)
+    ce.text = value
+
+
+def field_permissions_names(path):
+    """Field full names referenced by ``fieldPermissions`` in `path` (in file
+    order, duplicates kept). Used to look up their DataType in the org."""
+    root = etree.parse(path).getroot()
+    names = []
+    for el in root:
+        if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
+            names.append(_txt(el, 'field'))
+    return names
 
 
 def _keys_for(section):
@@ -252,13 +278,20 @@ def _removed_block(section, entries, dest_env, verdict_note=None):
     return lines
 
 
-def merge_profiles(source_path, dest_path, dest_env='destination org'):
+def merge_profiles(source_path, dest_path, dest_env='destination org',
+                   read_only_fields=None):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
     destination-only entry is turned off (alignable sections) or recorded as a
     manual operation (non-alignable sections). Destination-only entries that
     are already off are skipped (no change).
+
+    ``read_only_fields`` (optional) is a set of ``fieldPermissions`` field full
+    names whose type is inherently read-only (formula / roll-up summary /
+    auto number). Their ``editable`` flag is forced to ``false`` so the merged
+    profile and the what-is-changed report reflect the effective permission
+    instead of a meaningless ``true``.
 
     Returns ``(merged_xml_bytes, manual_ops, changes)`` where ``changes`` is the
     full list of differences the deploy will apply, each ``kind`` being
@@ -269,6 +302,8 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
     dst_root = etree.parse(dest_path).getroot()
     src_groups = _groups(src_root)
     dst_groups = _groups(dst_root)
+
+    read_only_fields = read_only_fields or set()
 
     out = etree.Element(M + 'Profile', nsmap={None: NS})
     manual_ops = []
@@ -291,6 +326,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org'):
             # Merged section: source entries verbatim + an explicit off element
             # for each destination-only entry.
             merged_section = [deepcopy(el) for el in src_els]
+            if section == 'fieldPermissions' and read_only_fields:
+                # Normalize read-only field types: `editable=true` is dead
+                # metadata (Salesforce always keeps them read-only).
+                for m_el in merged_section:
+                    if _txt(m_el, key_child) in read_only_fields:
+                        _set_child_text(m_el, 'editable', 'false')
             for key, el in dst_by_key.items():
                 if key in src_by_key:
                     continue

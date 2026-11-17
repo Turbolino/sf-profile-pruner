@@ -46,11 +46,13 @@ from .constants import (
     __version__,
     version_ge,
 )
-from .merge import (classify_layout_ops, format_ops_table, merge_profiles,
-                    removed_non_alignable, write_manual_ops, write_what_is_changed)
+from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
+                    classify_layout_ops, field_permissions_names, format_ops_table,
+                    merge_profiles, removed_non_alignable, write_manual_ops,
+                    write_what_is_changed)
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, dry_run, find_sf, list_metadata, org_api_version,
-                    org_username, set_deploy_start_interval)
+from .sfcli import (deploy, dry_run, field_data_types, find_sf, list_metadata,
+                    org_api_version, org_username, set_deploy_start_interval)
 from .stage import prune_stage
 from .xmlio import write_package_xml, write_sfdx_project
 
@@ -108,6 +110,32 @@ def _clamp_batch_size(n):
     if n > MAX_CHUNK_SIZE:
         return MAX_CHUNK_SIZE
     return n
+
+
+def _read_only_field_set(sf, org, src_clean_path, logger):
+    """Detect fieldPermissions fields whose type is inherently read-only
+    (formula / roll-up summary / auto number), so the alignment normalizes
+    their `editable` flag to false instead of reporting a fake grant."""
+    names = field_permissions_names(src_clean_path)
+    entities = []
+    for n in names:
+        ent = n.split('.', 1)[0]
+        if ent and ent not in entities:
+            entities.append(ent)
+    types, terr = field_data_types(sf, org, entities)
+    if types is None:
+        logger.log('ALIGN: warning: could not fetch field types (%s); '
+                   'editable flags left as-is.' % terr)
+        return set()
+    read_only = set()
+    for n in names:
+        dt = types.get(n, '')
+        if dt.startswith(READ_ONLY_FIELD_TYPE_PREFIXES) or dt in READ_ONLY_FIELD_TYPE_EXACT:
+            read_only.add(n)
+    if read_only:
+        logger.log('ALIGN: %d field(s) are read-only by type (formula/roll-up/auto-number); '
+                   'their editable flag is normalized to false.' % len(read_only))
+    return read_only
 
 
 def _repair_mangled_argv(argv):
@@ -307,7 +335,9 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
 
     # 4. merge: source authoritative; destination-only entries turned off.
     logger.log('ALIGN: merging the source (authoritative) into the destination...')
-    merged_xml, manual_ops, changes = merge_profiles(src_clean, dst_clean, dest_env=dest_org)
+    read_only_fields = _read_only_field_set(sf, dest_org, src_clean, logger)
+    merged_xml, manual_ops, changes = merge_profiles(
+        src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
     n_granted = sum(1 for c in changes if c['kind'] == 'grant')
     n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
     merge_dir = os.path.join(out_dir, '4-merged')

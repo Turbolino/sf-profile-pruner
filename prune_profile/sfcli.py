@@ -239,6 +239,29 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
+def field_data_types(sf, org, entities, cwd=None, control=None):
+    """Return ``{fieldFullName: DataType}`` for every field of ``entities`` via
+    FieldDefinition (Tooling API). Returns (dict_or_None, error).
+
+    One query per entity is used because FieldDefinition requires a reified
+    filter (EntityDefinitionId). Field full names are reconstructed as
+    ``<entity>.<QualifiedApiName>`` so they match the Profile XML."""
+    out = {}
+    for ent in entities:
+        records, err = tooling_query(
+            sf, org,
+            "SELECT QualifiedApiName, DataType FROM FieldDefinition "
+            "WHERE EntityDefinitionId = '%s'" % str(ent).replace("'", "\\'"),
+            cwd=cwd, control=control)
+        if err:
+            return None, err
+        for r in records:
+            qn = r.get('QualifiedApiName')
+            if qn:
+                out['%s.%s' % (ent, qn)] = str(r.get('DataType') or '')
+    return out, None
+
+
 def org_api_version(sf, org, cwd=None, control=None):
     """Return the org's API version (the latest it supports) via `sf org display`.
     Returns (version_string_or_None, error)."""
