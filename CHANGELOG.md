@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2026-11-17
+
+### Added
+
+- `--diff`: compare the source profile against the destination profile and
+  write a pure profile-to-profile diff report (`diff/diff-report.txt`). For
+  every profile section it reports what is only in the source, only in the
+  destination, and what differs for entries present in both (with per-field
+  source/destination values), plus an on-screen summary table. Read-only: no
+  prune, no dry-run, no deploy. Works with a source file (via 1) or a source
+  org (via 2).
+
 ## [2.11.2] - 2026-11-17
 
 ### Fixed

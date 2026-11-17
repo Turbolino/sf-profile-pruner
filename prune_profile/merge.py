@@ -19,12 +19,14 @@ kept verbatim, every destination-only entry is turned off (alignable sections)
 or reported as a manual operation (non-alignable sections).
 """
 
-from collections import Counter
+from collections import Counter, OrderedDict
 from copy import deepcopy
+
+import os
 
 from lxml import etree
 
-from .constants import M, NS
+from .constants import M, NS, __version__
 
 # ---------------------------------------------------------------------------
 # section -> (key_child, {child: off_text})
@@ -137,6 +139,170 @@ def _layout_object(el):
     the first '-' of the layout full name)."""
     layout = _txt(el, 'layout')
     return layout.split('-', 1)[0] if '-' in layout else layout
+
+
+# ---------------------------------------------------------------------------
+# Profile diff (pure profile-to-profile comparison; no prune, no deploy).
+# ---------------------------------------------------------------------------
+
+def _diff_key_spec(section):
+    """Child elements that identify an entry of `section` for diffing. ``None``
+    means "no structural key": fall back to the element's serialized form."""
+    if section in MERGE_TABLE:
+        return [MERGE_TABLE[section][0]]
+    if section in NON_ALIGNABLE:
+        keys = _keys_for(section)
+        return keys or None
+    return None
+
+
+def _diff_key(el, spec):
+    if spec:
+        return tuple(_txt(el, k) for k in spec)
+    return etree.tostring(el, encoding='unicode')
+
+
+def _element_leaf_fields(el):
+    """Ordered flat map of child local-name -> text for a profile entry."""
+    out = OrderedDict()
+    for child in el:
+        if isinstance(child.tag, str):
+            out[child.tag.split('}')[-1]] = (child.text or '').strip()
+    return out
+
+
+def _diff_entry_fields(src_el, dst_el):
+    """List of ``(field, source_value, dest_value)`` for fields that differ
+    between two entries of the same section."""
+    sf = _element_leaf_fields(src_el)
+    df = _element_leaf_fields(dst_el)
+    diffs = []
+    for field, sv in sf.items():
+        if sv != df.get(field):
+            diffs.append((field, sv, df.get(field, '')))
+    for field in df:
+        if field not in sf:
+            diffs.append((field, '', df[field]))
+    return diffs
+
+
+def diff_profiles(source_path, dest_path):
+    """Compare two profiles section by section.
+
+    Returns ``{section: {...}}`` where each section maps to
+    ``{source_count, dest_count, only_source, only_dest, different,
+    key_spec}``. ``only_source`` / ``only_dest`` are key tuples of entries
+    present in exactly one profile; ``different`` is a list of
+    ``{'key': ..., 'diffs': [(field, src, dst), ...]}`` for entries present in
+    both profiles whose values differ. Pure comparison: no org access, no
+    mutation, no deploy.
+    """
+    src_root = etree.parse(source_path).getroot()
+    dst_root = etree.parse(dest_path).getroot()
+    src_groups = _groups(src_root)
+    dst_groups = _groups(dst_root)
+
+    sections = []
+    for s in list(src_groups):
+        if s not in sections:
+            sections.append(s)
+    for s in dst_groups:
+        if s not in sections:
+            sections.append(s)
+
+    out = {}
+    for s in sections:
+        spec = _diff_key_spec(s)
+        src_els = src_groups.get(s, [])
+        dst_els = dst_groups.get(s, [])
+        src_by_key = {}
+        for el in src_els:
+            src_by_key.setdefault(_diff_key(el, spec), el)
+        dst_by_key = {}
+        for el in dst_els:
+            dst_by_key.setdefault(_diff_key(el, spec), el)
+        only_source = [k for k in src_by_key if k not in dst_by_key]
+        only_dest = [k for k in dst_by_key if k not in src_by_key]
+        different = []
+        for k in set(src_by_key) & set(dst_by_key):
+            diffs = _diff_entry_fields(src_by_key[k], dst_by_key[k])
+            if diffs:
+                different.append({'key': k, 'diffs': diffs})
+        out[s] = {
+            'source_count': len(src_els),
+            'dest_count': len(dst_els),
+            'only_source': only_source,
+            'only_dest': only_dest,
+            'different': different,
+            'key_spec': spec,
+        }
+    return out
+
+
+def _render_diff_key(key):
+    """Render a diff key tuple as a readable string."""
+    if not isinstance(key, tuple):
+        return str(key)
+    if len(key) == 1:
+        return str(key[0])
+    return ' / '.join(str(x) for x in key if x)
+
+
+def render_diff_report(sections, src_label, dst_label, tool_version=None):
+    """Render the full diff report as a string."""
+    tv = tool_version or __version__
+    lines = []
+    lines.append('PROFILE DIFF - source -> destination')
+    lines.append('=' * 66)
+    lines.append('source      : %s' % src_label)
+    lines.append('destination : %s' % dst_label)
+    lines.append('tool        : sf-profile-pruner v%s' % tv)
+    lines.append('')
+    lines.append('SUMMARY')
+    lines.append('=' * 66)
+    lines.append('%-30s %8s %8s %10s %10s %8s' % (
+        'section', 'source', 'dest', 'only_src', 'only_dst', 'diff'))
+    lines.append('-' * 74)
+    for s, d in sections.items():
+        lines.append('%-30s %8d %8d %10d %10d %8d' % (
+            s, d['source_count'], d['dest_count'],
+            len(d['only_source']), len(d['only_dest']), len(d['different'])))
+    lines.append('')
+    lines.append('DETAILS')
+    lines.append('=' * 66)
+    for s, d in sections.items():
+        lines.append('')
+        lines.append('[%s]  source=%d dest=%d only_src=%d only_dst=%d diff=%d'
+                     % (s, d['source_count'], d['dest_count'],
+                        len(d['only_source']), len(d['only_dest']),
+                        len(d['different'])))
+        if d['only_source']:
+            lines.append('  only in source (%d):' % len(d['only_source']))
+            for k in sorted(d['only_source'], key=_render_diff_key):
+                lines.append('    - %s' % _render_diff_key(k))
+        if d['only_dest']:
+            lines.append('  only in destination (%d):' % len(d['only_dest']))
+            for k in sorted(d['only_dest'], key=_render_diff_key):
+                lines.append('    - %s' % _render_diff_key(k))
+        if d['different']:
+            lines.append('  different (%d):' % len(d['different']))
+            for item in sorted(d['different'], key=lambda x: _render_diff_key(x['key'])):
+                lines.append('    %s:' % _render_diff_key(item['key']))
+                for field, sv, dv in item['diffs']:
+                    lines.append('      %s: source=%r dest=%r' % (field, sv, dv))
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def write_diff_report(sections, src_label, dst_label, diff_dir,
+                      tool_version=None):
+    """Write the diff report into ``diff_dir`` and return its path."""
+    text = render_diff_report(sections, src_label, dst_label, tool_version)
+    os.makedirs(diff_dir, exist_ok=True)
+    path = os.path.join(diff_dir, 'diff-report.txt')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text + '\n')
+    return path
 
 
 def _describe_entry(section, el):

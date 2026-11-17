@@ -1304,6 +1304,48 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(changes[0]['kind'], 'grant')
         self.assertEqual(changes[0]['old_values'], {'readable': 'false'})
 
+    def test_diff_profiles(self):
+        src = TestMerge._profile(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+            '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+            '<fieldPermissions><field>Acc.F__c</field><readable>true</readable><editable>true</editable></fieldPermissions>\n'
+            '<fieldPermissions><field>Acc.E__c</field><readable>false</readable><editable>false</editable></fieldPermissions>')
+        dst = TestMerge._profile(
+            '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+            '<tabVisibilities><tab>TabC__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+            '<fieldPermissions><field>Acc.F__c</field><readable>true</readable><editable>false</editable></fieldPermissions>')
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, 's.xml'); dp = os.path.join(d, 'd.xml')
+            write_text(sp, src); write_text(dp, dst)
+            res = pp.diff_profiles(sp, dp)
+        tv = res['tabVisibilities']
+        self.assertEqual(tv['source_count'], 2)
+        self.assertEqual(tv['dest_count'], 2)
+        self.assertEqual(tv['only_source'], [('TabB__c',)])
+        self.assertEqual(tv['only_dest'], [('TabC__c',)])
+        self.assertEqual(tv['different'], [])
+        fp = res['fieldPermissions']
+        self.assertEqual(fp['only_source'], [('Acc.E__c',)])
+        self.assertEqual(len(fp['different']), 1)
+        self.assertEqual(fp['different'][0]['key'], ('Acc.F__c',))
+        self.assertEqual(fp['different'][0]['diffs'], [('editable', 'true', 'false')])
+
+    def test_diff_report_renders_summary_and_details(self):
+        sections = {
+            'fieldPermissions': {
+                'source_count': 3, 'dest_count': 2,
+                'only_source': [('Acc.X__c',)], 'only_dest': [('Acc.Y__c',)],
+                'different': [{'key': ('Acc.Z__c',), 'diffs': [('editable', 'true', 'false')]}],
+                'key_spec': ['field'],
+            },
+        }
+        text = pp.render_diff_report(sections, 'mysandbox "Admin"', 'devsandbox "Admin"')
+        self.assertIn('PROFILE DIFF', text)
+        self.assertIn('fieldPermissions', text)
+        self.assertIn('only in source (1)', text)
+        self.assertIn('Acc.Z__c', text)
+        self.assertIn("source='true' dest='false'", text)
+
     def test_source_only_entry_is_granted(self):
         xml, manual_ops, changes = self._merge(
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'

@@ -244,6 +244,7 @@ Options are grouped in the `-h` help. The two input modes are:
 | `--deploy-on-success` | Deploy the cleaned profile to `--dest-org` once pruning succeeds. Modifies the org: asks for Y/N confirmation (No = dry-run only). Use as `[--deploy-on-success [--sure]]`. |
 | `--sure` | Skip the Y/N confirmation of `--deploy-on-success` and deploy without asking. No effect without `--deploy-on-success`. |
 | `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Works with via 1 or via 2. Runs automatically (no prompt); the pre-align destination profile is saved in the run folder. |
+| `--diff` | Compare the source profile against the destination profile and write a pure profile-to-profile diff report (`diff/diff-report.txt`). Read-only: no prune, no dry-run, no deploy. Works with via 1 or via 2. |
 | `--fresh` | Restart from the original, ignoring any previous state. |
 | `--quiet` | Suppress the progressive stdout output. |
 | `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |
