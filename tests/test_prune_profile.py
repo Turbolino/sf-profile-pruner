@@ -180,10 +180,13 @@ class TestOrgApiVersion(unittest.TestCase):
         calls = []
         def fake_tooling(sf, org, soql, cwd=None, control=None):
             calls.append(soql)
-            # echo back the EntityDefinitionIds as fake records
+            # echo back the entity names as fake records (standard-object shape:
+            # EntityDefinitionId is the name; the relationship is also present).
             import re
             ids = re.findall(r"'([^']+)'", soql)
-            return [{'EntityDefinitionId': i, 'QualifiedApiName': 'F__c',
+            return [{'EntityDefinitionId': i,
+                     'EntityDefinition': {'QualifiedApiName': i},
+                     'QualifiedApiName': 'F__c',
                      'DataType': 'Text(80)'} for i in ids], None
         orig = pp.sfcli.tooling_query
         pp.sfcli.tooling_query = fake_tooling
@@ -197,11 +200,34 @@ class TestOrgApiVersion(unittest.TestCase):
             pp.sfcli.tooling_query = orig
         self.assertIsNone(err)
         self.assertEqual(len(out), 85)
+        self.assertTrue(all(k.startswith('Obj') and k.endswith('.F__c') for k in out))
         # 85 entities at batch 40 -> 3 queries
         self.assertEqual(len(calls), 3)
         self.assertTrue(all('EntityDefinitionId IN (' in c for c in calls))
         # progress: (40, 85), (80, 85), (85, 85)
         self.assertEqual(progress, [(40, 85), (80, 85), (85, 85)])
+
+    def test_field_data_types_reconstructs_custom_object_names(self):
+        # Custom objects: EntityDefinitionId resolves to a DurableId (01I...),
+        # NOT the object API name. The full field name must come from
+        # EntityDefinition.QualifiedApiName or it never matches the Profile XML.
+        def fake_tooling(sf, org, soql, cwd=None, control=None):
+            return [{'EntityDefinitionId': '01Icz00000Fa2Z0',
+                     'EntityDefinition': {'QualifiedApiName': 'et4ae5__Automated_Send__c'},
+                     'QualifiedApiName': 'et4ae5__Bounce_Rate_del__c',
+                     'DataType': 'Formula (Percent)'}], None
+        orig = pp.sfcli.tooling_query
+        pp.sfcli.tooling_query = fake_tooling
+        try:
+            out, err = pp.sfcli.field_data_types('sf', 'devorg',
+                                                 ['et4ae5__Automated_Send__c'])
+        finally:
+            pp.sfcli.tooling_query = orig
+        self.assertIsNone(err)
+        self.assertEqual(
+            out.get('et4ae5__Automated_Send__c.et4ae5__Bounce_Rate_del__c'),
+            'Formula (Percent)')
+        self.assertNotIn('01Icz00000Fa2Z0', next(iter(out)))
 
     def test_extracts_api_version(self):
         calls = []

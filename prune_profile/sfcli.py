@@ -262,13 +262,18 @@ def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
         in_list = ', '.join("'%s'" % e.replace("'", "\\'") for e in chunk)
         records, err = tooling_query(
             sf, org,
-            "SELECT EntityDefinitionId, QualifiedApiName, DataType "
+            "SELECT EntityDefinition.QualifiedApiName, QualifiedApiName, DataType "
             "FROM FieldDefinition WHERE EntityDefinitionId IN (%s)" % in_list,
             cwd=cwd, control=control)
         if err:
             return None, err
         for r in records:
-            ent = r.get('EntityDefinitionId')
+            # ``EntityDefinitionId`` resolves to a DurableId (e.g. ``01I...``)
+            # for custom objects, so reconstruct the field full name from the
+            # parent EntityDefinition's QualifiedApiName, which always matches
+            # the Profile XML (``ObjectApiName.FieldApiName``).
+            ent = (r.get('EntityDefinition') or {}).get('QualifiedApiName') \
+                or r.get('EntityDefinitionId')
             qn = r.get('QualifiedApiName')
             if ent and qn:
                 out['%s.%s' % (ent, qn)] = str(r.get('DataType') or '')

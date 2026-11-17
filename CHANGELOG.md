@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.1] - 2026-11-17
+
+### Fixed
+
+- Read-only field normalization now actually matches custom-object fields.
+  `FieldDefinition.EntityDefinitionId` resolves to a DurableId (`01I...`) for
+  custom objects, not the object API name, so formula / roll-up / auto-number
+  fields on custom objects were never recognized and still appeared as fake
+  `editable=true` grants in `what-is-changed.txt`. The field full name is now
+  reconstructed from `EntityDefinition.QualifiedApiName`.
+
 ## [2.8.0] - 2026-11-17
 
 ### Changed
