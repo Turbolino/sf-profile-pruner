@@ -50,14 +50,15 @@ from .constants import (
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, diff_profiles,
                     field_permissions_editable, field_permissions_names,
-                    merge_profiles, removed_non_alignable,
+                    merge_profiles, normalize_profile_read_only,
+                    removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
-                    set_deploy_start_interval)
+                    set_deploy_start_interval, tooling_query)
 from .stage import prune_stage
 from .xmlio import load_log_entries, write_package_xml, write_sfdx_project
 
@@ -201,6 +202,11 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
                    'editable normalized to false.' % len(read_only))
 
     # --- layer 2: describe on both orgs for editable-differing non-formula fields ---
+    # This layer needs a destination profile to scope candidates cheaply, so it
+    # runs only during alignment. The plain prune (no destination profile)
+    # normalizes by DataType only.
+    if not dst_clean_path:
+        return read_only
     src_edit = field_permissions_editable(src_clean_path)
     dst_edit = field_permissions_editable(dst_clean_path)
     candidates = [n for n in names
@@ -267,6 +273,30 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         logger.log('  ✓ %d system read-only field(s) (updateable=false on both orgs) '
                    'normalized: %s' % (len(added), ', '.join(sorted(added))))
     return read_only
+
+
+def _warn_if_not_admin(sf, org, logger):
+    """Non-blocking warning when the connecting user of `org` is not a System
+    Administrator. Prune/diff/align results can depend on the current profile's
+    permissions (the tool connects as the logged-in user), so we surface this
+    instead of failing. Never raises and never stops the run."""
+    username, uerr = org_username(sf, org)
+    if not username:
+        return
+    try:
+        records, _err = tooling_query(
+            sf, org,
+            "SELECT Id, Profile.Name FROM User WHERE Username = '%s' LIMIT 1"
+            % username.replace("'", "\\'"))
+    except Exception:
+        return
+    if not records:
+        return
+    profile = (records[0].get('Profile') or {}).get('Name') or ''
+    if profile and profile != 'System Administrator':
+        logger.log('  ⚠ ALERT (non-blocking): the current user in %s has profile %r, '
+                   'not "System Administrator"; the results may depend on the '
+                   'current profile permissions.' % (org, profile))
 
 
 def _repair_mangled_argv(argv):
@@ -441,6 +471,24 @@ def _finalize_prune_output(result, merge_dir, src_out, original_copy,
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name,
                                  logger, quiet)
     return wic_path
+
+
+def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger):
+    """Normalize system read-only field ``editable`` flags in a pruned (plain,
+    non-merged) profile unless ``--avoid-normalize-ro`` is set. Runs the
+    DataType-based detection (formula / roll-up summary / auto number / compound
+    address & location) and forces ``editable=false`` in place. Returns the
+    number of fields normalized."""
+    if args.avoid_normalize_ro:
+        logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
+        return 0
+    read_only = _read_only_field_set(sf, src_org, dest_org, common_path, None, logger)
+    if not read_only:
+        return 0
+    n = normalize_profile_read_only(common_path, read_only)
+    if n:
+        logger.log('  ✓ normalized %d read-only field(s) editable=false in the clean profile.' % n)
+    return n
 
 
 def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
@@ -716,8 +764,12 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                    'detection checks only the destination. A field editable in the source but '
                    'read-only-looking in the destination could be misclassified as read-only; '
                    'use -so/-sp to verify both sides.')
-    read_only_fields = _read_only_field_set(
-        sf, src_org, dest_org, src_clean, dst_clean, logger)
+    read_only_fields = set()
+    if args.avoid_normalize_ro:
+        logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
+    else:
+        read_only_fields = _read_only_field_set(
+            sf, src_org, dest_org, src_clean, dst_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
     merge_dir = os.path.join(out_dir, '4-merged')
@@ -946,6 +998,13 @@ def _main():
                             'Works with a source file (via 1) or a source org (via 2).')
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
+    g_act.add_argument('--avoid-normalize-ro', action='store_true',
+                       help='skip the read-only field normalization. By default the tool '
+                            'forces editable=false on system read-only fields (formula, '
+                            'roll-up summary, auto number, compound address/location, and '
+                            'fields the org keeps read-only) in BOTH the align and the plain '
+                            'prune output; with this flag those editable flags are left '
+                            'exactly as retrieved.')
     g_act.add_argument('--quiet', action='store_true',
                        help='suppress the progressive stdout output')
     g_act.add_argument('--tell-me-a-story', action='store_true',
@@ -1123,6 +1182,14 @@ def _main():
     for line in _check_for_update():
         print(line, file=sys.stderr)
 
+    # Non-blocking profile check: warn when the connecting user is not a System
+    # Administrator, because prune/diff/align results can depend on the current
+    # profile's permissions. Runs for every invocation mode (via 1 / via 2 / align
+    # / diff / prune); never blocks or fails the run.
+    _warn_if_not_admin(sf, dest_org, logger)
+    if src_org and src_org != dest_org:
+        _warn_if_not_admin(sf, src_org, logger)
+
     # ---------- resume a completed alignment (same folder + same parameters) ----------
     # If this folder already holds a validated alignment with identical
     # -so/-do/-sp/-dp, deploy the cached merge (or just report it) instead of
@@ -1209,6 +1276,13 @@ def _main():
         logger=logger,
     )
 
+    # Normalize system read-only field editable flags (default; --avoid-normalize-ro
+    # skips). Applied in place so both the deploy target and the 4-merged copy
+    # carry the effective (dead) permission.
+    if result['outcome'] == 'SUCCESS':
+        _normalize_prune_read_only(sf, args, src_org, dest_org,
+                                   result['common_profile_path'], logger)
+
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
         _finalize_prune_output(result, merge_dir, src_out, original_copy,
@@ -1274,6 +1348,8 @@ def _main():
             result_state = result['outcome']
             if result_state != 'SUCCESS':
                 break
+            _normalize_prune_read_only(sf, args, src_org, dest_org,
+                                       result['common_profile_path'], logger)
             if not result.get('already_clean'):
                 report_result = result  # a prune round that actually did work
             new_sig = _sig(result['common_profile_path'])

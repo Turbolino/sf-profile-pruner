@@ -114,6 +114,33 @@ def field_permissions_editable(path):
     return out
 
 
+def normalize_profile_read_only(path, read_only_fields):
+    """Force ``editable=false`` on the ``fieldPermissions`` entries of `path`
+    whose field is in ``read_only_fields``, in place. Returns the number of
+    entries normalized (0 when nothing changed).
+
+    Used by the plain prune (no merge) so the deliverable profile reflects the
+    effective permission instead of a dead ``editable=true`` on system read-only
+    fields (formula / roll-up summary / auto number / compound address &
+    location / system read-only).
+    """
+    if not read_only_fields:
+        return 0
+    tree = etree.parse(path)
+    root = tree.getroot()
+    count = 0
+    for el in root:
+        if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
+            field = _txt(el, 'field')
+            if field in read_only_fields and _txt(el, 'editable') != 'false':
+                _set_child_text(el, 'editable', 'false')
+                count += 1
+    if count:
+        etree.indent(root, space='    ')
+        tree.write(path, encoding='utf-8', xml_declaration=True)
+    return count
+
+
 def _keys_for(section):
     """Child elements that identify an entry of a non-alignable section."""
     if section == 'layoutAssignments':

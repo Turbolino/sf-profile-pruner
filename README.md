@@ -223,6 +223,16 @@ Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
 ## Behaviour
 
 - **Dry-run by default**: the org is never modified.
+- **Read-only field normalization (default ON)**: system read-only fields
+  (formula, roll-up summary, auto number, compound address/location, and fields
+  the org keeps read-only) get `editable=false` in both the align and the plain
+  prune output, so the deliverable profile reflects the effective permission
+  instead of a dead `true`. Pass `--avoid-normalize-ro` to keep the flags
+  exactly as retrieved.
+- **Non-blocking admin check**: at startup the tool checks the profile of the
+  connecting user in the involved org(s); if it is not "System Administrator" it
+  prints a non-blocking warning (results can depend on the current profile's
+  permissions). It never stops the run.
 - **`--deploy-on-success`**: after the profile is clean, deploy it to the org.
 - **Live progress board**: during pruning, the console shows a live board with
   **two worker cells per line**, each with columns `[Tx] status | tag |
@@ -296,6 +306,7 @@ Options are grouped in the `-h` help. The two input modes are:
 | `--sure` | Skip the Y/N confirmation of `--deploy-on-success` and deploy without asking. No effect without `--deploy-on-success`. |
 | `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Works with via 1 or via 2. Runs automatically (no prompt); the pre-align destination profile is saved in the run folder. |
 | `--diff` | Compare the source profile against the destination profile and write a pure profile-to-profile diff report (`diff/diff-report.txt`). Read-only: no prune, no dry-run, no deploy. Works with via 1 or via 2. |
+| `--avoid-normalize-ro` | Skip the read-only field normalization. By default the tool forces `editable=false` on system read-only fields (formula, roll-up summary, auto number, compound address/location, and fields the org keeps read-only) in both the align and the plain prune output; with this flag the flags are left exactly as retrieved. |
 | `--fresh` | Restart from the original, ignoring any previous state. |
 | `--quiet` | Suppress the progressive stdout output. |
 | `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |

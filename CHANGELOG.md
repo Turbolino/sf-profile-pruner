@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] - 2026-11-18
+
+### Added
+
+- `--avoid-normalize-ro`: read-only field normalization is now ON by default in
+  BOTH the alignment and the plain prune. With the flag, `editable` flags are
+  left exactly as retrieved.
+- Plain prune (no `--align-from-source`) now also normalizes system read-only
+  fields (`editable=false` for formula / roll-up summary / auto number /
+  compound address & location) in the clean profile, matching the alignment.
+- Non-blocking admin check at startup: for every invocation, the tool verifies
+  the connecting user's profile in the involved org(s) and prints a warning when
+  it is not "System Administrator" (results may depend on the current profile's
+  permissions). Never stops the run.
+
 ## [2.15.0] - 2026-11-18
 
 ### Added

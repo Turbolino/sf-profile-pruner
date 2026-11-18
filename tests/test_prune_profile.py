@@ -1584,6 +1584,37 @@ class TestMerge(unittest.TestCase):
         self.assertIn('MANUAL (non-alignable sections): 1', s)
         self.assertIn('A-Layout', s)
 
+    def test_normalize_profile_read_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<fieldPermissions><field>Obj.Formula__c</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Account.BillingAddress</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Case.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            n = pp.normalize_profile_read_only(
+                p, {'Obj.Formula__c', 'Account.BillingAddress'})
+            self.assertEqual(n, 2)
+            root = pp.etree.parse(p).getroot()
+            def editable(field):
+                for el in root:
+                    if el.find('{%s}field' % pp.NS).text == field:
+                        return el.find('{%s}editable' % pp.NS).text
+                return None
+            self.assertEqual(editable('Obj.Formula__c'), 'false')
+            self.assertEqual(editable('Account.BillingAddress'), 'false')
+            # untouched: not in the read-only set
+            self.assertEqual(editable('Case.Status'), 'true')
+            # idempotent: no further change
+            self.assertEqual(pp.normalize_profile_read_only(
+                p, {'Obj.Formula__c', 'Account.BillingAddress'}), 0)
+
+    def test_normalize_profile_read_only_empty_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<fieldPermissions><field>Obj.Formula__c</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            self.assertEqual(pp.normalize_profile_read_only(p, set()), 0)
+
     def test_merged_output_indented_one_entry_per_line(self):
         xml, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
