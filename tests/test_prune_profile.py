@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import prune_profile as pp  # noqa: E402
 from prune_profile.cli import (_check_for_update, _clamp_batch_size,
                               _load_align_state, _repair_mangled_argv,
+                              _reconfigure_output_encoding,
                               _resume_alignment, _validate_profile_dry_run)  # noqa: E402
 from prune_profile.retrieve import profile_json_to_xml  # noqa: E402
 
@@ -1792,6 +1793,35 @@ class TestMerge(unittest.TestCase):
             # flag left exactly as retrieved
             root = pp.etree.parse(p).getroot()
             self.assertEqual(root[0].find('{%s}editable' % pp.NS).text, 'true')
+
+    # --- stdout encoding robustness (legacy Windows code pages) ---
+
+    def test_reconfigure_output_encoding_forces_utf8(self):
+        """cp1252/cp850 consoles must not crash the banner: reconfigure to UTF-8."""
+        import io
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        sys.stderr = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        try:
+            _reconfigure_output_encoding()
+            self.assertEqual(sys.stdout.encoding.lower(), 'utf-8')
+            self.assertEqual(sys.stderr.encoding.lower(), 'utf-8')
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+
+    def test_banner_survives_cp1252_console(self):
+        """Regression: print(BANNER) raised UnicodeEncodeError on cp1252 stdout."""
+        import io
+        from prune_profile.cli import BANNER
+        old_out = sys.stdout
+        buf = io.BytesIO()
+        sys.stdout = io.TextIOWrapper(buf, encoding='cp1252')
+        try:
+            _reconfigure_output_encoding()
+            print(BANNER, flush=True)  # must not raise UnicodeEncodeError
+            sys.stdout.flush()
+        finally:
+            sys.stdout = old_out
 
     def test_read_only_fields_normalized_to_false(self):
         xml, _, changes = self._merge_with_read_only(

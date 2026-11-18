@@ -1409,10 +1409,29 @@ def _main():
     logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, wic_path))
 
 
+def _reconfigure_output_encoding():
+    """Force UTF-8 with a ``replace`` fallback on stdout/stderr.
+
+    On Windows consoles that default to a legacy code page (cp1252/cp850),
+    Python's strict default encoding raises ``UnicodeEncodeError`` the moment
+    the banner prints its box-drawing/arrow glyphs (and the live board would
+    hit the same wall). Reconfiguring to UTF-8 keeps the banner and the board
+    intact on UTF-8 terminals and makes the process crash-proof everywhere
+    else: any glyph the target encoding cannot represent degrades to ``?``
+    instead of aborting the whole run."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError, OSError):
+            # Not a reconfigurable text stream (e.g. piped BytesIO): leave it.
+            pass
+
+
 def main():
     """Entry point. Catches a Ctrl-C raised outside the worker phase (e.g.
     while `sf org display` or a final dry-run is blocked) and exits cleanly
     instead of dumping a traceback."""
+    _reconfigure_output_encoding()
     try:
         _main()
     except KeyboardInterrupt:
