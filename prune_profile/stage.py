@@ -390,10 +390,10 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
         lines.append('  %s : %d' % (t, len(removed_by_type[t])))
     lines.append('')
     lines.append('Output:')
-    lines.append('  COMMON  : %s' % common_dir)
-    lines.append('  MISSING : %s' % missing_dir)
-    lines.append('  toDeploy: %s' % todeploy_pkg)
-    lines.append('  report : %s' % report)
+    lines.append('  COMMON  : %s' % _rel(out_dir, common_dir))
+    lines.append('  MISSING : %s' % _rel(out_dir, missing_dir))
+    lines.append('  toDeploy: %s' % _rel(out_dir, todeploy_pkg))
+    lines.append('  report : %s' % _rel(out_dir, report))
     with open(report, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
 

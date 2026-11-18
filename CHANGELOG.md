@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.4] - 2026-11-18
+
+### Changed
+
+- `report.txt` (written by the prune stage) now lists its output paths
+  (`COMMON`, `MISSING`, `toDeploy`, `report`) relative to the output directory
+  instead of absolute, matching the other user-facing paths.
+
 ## [2.14.3] - 2026-11-18
 
 ### Fixed
