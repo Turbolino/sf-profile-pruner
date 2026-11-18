@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] - 2026-11-18
+
+### Changed
+
+- The manual-operations TABLE is no longer printed to the terminal. Only the
+  count lines (`REDUNDANT (ignorable)`, `NEEDS CHECK`, `OTHER MANUAL
+  OPERATIONS`) are shown; the full table stays in `MANUAL-OPERATIONS.txt`.
+- The align `ALIGNMENT RESULT` `MANUAL OPERATIONS:` line now carries a short
+  breakdown: `N (X ignorable - redundant layout assignment, no action needed /
+  Y need check - manual review required)`.
+
+### Added
+
+- When `--align-from-source` is run with a file source (`-pp`, no source org),
+  a note warns that read-only detection only checks the destination side, so a
+  field editable in the source but read-only-looking in the destination could
+  be misclassified; it suggests `-so/-sp` to verify both sides.
+
 ## [2.13.0] - 2026-11-18
 
 ### Fixed

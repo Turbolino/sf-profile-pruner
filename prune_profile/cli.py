@@ -50,7 +50,7 @@ from .constants import (
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, diff_profiles,
                     field_permissions_editable, field_permissions_names,
-                    format_ops_table, merge_profiles, removed_non_alignable,
+                    merge_profiles, removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
@@ -390,18 +390,13 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
         other = [o for o in manual_ops
                  if (o.get('verdict') or '') not in ('REDUNDANT (ignorable)', 'NEEDS CHECK')]
 
-        def _print_group(title, items):
-            if not items:
-                return
-            print('  ' + title + ' (%d)' % len(items))
-            for line in format_ops_table(items, show_verdict=False).split('\n'):
-                print('  ' + line)
-            print('')
-
-        _print_group('REDUNDANT (ignorable)', redundant)
-        _print_group('NEEDS CHECK', check)
-        _print_group('OTHER MANUAL OPERATIONS', other)
-        print('  Saved to: %s' % path)
+        if redundant:
+            print('  REDUNDANT (ignorable) (%d)' % len(redundant))
+        if check:
+            print('  NEEDS CHECK (%d)' % len(check))
+        if other:
+            print('  OTHER MANUAL OPERATIONS (%d)' % len(other))
+        print('  Full list saved to: %s' % path)
     logger.log('Manual operations file: %s' % path)
     logger.log('========================================================')
     return path
@@ -675,6 +670,11 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('── PHASE 3/4 · MERGE (source authoritative) ───────────')
     logger.log('  purpose: keep every source entry verbatim and turn OFF every destination-only entry')
     logger.log('  ▸ merging source → destination...')
+    if not src_org:
+        logger.log('  ⚠ NOTE (-pp file source): the source has no org to describe, so read-only '
+                   'detection checks only the destination. A field editable in the source but '
+                   'read-only-looking in the destination could be misclassified as read-only; '
+                   'use -so/-sp to verify both sides.')
     read_only_fields = _read_only_field_set(
         sf, src_org, dest_org, src_clean, dst_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
@@ -777,7 +777,12 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('OUTCOME: %s' % outcome)
     logger.log('GRANTED (turned ON): %d' % n_granted)
     logger.log('REVOKED (turned OFF): %d' % n_revoked)
-    logger.log('MANUAL OPERATIONS: %d' % len(manual_ops))
+    redundant_count = sum(1 for o in manual_ops
+                          if (o.get('verdict') or '').startswith('REDUNDANT'))
+    check_count = len(manual_ops) - redundant_count
+    logger.log('MANUAL OPERATIONS: %d (%d ignorable - redundant layout assignment, no '
+               'action needed / %d need check - manual review required)'
+               % (len(manual_ops), redundant_count, check_count))
     logger.log('VALIDATION: %s' % validation)
     logger.log('')
     logger.log('FILES:')
