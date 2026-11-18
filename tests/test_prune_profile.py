@@ -1732,6 +1732,67 @@ class TestMerge(unittest.TestCase):
         # Campaign.Status: object locked -> rejected despite field False.
         self.assertNotIn('Campaign.Status', ro)
 
+    # --- the 4 --avoid-normalize-ro scenarios (align/prune x on/off) ---
+
+    def test_align_default_normalizes_read_only(self):
+        """Scenario 1: --align-from-source WITHOUT the flag -> normalization runs."""
+        from prune_profile import cli as cli
+        args = types.SimpleNamespace(avoid_normalize_ro=False)
+        logger = types.SimpleNamespace(log=lambda *a: None)
+        with mock.patch.object(cli, '_read_only_field_set',
+                               return_value={'Obj.Formula__c'}) as det:
+            ro = cli._align_read_only_fields(
+                args, 'sf', 'src', 'dst', 's.xml', 'd.xml', logger)
+        self.assertEqual(ro, {'Obj.Formula__c'})
+        self.assertEqual(det.call_count, 1)
+
+    def test_align_avoid_normalize_ro_skips(self):
+        """Scenario 2: --align-from-source WITH --avoid-normalize-ro -> empty set."""
+        from prune_profile import cli as cli
+        args = types.SimpleNamespace(avoid_normalize_ro=True)
+        logger = types.SimpleNamespace(log=lambda *a: None)
+        with mock.patch.object(cli, '_read_only_field_set') as det:
+            ro = cli._align_read_only_fields(
+                args, 'sf', 'src', 'dst', 's.xml', 'd.xml', logger)
+        self.assertEqual(ro, set())
+        det.assert_not_called()
+
+    def test_prune_default_normalizes_read_only(self):
+        """Scenario 3: plain prune WITHOUT the flag -> normalize in place."""
+        from prune_profile import cli as cli
+        args = types.SimpleNamespace(avoid_normalize_ro=False)
+        logger = types.SimpleNamespace(log=lambda *a: None)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<fieldPermissions><field>Obj.Formula__c</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            with mock.patch.object(cli, '_read_only_field_set',
+                                   return_value={'Obj.Formula__c'}):
+                n = cli._normalize_prune_read_only(
+                    'sf', args, 'src', 'dst', p, logger)
+            self.assertEqual(n, 1)
+            root = pp.etree.parse(p).getroot()
+            el = root[0]
+            self.assertEqual(el.find('{%s}editable' % pp.NS).text, 'false')
+
+    def test_prune_avoid_normalize_ro_skips(self):
+        """Scenario 4: plain prune WITH --avoid-normalize-ro -> no change, no detect."""
+        from prune_profile import cli as cli
+        args = types.SimpleNamespace(avoid_normalize_ro=True)
+        logger = types.SimpleNamespace(log=lambda *a: None)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<fieldPermissions><field>Obj.Formula__c</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            with mock.patch.object(cli, '_read_only_field_set') as det:
+                n = cli._normalize_prune_read_only(
+                    'sf', args, 'src', 'dst', p, logger)
+            self.assertEqual(n, 0)
+            det.assert_not_called()
+            # flag left exactly as retrieved
+            root = pp.etree.parse(p).getroot()
+            self.assertEqual(root[0].find('{%s}editable' % pp.NS).text, 'true')
+
     def test_read_only_fields_normalized_to_false(self):
         xml, _, changes = self._merge_with_read_only(
             '<fieldPermissions><field>Obj.F__c</field><editable>true</editable><readable>true</readable></fieldPermissions>',

@@ -135,6 +135,17 @@ Examples:
 
   # 10) TUNE the pruning: custom output dir, batch size and threads.
   sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
+
+  # 11) READ-ONLY NORMALIZATION (ON by default): Salesforce ignores the
+  #     editable flag on fields it keeps read-only (formula, roll-up summary,
+  #     auto number, compound Address/Location, system fields like ChatKey or
+  #     AccountId). Both the plain prune and --align-from-source rewrite those
+  #     to editable=false so the profile matches what the org actually enforces.
+  sfpp -so dev -sp "Sales Rep" -do prod -dp "Sales Rep" -od ./out
+
+  # 12) KEEP THE RAW editable FLAGS: pass --avoid-normalize-ro to inspect the
+  #     profile exactly as retrieved, without the read-only rewrite.
+  sfpp -so dev -sp "Sales Rep" -do prod -dp "Sales Rep" --avoid-normalize-ro -od ./out
 '''
 
 
@@ -491,6 +502,16 @@ def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger)
     return n
 
 
+def _align_read_only_fields(args, sf, src_org, dest_org, src_clean, dst_clean, logger):
+    """Return the read-only field set for an alignment merge, honoring
+    ``--avoid-normalize-ro`` (empty set when the flag is present, so the merge
+    leaves every ``editable`` flag exactly as retrieved)."""
+    if args.avoid_normalize_ro:
+        logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
+        return set()
+    return _read_only_field_set(sf, src_org, dest_org, src_clean, dst_clean, logger)
+
+
 def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
                               poll_interval, job_timeout, logger, out_dir):
     """Dry-run a single Profile package. Returns (validation, component_failures)
@@ -764,12 +785,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                    'detection checks only the destination. A field editable in the source but '
                    'read-only-looking in the destination could be misclassified as read-only; '
                    'use -so/-sp to verify both sides.')
-    read_only_fields = set()
-    if args.avoid_normalize_ro:
-        logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
-    else:
-        read_only_fields = _read_only_field_set(
-            sf, src_org, dest_org, src_clean, dst_clean, logger)
+    read_only_fields = _align_read_only_fields(
+        args, sf, src_org, dest_org, src_clean, dst_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
     merge_dir = os.path.join(out_dir, '4-merged')
@@ -999,12 +1016,15 @@ def _main():
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
     g_act.add_argument('--avoid-normalize-ro', action='store_true',
-                       help='skip the read-only field normalization. By default the tool '
-                            'forces editable=false on system read-only fields (formula, '
-                            'roll-up summary, auto number, compound address/location, and '
-                            'fields the org keeps read-only) in BOTH the align and the plain '
-                            'prune output; with this flag those editable flags are left '
-                            'exactly as retrieved.')
+                       help='skip the read-only field normalization. Salesforce IGNORES '
+                            'the editable flag on fields it keeps read-only (formula, '
+                            'roll-up summary, auto number, compound Address/Location, '
+                            'and system read-only fields such as ChatKey or AccountId), '
+                            'so a true value in the file is dead metadata. By default '
+                            'the tool rewrites those to editable=false in BOTH '
+                            '--align-from-source and the plain prune, so the profile '
+                            'matches what the org actually enforces; with this flag the '
+                            'flags are left exactly as retrieved (for raw inspection).')
     g_act.add_argument('--quiet', action='store_true',
                        help='suppress the progressive stdout output')
     g_act.add_argument('--tell-me-a-story', action='store_true',

@@ -223,12 +223,8 @@ Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
 ## Behaviour
 
 - **Dry-run by default**: the org is never modified.
-- **Read-only field normalization (default ON)**: system read-only fields
-  (formula, roll-up summary, auto number, compound address/location, and fields
-  the org keeps read-only) get `editable=false` in both the align and the plain
-  prune output, so the deliverable profile reflects the effective permission
-  instead of a dead `true`. Pass `--avoid-normalize-ro` to keep the flags
-  exactly as retrieved.
+- **Read-only field normalization (default ON)**: see the dedicated
+  [Read-only field normalization](#read-only-field-normalization) section.
 - **Non-blocking admin check**: at startup the tool checks the profile of the
   connecting user in the involved org(s); if it is not "System Administrator" it
   prints a non-blocking warning (results can depend on the current profile's
@@ -277,6 +273,54 @@ Or, without the `sfpp` launcher, replace `sfpp` with `python -m prune_profile`.
   already clean".
 - **`--fresh`**: restart from the original profile, ignoring any previous state.
 
+## Read-only field normalization (`--avoid-normalize-ro`)
+
+Salesforce has two separate layers for a field's editability, combined with a
+logical AND:
+
+1. **The field's nature** — some fields are read-only by the platform itself,
+   no matter what the profile says.
+2. **Field-level security (FLS)** — the `editable`/`readable` flags you set in
+   the profile.
+
+For a field whose *nature* is read-only, the profile flag is **dead metadata**:
+you can write `editable=true`, but the org keeps the field non-editable anyway.
+That `true` then surfaces as a phantom difference in diffs/alignments and never
+converges, because a deploy cannot make the field editable.
+
+### Which fields are affected
+
+- **Formula** (`Formula (Text/Number/…)`)
+- **Roll-Up Summary** and **Auto Number**
+- **Compound Address / Location** — the compound parent (`Account.BillingAddress`,
+  `Contact.MailingAddress`, …) is read-only; its components
+  (`BillingStreet`, `BillingCity`, …) are the real editable fields.
+- **System read-only fields** whose `DataType` looks normal, e.g.
+  `LiveChatTranscript.ChatKey` (`Text(200)`) and `ServiceAppointment.AccountId`
+  (`Lookup(Account)`) — detected by `sobject describe` on both orgs (only during
+  alignment, where both sides are available).
+
+### Default behaviour (normalization ON)
+
+By default the tool rewrites those fields to `editable=false` in **both** modes:
+
+- **Plain prune** (`-so … -do …`): the clean profile is rewritten in place, so
+  the deliverable matches what the org actually enforces.
+- **`--align-from-source`**: normalization is applied during the merge, so no
+  phantom grant/revoke is reported for read-only fields.
+
+### The four scenarios
+
+| Mode | Normalization | Result |
+| --- | --- | --- |
+| `--align-from-source` | ON (default) | read-only `editable` → `false` in the merged profile |
+| `--align-from-source --avoid-normalize-ro` | OFF | `editable` kept exactly as retrieved |
+| plain prune | ON (default) | read-only `editable` → `false` in the clean profile |
+| plain prune `--avoid-normalize-ro` | OFF | `editable` kept exactly as retrieved |
+
+Pass `--avoid-normalize-ro` only when you want to inspect the **raw** profile
+values as they come from the org.
+
 ## Options
 
 Options are grouped in the `-h` help. The two input modes are:
@@ -306,7 +350,7 @@ Options are grouped in the `-h` help. The two input modes are:
 | `--sure` | Skip the Y/N confirmation of `--deploy-on-success` and deploy without asking. No effect without `--deploy-on-success`. |
 | `--align-from-source` | Align the destination profile to the source: turn OFF destination-only permissions. Works with via 1 or via 2. Runs automatically (no prompt); the pre-align destination profile is saved in the run folder. |
 | `--diff` | Compare the source profile against the destination profile and write a pure profile-to-profile diff report (`diff/diff-report.txt`). Read-only: no prune, no dry-run, no deploy. Works with via 1 or via 2. |
-| `--avoid-normalize-ro` | Skip the read-only field normalization. By default the tool forces `editable=false` on system read-only fields (formula, roll-up summary, auto number, compound address/location, and fields the org keeps read-only) in both the align and the plain prune output; with this flag the flags are left exactly as retrieved. |
+| `--avoid-normalize-ro` | Skip the [read-only field normalization](#read-only-field-normalization). By default the tool rewrites `editable=false` on fields the platform keeps read-only (formula, roll-up summary, auto number, compound Address/Location, system read-only like `ChatKey`/`AccountId`) in both the align and the plain prune; with this flag the flags are left exactly as retrieved. |
 | `--fresh` | Restart from the original, ignoring any previous state. |
 | `--quiet` | Suppress the progressive stdout output. |
 | `--tell-me-a-story` | Turbolino will tell you a fascinating story about code, algorithms and copyright. |
