@@ -219,6 +219,20 @@ def list_metadata(sf, org, metadata_type, cwd=None, control=None):
     return names, None
 
 
+def describe_object(sf, org, entity, cwd=None, control=None):
+    """Return the full ``sobject describe`` result dict for `entity`, or
+    ``(None, error)``. The result has object-level flags (``updateable``,
+    ``createable``, …) and a ``fields`` list with per-field ``updateable``."""
+    cmd = [sf, 'sobject', 'describe', '-s', entity, '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'describe %s' % entity, cwd=cwd, control=control)
+    if err:
+        return None, err
+    result = res.get('result')
+    if not isinstance(result, dict):
+        return None, 'unexpected describe result for %s: %s' % (entity, json.dumps(res)[:200])
+    return result, None
+
+
 def tooling_query(sf, org, soql, cwd=None, control=None):
     """Run a Tooling API SOQL query and return its records.
     Returns (list_of_record_dicts_or_None, error).

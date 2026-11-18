@@ -1556,6 +1556,97 @@ class TestMerge(unittest.TestCase):
             self.assertEqual(pp.field_permissions_names(p),
                              ['User.F__c', 'et4ae5__O__c.et4ae5__F__c'])
 
+    def test_field_permissions_editable_extraction(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<fieldPermissions><field>User.F__c</field><editable>true</editable></fieldPermissions>\n'
+                '<fieldPermissions><field>O__c.G__c</field><editable>false</editable></fieldPermissions>\n'
+                '<fieldPermissions><field>O__c.H__c</field></fieldPermissions>'))
+            self.assertEqual(pp.field_permissions_editable(p),
+                             {'User.F__c': 'true', 'O__c.G__c': 'false',
+                              'O__c.H__c': ''})
+
+    def test_read_only_field_set_describe_layer_marks_system_fields(self):
+        from prune_profile import cli as cli
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, self._profile(
+                '<fieldPermissions><field>LiveChatTranscript.ChatKey</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Campaign.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Obj.Formula__c</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            write_text(dst, self._profile(
+                '<fieldPermissions><field>LiveChatTranscript.ChatKey</field><editable>false</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Campaign.Status</field><editable>false</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Obj.Formula__c</field><editable>false</editable><readable>true</readable></fieldPermissions>'))
+            dt_map = {
+                'LiveChatTranscript.ChatKey': 'Text(200)',
+                'Campaign.Status': 'Picklist',
+                'Obj.Formula__c': 'Formula (Text)',
+            }
+
+            def describe(_sf, org, entity):
+                if entity == 'LiveChatTranscript':
+                    return {'updateable': True,
+                            'fields': [{'name': 'ChatKey', 'updateable': False}]}, None
+                if entity == 'Campaign':
+                    # devorg: whole object locked -> Status looks read-only there;
+                    # mysandbox: editable -> must NOT be classified read-only.
+                    if org == 'devorg':
+                        return {'updateable': False,
+                                'fields': [{'name': 'Status', 'updateable': False}]}, None
+                    return {'updateable': True,
+                            'fields': [{'name': 'Status', 'updateable': True}]}, None
+                return {'updateable': True, 'fields': []}, None
+
+            logger = types.SimpleNamespace(log=lambda *a: None)
+            with mock.patch.object(cli, 'field_data_types',
+                                   return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'describe_object', side_effect=describe):
+                ro = cli._read_only_field_set(
+                    'sf', 'mysandbox', 'devorg', src, dst, logger)
+
+        # Formula -> DataType layer; ChatKey -> describe layer (false on both).
+        self.assertIn('Obj.Formula__c', ro)
+        self.assertIn('LiveChatTranscript.ChatKey', ro)
+        # Campaign.Status is editable on mysandbox -> NOT read-only.
+        self.assertNotIn('Campaign.Status', ro)
+
+    def test_read_only_field_set_file_source_uses_object_guard(self):
+        from prune_profile import cli as cli
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, self._profile(
+                '<fieldPermissions><field>LiveChatTranscript.ChatKey</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Campaign.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            write_text(dst, self._profile(
+                '<fieldPermissions><field>LiveChatTranscript.ChatKey</field><editable>false</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Campaign.Status</field><editable>false</editable><readable>true</readable></fieldPermissions>'))
+            dt_map = {'LiveChatTranscript.ChatKey': 'Text(200)',
+                      'Campaign.Status': 'Picklist'}
+
+            def describe(_sf, org, entity):
+                if entity == 'LiveChatTranscript':
+                    return {'updateable': True,
+                            'fields': [{'name': 'ChatKey', 'updateable': False}]}, None
+                # Campaign locked at object level on devorg -> guard must reject it.
+                return {'updateable': False,
+                        'fields': [{'name': 'Status', 'updateable': False}]}, None
+
+            logger = types.SimpleNamespace(log=lambda *a: None)
+            with mock.patch.object(cli, 'field_data_types',
+                                   return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'describe_object', side_effect=describe):
+                ro = cli._read_only_field_set(
+                    'sf', None, 'devorg', src, dst, logger)
+
+        # ChatKey: object updateable + field updateable=False -> read-only.
+        self.assertIn('LiveChatTranscript.ChatKey', ro)
+        # Campaign.Status: object locked -> rejected despite field False.
+        self.assertNotIn('Campaign.Status', ro)
+
     def test_read_only_fields_normalized_to_false(self):
         xml, _, changes = self._merge_with_read_only(
             '<fieldPermissions><field>Obj.F__c</field><editable>true</editable><readable>true</readable></fieldPermissions>',

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] - 2026-11-18
+
+### Fixed
+
+- Alignment no longer reports phantom `editable` grants/revokes for system
+  read-only fields whose `DataType` looks normal. `LiveChatTranscript.ChatKey`
+  (`Text(200)`) and `ServiceAppointment.AccountId` (`Lookup(Account)`) were
+  still surfaced as `editable=true → false` grants because the type-based
+  detector could not recognise them.
+
+### Added
+
+- A second read-only detection layer: `--align-from-source` now describes, on
+  BOTH orgs, only the few objects whose fields actually differ on `editable`
+  (and are not already formula/roll-up/auto-number/address). A field is treated
+  as read-only only when it is `updateable=false` on both orgs, so fields that
+  are merely field-level-security-locked on one side (e.g. `Campaign.Status`,
+  which reports `updateable=false` only on the dev org whose Campaign object is
+  locked) are correctly kept as real grants/revokes. With a file source (no
+  source org), the destination-only describe is guarded by the object-level
+  `updateable` flag. Scoped describe keeps the extra cost to a couple of
+  `sobject describe` calls.
+
 ## [2.12.3] - 2026-11-18
 
 ### Changed

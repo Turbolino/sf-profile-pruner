@@ -102,6 +102,18 @@ def field_permissions_names(path):
     return names
 
 
+def field_permissions_editable(path):
+    """Return ``{fieldFullName: editable_text}`` for the ``fieldPermissions``
+    entries in `path` (editable text is ``'true'``/``'false'``, or ``''`` when
+    absent)."""
+    root = etree.parse(path).getroot()
+    out = {}
+    for el in root:
+        if isinstance(el.tag, str) and el.tag.split('}')[-1] == 'fieldPermissions':
+            out[_txt(el, 'field')] = _txt(el, 'editable')
+    return out
+
+
 def _keys_for(section):
     """Child elements that identify an entry of a non-alignable section."""
     if section == 'layoutAssignments':

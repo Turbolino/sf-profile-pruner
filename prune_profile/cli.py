@@ -48,13 +48,15 @@ from .constants import (
     version_ge,
 )
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
-                    classify_layout_ops, diff_profiles, field_permissions_names,
+                    classify_layout_ops, diff_profiles,
+                    field_permissions_editable, field_permissions_names,
                     format_ops_table, merge_profiles, removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops, write_what_is_changed)
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, dry_run, field_data_types, find_sf, list_metadata,
-                    org_api_version, org_username, set_deploy_start_interval)
+from .sfcli import (deploy, describe_object, dry_run, field_data_types,
+                    find_sf, list_metadata, org_api_version, org_username,
+                    set_deploy_start_interval)
 from .stage import prune_stage
 from .xmlio import write_package_xml, write_sfdx_project
 
@@ -127,18 +129,35 @@ def _clamp_batch_size(n):
     return n
 
 
-def _read_only_field_set(sf, org, src_clean_path, logger):
-    """Detect fieldPermissions fields whose type is inherently read-only
-    (formula / roll-up summary / auto number / compound address & location),
-    so the alignment normalizes their `editable` flag to false instead of
-    reporting a fake grant. Uses FieldDefinition.DataType, which is
-    user-independent and reliable."""
+def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
+                         logger):
+    """Detect ``fieldPermissions`` fields whose ``editable`` flag is dead
+    metadata (the org always keeps them read-only), so the alignment normalizes
+    them to ``false`` instead of reporting a fake grant/revoke.
+
+    Two layers:
+
+    1. ``FieldDefinition.DataType`` (user-independent, batched) catches the
+       self-evident read-only types: Formula, Roll-Up Summary, Auto Number,
+       Address, Location.
+    2. ``sobject describe`` on both orgs catches the remaining system read-only
+       fields whose DataType looks normal (e.g. ``LiveChatTranscript.ChatKey``
+       is ``Text(200)`` and ``ServiceAppointment.AccountId`` is
+       ``Lookup(Account)``). A field is read-only only when ``updateable=False``
+       on BOTH orgs: a field that is merely FLS-locked on one org (e.g.
+       ``Campaign.Status`` shows ``updateable=False`` only on the dev org whose
+       Campaign object is locked) reports ``True`` on the other side and is kept
+       as a real grant/revoke. Describe is scoped to the few objects whose
+       fields actually differ on ``editable``, so it stays fast.
+    """
     names = field_permissions_names(src_clean_path)
     entities = []
     for n in names:
         ent = n.split('.', 1)[0]
         if ent and ent not in entities:
             entities.append(ent)
+
+    # --- layer 1: DataType (batched FieldDefinition query) ---
     logger.log('  ▸ fetching field types for %d object(s) to normalize '
                'read-only fields...' % len(entities))
     progress = {'last': -1}
@@ -149,7 +168,7 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
             progress['last'] = pct
             logger.log('  ▸ field types: %d/%d object(s) (%d%%)' % (done, total, pct))
 
-    types, terr = field_data_types(sf, org, entities, on_progress=_on_progress)
+    types, terr = field_data_types(sf, dest_org, entities, on_progress=_on_progress)
     if types is None:
         logger.log('  ⚠ could not fetch field types (%s); editable flags left as-is.' % terr)
         return set()
@@ -159,8 +178,75 @@ def _read_only_field_set(sf, org, src_clean_path, logger):
         if dt.startswith(READ_ONLY_FIELD_TYPE_PREFIXES) or dt in READ_ONLY_FIELD_TYPE_EXACT:
             read_only.add(n)
     if read_only:
-        logger.log('  ✓ %d field(s) are read-only by type (formula/roll-up/auto-number/address); '
-                   'their editable flag is normalized to false.' % len(read_only))
+        logger.log('  ✓ %d field(s) read-only by type (formula/roll-up/auto-number/address); '
+                   'editable normalized to false.' % len(read_only))
+
+    # --- layer 2: describe on both orgs for editable-differing non-formula fields ---
+    src_edit = field_permissions_editable(src_clean_path)
+    dst_edit = field_permissions_editable(dst_clean_path)
+    candidates = [n for n in names
+                  if n not in read_only
+                  and n in dst_edit
+                  and src_edit.get(n, '') != dst_edit.get(n)]
+    if not candidates:
+        return read_only
+    cand_entities = []
+    for n in candidates:
+        ent = n.split('.', 1)[0]
+        if ent and ent not in cand_entities:
+            cand_entities.append(ent)
+    logger.log('  ▸ describing %d object(s) on both orgs to disambiguate %d '
+               'read-only system field(s)...' % (len(cand_entities), len(candidates)))
+
+    def _updatable(org, entity):
+        res, err = describe_object(sf, org, entity)
+        if res is None:
+            logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
+                       % (entity, org, err))
+            return None
+        fields = res.get('fields') or []
+        return {
+            'object_updateable': bool(res.get('updateable')),
+            'fields': {str(f.get('name')): bool(f.get('updateable')) for f in fields
+                       if f.get('name')},
+        }
+
+    src_describe = {}
+    dst_describe = {}
+    for ent in cand_entities:
+        d = _updatable(dest_org, ent)
+        if d is not None:
+            dst_describe[ent] = d
+        if src_org:
+            s = _updatable(src_org, ent)
+            if s is not None:
+                src_describe[ent] = s
+
+    added = []
+    for n in candidates:
+        ent = n.split('.', 1)[0]
+        field = n.split('.', 1)[1]
+        dst = dst_describe.get(ent)
+        if dst is None or field not in dst['fields']:
+            continue
+        if src_org:
+            src = src_describe.get(ent)
+            if src is None or field not in src['fields']:
+                continue
+            read_only_on_both = (src['fields'][field] is False
+                                 and dst['fields'][field] is False)
+        else:
+            # File source: no source org to describe. Trust dest-only read-only
+            # only when the object itself is updateable there (otherwise the
+            # whole object being FLS-locked makes every field look read-only).
+            read_only_on_both = (dst['object_updateable'] is True
+                                 and dst['fields'][field] is False)
+        if read_only_on_both:
+            read_only.add(n)
+            added.append(n)
+    if added:
+        logger.log('  ✓ %d system read-only field(s) (updateable=false on both orgs) '
+                   'normalized: %s' % (len(added), ', '.join(sorted(added))))
     return read_only
 
 
@@ -520,7 +606,7 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
 
 
 def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
-                   dest_profile_name, dest_org, do_deploy, logger):
+                   dest_profile_name, dest_org, src_org, do_deploy, logger):
     """Run --align-from-source: prune the source against the destination,
     retrieve + prune the destination, merge (source authoritative, destination-
     only entries turned off), and optionally deploy. Exits with the result code."""
@@ -589,7 +675,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('── PHASE 3/4 · MERGE (source authoritative) ───────────')
     logger.log('  purpose: keep every source entry verbatim and turn OFF every destination-only entry')
     logger.log('  ▸ merging source → destination...')
-    read_only_fields = _read_only_field_set(sf, dest_org, src_clean, logger)
+    read_only_fields = _read_only_field_set(
+        sf, src_org, dest_org, src_clean, dst_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
     merge_dir = os.path.join(out_dir, '4-merged')
@@ -1051,7 +1138,7 @@ def _main():
     # ---------- alignment (--align-from-source): separate flow ----------
     if do_align:
         _run_alignment(sf, args, out_dir, profile_path, src_profile_name,
-                       dest_profile_name, dest_org, do_deploy, logger)
+                       dest_profile_name, dest_org, src_org, do_deploy, logger)
         sys.exit(1)  # _run_alignment exits; safety net only
 
     # ---------- run the prune stage ----------
