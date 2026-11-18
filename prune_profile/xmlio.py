@@ -15,7 +15,7 @@ from copy import deepcopy
 
 from lxml import etree
 
-from .constants import BLOCK_MAP, M, NS
+from .constants import BLOCK_MAP, M, NS, decode_bytes
 
 
 def resolve_error(problem):
@@ -112,8 +112,8 @@ def write_package_xml(path, entries, api_version):
 
 def strip_blank_lines(path):
     """Removes blank lines (left behind by the XML removals)."""
-    with open(path, encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
+    with open(path, 'rb') as f:
+        lines = decode_bytes(f.read()).splitlines(keepends=True)
     kept = [l for l in lines if l.strip()]
     with open(path, 'w', encoding='utf-8', newline='') as f:
         f.writelines(kept)
@@ -135,11 +135,12 @@ def write_sfdx_project(project_dir, api_version):
 def read_outcome(report):
     """Reads the OUTCOME: line from a previous report, or None."""
     try:
-        with open(report, encoding='utf-8', errors='replace') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('OUTCOME:'):
-                    return line.split(':', 1)[1].strip()
+        with open(report, 'rb') as f:
+            text = decode_bytes(f.read())
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('OUTCOME:'):
+                return line.split(':', 1)[1].strip()
     except OSError:
         pass
     return None
@@ -150,17 +151,18 @@ def load_log_entries(missing_log):
     entries = []
     seen = set()
     try:
-        with open(missing_log, encoding='utf-8', errors='replace') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    key = (parts[1], parts[2])
-                    if key not in seen:
-                        seen.add(key)
-                        entries.append(key)
+        with open(missing_log, 'rb') as f:
+            text = decode_bytes(f.read())
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split('|')
+            if len(parts) >= 3:
+                key = (parts[1], parts[2])
+                if key not in seen:
+                    seen.add(key)
+                    entries.append(key)
     except OSError:
         pass
     return entries

@@ -36,6 +36,7 @@ from .constants import (
     __author__,
     __email__,
     __version__,
+    decode_bytes,
     is_standard_api_name,
     version_ge,
 )
@@ -108,7 +109,7 @@ __all__ = [
     'DISCLAIMER', 'LISTABLE', 'LIST_METADATA_NAME', 'M',
     'MAX_CHUNK_SIZE', 'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
     'TERMINAL_STATUSES', '__version__', '__author__',
-    '__email__', 'is_standard_api_name', 'version_ge',
+    '__email__', 'is_standard_api_name', 'version_ge', 'decode_bytes',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',
     'MERGE_TABLE', 'NON_ALIGNABLE', 'READ_ONLY_FIELD_TYPE_EXACT',

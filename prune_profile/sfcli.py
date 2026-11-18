@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 
-from .constants import TERMINAL_STATUSES
+from .constants import TERMINAL_STATUSES, decode_bytes
 from .xmlio import humanize_status
 
 
@@ -149,8 +149,7 @@ def _run_sf_once(run_cmd, sf, what, env, cwd, control):
     """Single sf invocation: spawn, wait (interruptibly), parse JSON."""
     try:
         proc = subprocess.Popen(run_cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True,
-                                encoding='utf-8', errors='replace', env=env, cwd=cwd)
+                                stderr=subprocess.PIPE, env=env, cwd=cwd)
     except FileNotFoundError:
         return None, ('sf executable not found: %s. Install the Salesforce CLI '
                       '(run `sf plugins install` / `python first_config.py`), or pass --sf <path>.' % sf)
@@ -190,14 +189,15 @@ def _run_sf_once(run_cmd, sf, what, env, cwd, control):
                 raise
             except OSError:
                 break
-    out = (out or '').strip()
+    out = decode_bytes(out or b'').strip()
+    err = decode_bytes(err or b'').strip()
     if not out:
-        return None, '%s returned no output (stderr: %s)' % (what, (err or '').strip()[:400])
+        return None, '%s returned no output (stderr: %s)' % (what, err[:400])
     try:
         return json.loads(out), None
     except Exception as e:
         return None, 'unparseable JSON from %s (%s). stderr: %s | stdout head: %s' % (
-            what, e, (err or '').strip()[:300], out[:300])
+            what, e, err[:300], out[:300])
 
 
 def list_metadata(sf, org, metadata_type, cwd=None, control=None):
@@ -442,10 +442,10 @@ def _node_version(node_path):
     """Return (major, minor) of a Node.js executable, or None."""
     try:
         proc = subprocess.run([node_path, '--version'], capture_output=True,
-                              text=True, encoding='utf-8', errors='replace', timeout=15)
+                              timeout=15)
     except Exception:
         return None
-    raw = (proc.stdout or '').strip().lstrip('v')
+    raw = decode_bytes(proc.stdout or b'').strip().lstrip('v')
     nums = []
     for part in raw.split('.')[:2]:
         digit = part.split('-')[0]

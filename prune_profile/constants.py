@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '2.14.2'
+__version__ = '2.14.3'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -208,4 +208,24 @@ def is_standard_api_name(name):
     objects, knowledge articles, etc.
     """
     return '__' not in name
+
+
+def decode_bytes(data):
+    """Decode bytes as UTF-8, falling back to Windows-1252 (ANSI) when the
+    bytes are not valid UTF-8.
+
+    The Salesforce CLI (Node.js) writes UTF-8 to its stdout, but on some
+    Windows setups a subprocess can emit in the console's ANSI code page
+    instead. A lone ``0xE0`` (the byte for ``à`` in cp1252) decoded as UTF-8
+    with ``errors='replace'`` becomes the Unicode REPLACEMENT CHARACTER ``�``
+    (U+FFFD), silently corrupting accented metadata names (e.g. layout names
+    such as "specialità" / "attività"). Strict UTF-8 first, then ANSI fallback,
+    keeps ``à`` intact in both cases. Pure function, no I/O.
+    """
+    if isinstance(data, str):
+        return data
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return data.decode('cp1252', 'replace')
 

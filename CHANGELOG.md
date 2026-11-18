@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.3] - 2026-11-18
+
+### Fixed
+
+- Character encoding robustness: every place that decoded subprocess output
+  (`sf` CLI and the Node readMetadata helper) or read text files used
+  `errors='replace'`, which silently turns a non-UTF-8 byte into the Unicode
+  replacement character ``�`` (U+FFFD). On Windows, if a subprocess emits the
+  console ANSI code page instead of UTF-8, an accented ``à`` (lone ``0xE0``
+  byte) would be permanently written as ``�`` into profile XML / package.xml /
+  reports (e.g. layout names such as "specialità" or "attività"). Added
+  `decode_bytes()` (strict UTF-8 first, Windows-1252 fallback) and applied it
+  to the CLI output, the retrieve helper and the report/log readers.
+
 ## [2.14.2] - 2026-11-18
 
 ### Changed

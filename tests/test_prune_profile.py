@@ -850,6 +850,21 @@ class TestPrefetch(unittest.TestCase):
         self.assertFalse(pp.is_standard_api_name('Knowledge__kav'))
         self.assertFalse(pp.is_standard_api_name('BigObj__b'))
 
+    def test_decode_bytes_utf8_first(self):
+        # Valid UTF-8 'à' (U+00E0 = C3 A0) stays 'à'.
+        self.assertEqual(pp.decode_bytes('specialità'.encode('utf-8')),
+                         'specialità')
+        # A str passes through unchanged.
+        self.assertEqual(pp.decode_bytes('x'), 'x')
+
+    def test_decode_bytes_ansi_fallback(self):
+        # Windows-1252 'à' is a lone 0xE0 byte; strict UTF-8 would fail and
+        # errors='replace' would turn it into U+FFFD. The fallback keeps 'à'.
+        self.assertEqual(pp.decode_bytes(b'specialit\xe0'), 'specialit\xe0'.encode('cp1252').decode('cp1252'))
+        self.assertEqual(pp.decode_bytes(b'specialit\xe0'), 'specialità')
+        # 'attività' in cp1252
+        self.assertEqual(pp.decode_bytes('attivit\xe0'.encode('cp1252')), 'attività')
+
     def test_prefetch_preserves_standard_tabs(self):
         # `standard-*` are standard tabs; listMetadata CustomTab cannot see them,
         # so the pre-fetch must never report them as dangling.

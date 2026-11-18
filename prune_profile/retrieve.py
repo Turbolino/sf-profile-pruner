@@ -19,6 +19,7 @@ import subprocess
 
 from lxml import etree
 
+from .constants import decode_bytes
 from .sfcli import find_node, find_sf_node_modules
 
 METADATA_NS = 'http://soap.sforce.com/2006/04/metadata'
@@ -127,18 +128,16 @@ def retrieve_profiles(username, profile_names, clean=True,
         cmd += ['--profile', name]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace',
-                              env=env, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, env=env, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, 'retrieve timed out after %ds' % timeout
     except OSError as e:
         return None, 'failed to run the retrieve helper: %s' % e
 
     if proc.returncode != 0:
-        return None, 'retrieve helper failed: %s' % (proc.stderr or '').strip()[:400]
+        return None, 'retrieve helper failed: %s' % decode_bytes(proc.stderr or b'').strip()[:400]
 
-    out = (proc.stdout or '').strip()
+    out = decode_bytes(proc.stdout or b'').strip()
     if not out:
         return None, 'retrieve helper returned no output'
 
