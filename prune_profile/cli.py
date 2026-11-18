@@ -60,6 +60,19 @@ from .sfcli import (deploy, describe_object, dry_run, field_data_types,
 from .stage import prune_stage
 from .xmlio import write_package_xml, write_sfdx_project
 
+
+def _rel(base, path):
+    """Render `path` relative to `base` for the user-facing console output.
+
+    The output directory itself is always shown absolute; every other path
+    (profile, project, report, …) is shown relative to it so the console stays
+    short and readable."""
+    try:
+        return os.path.relpath(path, base)
+    except ValueError:
+        return path
+
+
 # Options that consume exactly one value. Used to reconstruct an argv that
 # Windows/PowerShell mangled (see _repair_mangled_argv).
 _VALUE_FLAGS = {
@@ -396,8 +409,8 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
             print('  NEEDS CHECK (%d)' % len(check))
         if other:
             print('  OTHER MANUAL OPERATIONS (%d)' % len(other))
-        print('  Full list saved to: %s' % path)
-    logger.log('Manual operations file: %s' % path)
+        print('  Full list saved to: %s' % _rel(out_dir, path))
+    logger.log('Manual operations file: %s' % _rel(out_dir, path))
     logger.log('========================================================')
     return path
 
@@ -519,11 +532,11 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
     logger.log('  dest_org     : %s' % dest_org)
     logger.log('  src_profile  : %s' % src_profile_name)
     logger.log('  dest_profile : %s' % dest_profile_name)
-    logger.log('  merged       : %s' % merged_path)
+    logger.log('  merged       : %s' % _rel(out_dir, merged_path))
 
     if not do_deploy:
         print('This folder already contains a completed, validated alignment.')
-        print('Merged profile: %s' % merged_path)
+        print('Merged profile: %s' % _rel(out_dir, merged_path))
         print('Re-run with --deploy-on-success [--sure] to deploy it (asks Y/N '
               'unless --sure).')
         return 0
@@ -581,9 +594,9 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     json_path = write_diff_json(sections, src_label, dst_label, diff_dir)
     xml_path = write_diff_xml(sections, src_label, dst_label, diff_dir)
     logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
-    logger.log('  ✓ diff report written: %s' % report_path)
-    logger.log('  ✓ diff data (JSON):     %s' % json_path)
-    logger.log('  ✓ diff data (XML):      %s' % xml_path)
+    logger.log('  ✓ diff report written: %s' % _rel(out_dir, report_path))
+    logger.log('  ✓ diff data (JSON):     %s' % _rel(out_dir, json_path))
+    logger.log('  ✓ diff data (XML):      %s' % _rel(out_dir, xml_path))
 
     # Screen output: only the summary counts + the paths of the three files.
     # The full per-entry detail lives in the files (diff-report.txt has the
@@ -592,9 +605,9 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     print(render_diff_summary(sections, src_label, dst_label))
     print('')
     print('Files (full detail + machine-readable data):')
-    print('  report : %s' % report_path)
-    print('  JSON   : %s' % json_path)
-    print('  XML    : %s' % xml_path)
+    print('  report : %s' % _rel(out_dir, report_path))
+    print('  JSON   : %s' % _rel(out_dir, json_path))
+    print('  XML    : %s' % _rel(out_dir, xml_path))
     print('')
     logger.log('RESULT:SUCCESS')
     sys.exit(0)
@@ -747,7 +760,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
     change_path = write_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
-    logger.log('  ✓ what-is-changed written: %s' % change_path)
+    logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, change_path))
 
     # 7b. persist the run identity + validated merge, so a later invocation on
     #     this folder can deploy the cache instead of redoing the pipeline.
@@ -756,7 +769,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         state_path = _write_align_state(
             out_dir, args, src_profile_name, dest_profile_name, dest_org,
             merged_path, validation, n_granted, n_revoked, len(manual_ops))
-        logger.log('  ✓ run state saved: %s' % state_path)
+        logger.log('  ✓ run state saved: %s' % _rel(out_dir, state_path))
 
     # 8. optional deploy of the merged profile (only after a clean validation).
     deploy_detail = ''
@@ -786,16 +799,16 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('VALIDATION: %s' % validation)
     logger.log('')
     logger.log('FILES:')
-    logger.log('  ORIGINAL SOURCE (retrieved): %s' % source_profile_path)
-    logger.log('  SOURCE PRUNED:               %s' % src_clean)
-    logger.log('  DESTINATION RETRIEVED:       %s' % dest_raw)
-    logger.log('  DESTINATION PRUNED:          %s' % dst_clean)
-    logger.log('  MERGED PROFILE:              %s' % merged_path)
+    logger.log('  ORIGINAL SOURCE (retrieved): %s' % _rel(out_dir, source_profile_path))
+    logger.log('  SOURCE PRUNED:               %s' % _rel(out_dir, src_clean))
+    logger.log('  DESTINATION RETRIEVED:       %s' % _rel(out_dir, dest_raw))
+    logger.log('  DESTINATION PRUNED:          %s' % _rel(out_dir, dst_clean))
+    logger.log('  MERGED PROFILE:              %s' % _rel(out_dir, merged_path))
     if manual_ops_path:
-        logger.log('  MANUAL OPERATIONS:           %s' % manual_ops_path)
-    logger.log('  WHAT-IS-CHANGED:             %s' % change_path)
+        logger.log('  MANUAL OPERATIONS:           %s' % _rel(out_dir, manual_ops_path))
+    logger.log('  WHAT-IS-CHANGED:             %s' % _rel(out_dir, change_path))
     if state_path:
-        logger.log('  RUN STATE:                   %s' % state_path)
+        logger.log('  RUN STATE:                   %s' % _rel(out_dir, state_path))
     if deploy_detail:
         logger.log('DEPLOY: %s' % deploy_detail)
     logger.log('========================================================')

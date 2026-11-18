@@ -38,6 +38,15 @@ from .xmlio import (
 )
 
 
+def _rel(base, path):
+    """Render `path` relative to `base` for user-facing output (the output dir
+    itself stays absolute)."""
+    try:
+        return os.path.relpath(path, base)
+    except ValueError:
+        return path
+
+
 def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
                 api_version, poll_interval, job_timeout, thread_number,
                 batch_size, max_iter, quiet, fresh, logger):
@@ -81,10 +90,10 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     if not os.path.isfile(os.path.join(project_dir, 'sfdx-project.json')):
         write_sfdx_project(project_dir, api_version)
 
-    logger.log('Profile     : %s' % source_profile_path)
+    logger.log('Profile     : %s' % _rel(out_dir, source_profile_path))
     logger.log('Name        : %s' % profile_name)
     logger.log('Org         : %s' % org)
-    logger.log('Project     : %s' % project_dir)
+    logger.log('Project     : %s' % _rel(out_dir, project_dir))
     logger.log('Output      : %s' % out_dir)
     logger.log('API version : %s' % api_version)
 
