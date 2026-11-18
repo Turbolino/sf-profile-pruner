@@ -59,6 +59,7 @@ from .merge import (
     write_diff_report,
     write_diff_xml,
     write_manual_ops,
+    write_prune_what_is_changed,
     write_what_is_changed,
 )
 from .retrieve import profile_json_to_xml, retrieve_profiles
@@ -123,6 +124,7 @@ __all__ = [
     'write_diff_report',
     'write_diff_xml',
     'write_what_is_changed',
+    'write_prune_what_is_changed',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
     'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',

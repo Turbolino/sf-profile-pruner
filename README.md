@@ -303,23 +303,30 @@ Options are grouped in the `-h` help. The two input modes are:
 
 ## Output layout (`--out-dir`)
 
+A plain prune (no `--align-from-source`) now uses the same numbered layout as
+the alignment flow, so the two modes are easy to compare:
+
 ```
 out-dir/
 ├── ORIGINAL_<name>.profile-meta.xml   # untouched copy of the original
-├── COMMON/
-│   ├── <name>.profile-meta.xml          # clean, deployable profile
-│   └── toDeploy.xml                     # manifest of the deployable (COMMON) members
-├── MISSING/
-│   └── package.xml                          # everything removed / missing
-├── missing_log.txt                           # resumable line-by-line log
-├── run.log                                  # progressive log copy
-├── report.txt                               # final summary (OUTCOME: SUCCESS/ABORTED)
-└── .work/                                   # internal temporary working area (removed at the end)
+├── 1-source-pruned/
+│   ├── COMMON/
+│   │   ├── <name>.profile-meta.xml    # clean, deployable profile
+│   │   └── toDeploy.xml               # manifest of the deployable (COMMON) members
+│   ├── MISSING/
+│   │   └── package.xml                # everything removed / missing
+│   ├── missing_log.txt                # resumable line-by-line log
+│   └── report.txt                     # final summary (OUTCOME: SUCCESS/ABORTED)
+├── 4-merged/
+│   ├── <name>.profile-meta.xml        # the clean, deployable profile (copy)
+│   ├── what-is-changed.txt            # removed dangling refs + manual operations
+│   └── MANUAL-OPERATIONS.txt          # sections with no deploy-able "off" value
+└── run.log                            # progressive log copy
 ```
 
 > You don't need your own SFDX project: the tool always creates a minimal one
-> (`sfdx-project.json` only) under `.work/project/`, uses it for the deploy
-> commands, and deletes it when finished.
+> (`sfdx-project.json` only) under `1-source-pruned/.work/project/`, uses it for
+> the deploy commands, and deletes it when finished.
 
 ### Alignment output (`--align-from-source`)
 

@@ -52,13 +52,14 @@ from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     field_permissions_editable, field_permissions_names,
                     merge_profiles, removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
-                    write_diff_xml, write_manual_ops, write_what_is_changed)
+                    write_diff_xml, write_manual_ops,
+                    write_prune_what_is_changed, write_what_is_changed)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
                     set_deploy_start_interval)
 from .stage import prune_stage
-from .xmlio import write_package_xml, write_sfdx_project
+from .xmlio import load_log_entries, write_package_xml, write_sfdx_project
 
 
 def _rel(base, path):
@@ -418,6 +419,28 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
     logger.log('Manual operations file: %s' % _rel(out_dir, path))
     logger.log('========================================================')
     return path
+
+
+def _finalize_prune_output(result, merge_dir, src_out, original_copy,
+                           dest_profile_name, dest_org, logger, quiet):
+    """Assemble the ``4-merged/`` folder for a plain prune run: copy the clean
+    profile, write ``what-is-changed.txt`` (removed dangling references +
+    manual operations) and ``MANUAL-OPERATIONS.txt``. Returns the
+    what-is-changed path."""
+    os.makedirs(merge_dir, exist_ok=True)
+    final_profile = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
+    shutil.copyfile(result['common_profile_path'], final_profile)
+    manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
+    removed_by_type = {}
+    missing_log = os.path.join(src_out, 'missing_log.txt')
+    for typ, member in load_log_entries(missing_log):
+        removed_by_type.setdefault(typ, set()).add(member)
+    wic_path = write_prune_what_is_changed(
+        os.path.join(merge_dir, 'what-is-changed.txt'),
+        removed_by_type, manual_ops, dest_org)
+    _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name,
+                                 logger, quiet)
+    return wic_path
 
 
 def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
@@ -1165,12 +1188,16 @@ def _main():
         sys.exit(1)  # _run_alignment exits; safety net only
 
     # ---------- run the prune stage ----------
+    # Coherent with the alignment flow: the prune output lives in
+    # 1-source-pruned/ and the final deliverable + reports in 4-merged/.
+    src_out = os.path.join(out_dir, '1-source-pruned')
+    merge_dir = os.path.join(out_dir, '4-merged')
     result = prune_stage(
         sf=sf,
         org=dest_org,
         source_profile_path=profile_path,
         profile_name=src_profile_name,
-        out_dir=out_dir,
+        out_dir=src_out,
         api_version=args.api_version,
         poll_interval=args.poll_interval,
         job_timeout=args.job_timeout,
@@ -1182,12 +1209,10 @@ def _main():
         logger=logger,
     )
 
-    # ---------- manual operations (non-alignable sections the prune removed) ----------
-    manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
-
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
-        _write_and_report_manual_ops(manual_ops, out_dir, dest_profile_name, logger, args.quiet)
+        _finalize_prune_output(result, merge_dir, src_out, original_copy,
+                               dest_profile_name, dest_org, logger, args.quiet)
         print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % src_profile_name)
         sys.exit(0)
 
@@ -1235,7 +1260,7 @@ def _main():
                 org=dest_org,
                 source_profile_path=profile_path,
                 profile_name=src_profile_name,
-                out_dir=out_dir,
+                out_dir=src_out,
                 api_version=args.api_version,
                 poll_interval=args.poll_interval,
                 job_timeout=args.job_timeout,
@@ -1281,8 +1306,11 @@ def _main():
     logger.log('========================================================')
     logger.log('RESULT:%s' % result_state)
 
-    # ---------- manual operations (non-alignable sections) ----------
-    _write_and_report_manual_ops(manual_ops, out_dir, dest_profile_name, logger, args.quiet)
+    # ---------- finalize 4-merged/ (clean profile + WIC + manual ops) ----------
+    wic_path = _finalize_prune_output(
+        report_result, merge_dir, src_out, original_copy,
+        dest_profile_name, dest_org, logger, args.quiet)
+    logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, wic_path))
 
 
 def main():

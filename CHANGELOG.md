@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] - 2026-11-18
+
+### Added
+
+- A plain prune (no `--align-from-source`) now also writes a
+  `what-is-changed.txt` report (removed dangling references grouped by metadata
+  type, plus the non-alignable manual operations), so the removals are
+  reviewable without touching the org.
+- The plain-prune output now uses the same numbered folder layout as the
+  alignment flow: the prune output lives in `1-source-pruned/` (COMMON, MISSING,
+  missing_log.txt, report.txt) and the final deliverable + reports in
+  `4-merged/` (the clean profile, `what-is-changed.txt`,
+  `MANUAL-OPERATIONS.txt`).
+
 ## [2.14.4] - 2026-11-18
 
 ### Changed

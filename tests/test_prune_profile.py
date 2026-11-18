@@ -1569,6 +1569,21 @@ class TestMerge(unittest.TestCase):
         self.assertNotIn('only layout', s)
         self.assertNotIn('verify this assignment matches the default and change', s)
 
+    def test_write_prune_what_is_changed(self):
+        removed = {'ApexClass': {'Foo', 'Bar'}, 'CustomTab': {'MyTab__c'}}
+        ops = [{'section': 'layoutAssignments', 'object': 'A',
+                'item': 'A-Layout', 'operation': 'x', 'where': 'Setup > X'}]
+        with tempfile.TemporaryDirectory() as d:
+            p = pp.write_prune_what_is_changed(
+                os.path.join(d, 'wic.txt'), removed, ops, 'devorg')
+            s = read_text(p)
+        self.assertIn('WHAT IS CHANGED - prune (destination: devorg)', s)
+        self.assertIn('REMOVED (dangling references): 3', s)
+        self.assertIn('ApexClass: 2', s)
+        self.assertIn('- Foo', s)
+        self.assertIn('MANUAL (non-alignable sections): 1', s)
+        self.assertIn('A-Layout', s)
+
     def test_merged_output_indented_one_entry_per_line(self):
         xml, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',

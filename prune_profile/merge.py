@@ -1007,3 +1007,45 @@ def write_what_is_changed(path, changes, dest_env):
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines).rstrip() + '\n')
     return path
+
+
+def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env):
+    """Write the what-is-changed report for a plain prune (no merge): the
+    dangling references removed from the profile and the non-alignable manual
+    operations. Returns the path.
+
+    ``removed_by_type`` maps a metadata type name to an iterable of removed
+    member names. The report groups them by type so the removed references are
+    easy to review without touching the org.
+    """
+    total_removed = sum(len(v) for v in removed_by_type.values())
+    lines = [
+        'WHAT IS CHANGED - prune (destination: %s)' % dest_env,
+        '=' * 78,
+        '',
+        'The prune removed %d reference(s) that do not exist in %s.'
+        % (total_removed, dest_env),
+        'The cleaned profile simply omits them. Omitting a reference in a',
+        'Profile deploy is a silent no-op, so the destination org is NOT',
+        'modified by these removals - they are listed here only for review.',
+        '',
+        'REMOVED (dangling references): %d' % total_removed,
+        '',
+    ]
+    for typ in sorted(removed_by_type):
+        members = sorted(removed_by_type[typ])
+        lines.append('  %s: %d' % (typ, len(members)))
+        for m in members:
+            lines.append('    - %s' % m)
+        lines.append('')
+    lines.append('MANUAL (non-alignable sections): %d' % len(manual_ops))
+    if manual_ops:
+        lines.append('')
+        lines.append('  These sections have no deploy-able "off" value; perform the')
+        lines.append('  actions below in the destination org if you need to remove them.')
+        lines.append('')
+        lines.append(format_ops_table(manual_ops))
+    lines.append('')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines).rstrip() + '\n')
+    return path
