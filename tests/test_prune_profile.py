@@ -439,6 +439,39 @@ class TestNetworkRetry(unittest.TestCase):
         self.assertEqual(err, 'No such column on entity')
         self.assertEqual(once.call_count, 1)
 
+    def test_is_lock_error_detection(self):
+        self.assertTrue(pp.sfcli._is_lock_error(
+            {'message': 'Lock file is already being held. This likely means '
+                        'another sf command is in progress.'}, None))
+        self.assertTrue(pp.sfcli._is_lock_error(
+            None, 'Lock file is already being held'))
+        # lock is NOT a network error (and vice versa)
+        self.assertFalse(pp.sfcli._is_lock_error({'message': 'fetch failed'}, None))
+        self.assertFalse(pp.sfcli._is_network_error(
+            {'message': 'Lock file is already being held'}, None))
+
+    def test_lock_retry_recovers(self):
+        with mock.patch.object(pp.sfcli, 'find_node', return_value=r'C:\node.exe'), \
+                mock.patch.object(pp.sfcli.time, 'sleep'), \
+                mock.patch.object(pp.sfcli, '_run_sf_once',
+                                  side_effect=[(None, 'Lock file is already being held'),
+                                               ({'result': {'id': 'j1'}}, None)]) as once:
+            res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
+        self.assertEqual(res, {'result': {'id': 'j1'}})
+        self.assertIsNone(err)
+        self.assertEqual(once.call_count, 2)
+
+    def test_lock_retry_gives_up_with_message(self):
+        with mock.patch.object(pp.sfcli, 'find_node', return_value=r'C:\node.exe'), \
+                mock.patch.object(pp.sfcli.time, 'sleep'), \
+                mock.patch.object(pp.sfcli, '_run_sf_once',
+                                  return_value=(None, 'Lock file is already being held')) as once:
+            res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
+        self.assertIsNone(res)
+        self.assertIn('LOCK ERROR', err)
+        self.assertIn('5 attempts', err)
+        self.assertEqual(once.call_count, pp.sfcli.NETWORK_RETRIES)
+
 
 class TestUpdateCheck(unittest.TestCase):
     def _patch_pypi(self, payload):

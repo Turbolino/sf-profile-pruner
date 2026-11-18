@@ -5,6 +5,7 @@ discover a compatible `sf`/Node installation."""
 import functools
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -102,10 +103,18 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
     while True:
         attempt += 1
         res, err = _run_sf_once(run_cmd, sf, what, env, cwd, control)
-        if not _is_network_error(res, err):
+        net = _is_network_error(res, err)
+        lock = _is_lock_error(res, err)
+        if not net and not lock:
             return res, err
         if attempt >= NETWORK_RETRIES:
-            detail = err or (json.dumps(res)[:300] if res else 'unknown network failure')
+            detail = err or (json.dumps(res)[:300] if res else 'unknown transient failure')
+            if lock:
+                return None, ('LOCK ERROR running %s after %d attempts: %s. '
+                              'Another sf command is holding the per-org deploy '
+                              'lock; the tool retried with backoff but the lock did '
+                              'not clear. Retry the run (or lower -tn / raise -bs).'
+                              % (what, attempt, detail))
             return None, ('NETWORK ERROR running %s after %d attempts: %s. '
                           'This is a connection problem (org/network), not a '
                           'profile or org-content error; check your connection, '
@@ -113,10 +122,13 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
                           % (what, attempt, detail))
         if control is not None and control.stop.is_set():
             return None, 'stopped by user'
-        delay = 2.0 * attempt
+        # Jittered backoff: without jitter, N parallel workers that all hit the
+        # same blip would retry in lockstep and keep hammering the org together.
+        delay = 2.0 * attempt * (0.5 + random.random())
+        kind = 'LOCK' if lock else 'NETWORK'
         hint = err or (json.dumps(res)[:120] if isinstance(res, (dict, list)) else str(res)[:120])
-        print('NETWORK ERROR running %s (attempt %d/%d): %s - retrying in %.0fs...'
-              % (what, attempt, NETWORK_RETRIES, hint, delay),
+        print('%s ERROR running %s (attempt %d/%d): %s - retrying in %.0fs...'
+              % (kind, what, attempt, NETWORK_RETRIES, hint, delay),
               file=sys.stderr, flush=True)
         time.sleep(delay)
 
@@ -128,11 +140,15 @@ _NETWORK_HINTS = (
     'network error', 'network', 'proxy', 'dns', 'unreachable', 'certificate',
     'tls', 'ssl',
 )
+_LOCK_HINTS = (
+    'lock file is already being held',
+    'already being held',
+    'another sf command is in progress',
+)
 
 
-def _is_network_error(res, err):
-    """True when an sf result/error is a transient network failure (as opposed
-    to a real org/metadata error)."""
+def _error_text(res, err):
+    """Flatten an sf result/error pair into one searchable string."""
     text = ''
     if err:
         text += str(err)
@@ -141,8 +157,23 @@ def _is_network_error(res, err):
             v = res.get(key)
             if isinstance(v, str):
                 text += ' ' + v
-    low = text.lower()
+    return text.lower()
+
+
+def _is_network_error(res, err):
+    """True when an sf result/error is a transient network failure (as opposed
+    to a real org/metadata error)."""
+    low = _error_text(res, err)
     return any(h in low for h in _NETWORK_HINTS)
+
+
+def _is_lock_error(res, err):
+    """True when an sf result/error is the Salesforce CLI's per-org deploy lock
+    ("Lock file is already being held"), i.e. another sf deploy command is in
+    progress. This is transient — retry the same command after a short wait —
+    and must not fail the section as if it were a real org error."""
+    low = _error_text(res, err)
+    return any(h in low for h in _LOCK_HINTS)
 
 
 def _run_sf_once(run_cmd, sf, what, env, cwd, control):

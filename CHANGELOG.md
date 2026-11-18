@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.4] - 2026-11-18
+
+### Fixed
+
+- Salesforce CLI per-org deploy lock (`Lock file is already being held`) is now
+  detected and retried with backoff, exactly like transient network errors.
+  Previously it was not recognized, so a parallel `deploy start` tripped the
+  lock and hard-failed the section with `deploy start returned no job id`.
+- Jittered the retry backoff: without jitter, every parallel worker that hit
+  the same network/lock blip retried in lockstep and kept hammering the org
+  together.
+
 ## [2.16.3] - 2026-11-18
 
 ### Changed
