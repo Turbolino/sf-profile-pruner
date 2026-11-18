@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.3] - 2026-11-18
+
+### Changed
+
+- Restructured the README into two parts: a short, plain-language "What it is"
+  (problem, fix, one command, and one-line explanations of `--diff` and
+  `--align-from-source`) followed by the full deep-dive documentation.
+- Fresher project description (README tagline + PyPI `description`):
+  "Ship Salesforce Profiles across orgs — without the deploy failures."
+
 ## [2.16.2] - 2026-11-18
 
 ### Fixed

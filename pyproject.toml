@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sf-profile-pruner"
-version = "2.16.2"
-description = "Salesforce Profile dry-run pruner: removes every reference to metadata that does not exist in the target org, without ever modifying the org unless --deploy-on-success."
+version = "2.16.3"
+description = "Dry-run Salesforce Profile pruner: removes every reference to metadata missing from the target org and ships a clean, deploy-ready Profile. Deploys only when you ask for it."
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
