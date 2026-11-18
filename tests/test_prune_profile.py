@@ -1530,6 +1530,30 @@ class TestMerge(unittest.TestCase):
         self.assertIn('Single-One Layout', s)
         self.assertIn('Multi-Picked Layout', s)
 
+    def test_write_manual_ops_layout_note_not_repeated_per_row(self):
+        ops = [
+            {'section': 'layoutAssignments', 'object': 'Single',
+             'item': 'Single-One Layout',
+             'operation': "Explicit assignment is the object's ONLY layout (= its default); source inherits the same default",
+             'verdict': 'REDUNDANT (ignorable)', 'where': 'a'},
+            {'section': 'layoutAssignments', 'object': 'Multi',
+             'item': 'Multi-Picked Layout',
+             'operation': 'Object has 2 layouts; verify this assignment matches the default and change it if it does not',
+             'verdict': 'NEEDS CHECK', 'where': 'b'},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            p = pp.write_manual_ops(os.path.join(d, 'm.txt'), ops, 'X')
+            s = read_text(p)
+        # The explanation lives once in each section header, not on every row.
+        self.assertIn("Explicit assignment is the object's ONLY layout", s)
+        self.assertIn('Align the page layout assignment with the source', s)
+        # The MANUAL OPERATION table column is dropped (header text keeps
+        # "MANUAL OPERATIONS REQUIRED", so assert on the column separator).
+        self.assertNotIn('MANUAL OPERATION |', s)
+        # Rows no longer carry the repeated operation text.
+        self.assertNotIn('only layout', s)
+        self.assertNotIn('verify this assignment matches the default and change', s)
+
     def test_merged_output_indented_one_entry_per_line(self):
         xml, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',

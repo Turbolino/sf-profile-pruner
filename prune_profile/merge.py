@@ -820,20 +820,26 @@ def classify_layout_ops(manual_ops, changes, layout_count):
     return manual_ops, changes
 
 
-def format_ops_table(ops, show_verdict=None):
+def format_ops_table(ops, show_verdict=None, omit_operation=False):
     """Render manual operations as an aligned plain-text table. When the ops
     carry a ``verdict`` (layoutAssignments redundancy/check classification) an
     extra VERDICT column is added, unless ``show_verdict`` is explicitly False
-    (e.g. when the section header already states the verdict)."""
+    (e.g. when the section header already states the verdict). ``omit_operation``
+    drops the MANUAL OPERATION column (used when the explanation is stated once
+    in the section header instead of being repeated on every row)."""
     if show_verdict is None:
         show_verdict = any('verdict' in o for o in ops)
-    header = ['SECTION', 'ITEM', 'MANUAL OPERATION']
+    header = ['SECTION', 'ITEM']
+    if not omit_operation:
+        header.append('MANUAL OPERATION')
     if show_verdict:
         header.append('VERDICT')
     header.append('WHERE')
 
     def _row(o):
-        r = [o['section'], o['item'], o['operation']]
+        r = [o['section'], o['item']]
+        if not omit_operation:
+            r.append(o['operation'])
         if show_verdict:
             r.append(o.get('verdict', '-'))
         r.append(o['where'])
@@ -874,7 +880,7 @@ def write_manual_ops(path, ops, profile_name):
         other = [o for o in ops if (o.get('verdict') or '') not in
                  ('REDUNDANT (ignorable)', 'NEEDS CHECK')]
 
-        def _section(title, note, items):
+        def _section(title, note, items, omit_operation=False):
             if not items:
                 return
             header.append('=' * 60)
@@ -883,20 +889,24 @@ def write_manual_ops(path, ops, profile_name):
             if note:
                 header.append(note)
                 header.append('')
-            header.append(format_ops_table(items, show_verdict=False))
+            header.append(format_ops_table(items, show_verdict=False,
+                                           omit_operation=omit_operation))
             header.append('')
 
         _section(
             'REDUNDANT (ignorable)',
-            'These explicit assignments point at the object\'s ONLY layout '
-            '(= its default), which the source inherits implicitly. Removing or '
-            'ignoring them changes nothing functional.',
-            redundant)
+            'Explicit assignment is the object\'s ONLY layout (= its default); '
+            'source inherits the same default. Removing or ignoring these '
+            'entries changes nothing functional.',
+            redundant,
+            omit_operation=True)
         _section(
             'NEEDS CHECK',
-            'These need a real decision: verify each assignment against the '
-            'object\'s default layout and change it if it differs.',
-            check)
+            'Align the page layout assignment with the source: the object has '
+            'several layouts in the destination org, so verify each assignment '
+            'matches the default and change it if it does not.',
+            check,
+            omit_operation=True)
         _section(
             'OTHER MANUAL OPERATIONS',
             'Non-alignable sections with no redundancy classification.',

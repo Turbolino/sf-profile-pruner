@@ -116,8 +116,9 @@ Examples:
   sfpp -so devorg -sp "Sales Rep" -od ./profiles
 
   # 7) ALIGN: make the destination profile match the source (turns OFF
-  #    destination-only permissions). Runs automatically, no prompt; the
-  #    pre-align destination profile is always saved in the run folder.
+  #    destination-only permissions). Use ALIGN to make two orgs converge to
+  #    the same profile; use plain prune (1-6) to PROMOTE a profile through
+  #    dev->uat->prod.
   sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --align-from-source
 
   # 8) COMPARE: diff the source profile against the destination profile without
@@ -126,7 +127,11 @@ Examples:
   #    and what differs field-by-field).
   sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --diff -od ./out
 
-  # 9) TUNE the pruning: custom output dir, batch size and threads.
+  # 9) PROMOTE across an environment chain: prune against the SMALLEST org
+  #    (prod) so the profile deploys everywhere (dev/uat are supersets of prod).
+  sfpp -so dev -sp "Sales Rep" -do prod -dp "Sales Rep" -od ./out
+
+  # 10) TUNE the pruning: custom output dir, batch size and threads.
   sfpp -pp "Admin.profile-meta.xml" -do prod -od ./out -bs 300 -tn 32
 '''
 

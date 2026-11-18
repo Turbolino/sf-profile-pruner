@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.2] - 2026-11-18
+
+### Changed
+
+- README gains an extended section on when to use `--align-from-source` vs the
+  plain prune, and how to promote a profile through an environment chain
+  (prune against the smallest org). `-h` examples now carry the same guidance
+  in a short form.
+- `MANUAL-OPERATIONS.txt` no longer repeats the layout-assignment explanation
+  on every row: the "Explicit assignment is the object's ONLY layout …" and
+  "Align the page layout assignment with the source …" texts now appear once in
+  their section headers, and the MANUAL OPERATION column is dropped for those
+  two groups (the full table for OTHER operations keeps its column).
+
 ## [2.14.1] - 2026-11-18
 
 ### Changed

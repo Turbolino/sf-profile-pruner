@@ -55,6 +55,57 @@ any deploy — the deploy is attempted only when that dry-run is clean.
 > node_modules** (`@salesforce/core` + `@jsforce/jsforce-node`), which any recent
 > `sf` installation already ships.
 
+## When to align vs prune (environment chains)
+
+`--align-from-source` and the plain prune solve two **different** problems. Pick
+the one that matches your goal, not the one that happens to look similar.
+
+### Plain prune — "make this profile deployable in the target org"
+
+Without `--align-from-source`, the tool only removes references to metadata
+that **does not exist** in the destination org and keeps every surviving entry
+with the **source's values**. It never downloads the destination profile and
+never turns anything off. It answers one question: *will this profile deploy
+in that org, and what must I drop for it to deploy?*
+
+### `--align-from-source` — "make org B match org A"
+
+With alignment, the tool also retrieves the destination profile and turns
+**OFF** every permission that exists only in the destination, so the
+destination becomes a copy of the source (source-authoritative). Use it when
+the goal is to make two orgs **converge to the same profile**, not just to make
+one file deployable. Typical case: force UAT to mirror the test org.
+
+### Environment chains (dev → uat → prod)
+
+In a promotion chain you almost always want the **plain prune** — not
+alignment — and you prune against the **smallest environment** (typically
+prod):
+
+```bash
+sfpp -so dev -sp "My Profile" -do prod -dp "My Profile" -od ./out
+```
+
+Why prod and not uat? The pruned result still references every component the
+target org has, and it only deploys into a *next* environment when that
+environment contains at least as much metadata as the target you pruned
+against. Pruning against the smallest org (prod) therefore yields a profile
+that deploys everywhere along the chain: dev and uat are **supersets** of prod,
+so anything prod has, they have too.
+
+If you prune against uat instead, you keep everything uat has — including
+components that have not yet reached prod — so the result is **not** guaranteed
+to deploy into prod. Metadata in a chain flows in one direction (dev is the
+biggest, prod the smallest); prune against the one that is contained in all the
+others.
+
+The trade-off: permissions on dev-only components that do not exist in prod are
+dropped from the profile. That is exactly what "deployable everywhere" costs.
+
+Use `--align-from-source` in the same chain only when you actually want to
+*rewrite* one environment's profile to equal another's, not to promote a
+profile through the chain.
+
 The retrieved (or provided) profile may still reference metadata that does not
 exist in the destination org (for example `tabVisibilities` for tabs that are
 not available), which causes deploy errors. Profile Pruner cleans exactly those
