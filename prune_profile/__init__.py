@@ -22,11 +22,13 @@ from .constants import (
     BLOCK_MAP,
     COPYLEFT,
     DEFAULT_BATCH_SIZE,
+    DEFAULT_IO_THREADS,
     DISCLAIMER,
     LISTABLE,
     LIST_METADATA_NAME,
     M,
     MAX_CHUNK_SIZE,
+    MAX_IO_THREADS,
     MIN_API,
     MIN_CHUNK_SIZE,
     NS,
@@ -64,6 +66,7 @@ from .merge import (
     write_what_is_changed,
 )
 from .retrieve import profile_json_to_xml, retrieve_profiles
+from .parallel import run_parallel
 from .sfcli import (
     _candidate_dirs,
     _node_version,
@@ -108,11 +111,12 @@ from .xmlio import (
 )
 
 __all__ = [
-    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'COPYLEFT', 'DEFAULT_BATCH_SIZE',
+    'APP_NAME', 'AUTHOR_NOTE', 'BANNER', 'BLOCK_MAP', 'COPYLEFT',
     'DISCLAIMER', 'LISTABLE', 'LIST_METADATA_NAME', 'M',
-    'MAX_CHUNK_SIZE', 'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
+    'MAX_CHUNK_SIZE', 'MAX_IO_THREADS', 'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
     'TERMINAL_STATUSES', '__version__', '__author__',
     '__email__', 'is_standard_api_name', 'version_ge', 'decode_bytes',
+    'DEFAULT_BATCH_SIZE', 'DEFAULT_IO_THREADS', 'run_parallel',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',
     'MERGE_TABLE', 'NON_ALIGNABLE', 'READ_ONLY_FIELD_TYPE_EXACT',

@@ -5,6 +5,7 @@ import json
 import os
 
 from .constants import LISTABLE, LIST_METADATA_NAME, M, MIN_API, is_standard_api_name, version_ge
+from .parallel import run_parallel
 from .sfcli import dry_run, list_metadata, tooling_query
 from .xmlio import (
     build_subprofile,
@@ -15,7 +16,8 @@ from .xmlio import (
 )
 
 
-def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
+def prefetch_dangling(sf, org, groups, api_version, logger, status=None,
+                      io_threads=8):
     """Detect dangling references by listing existing org metadata per type.
 
     Returns a deduplicated list of (type, member) pairs to remove. Each `type`
@@ -24,7 +26,9 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
 
     `status` is an optional callable(message) used to show live progress on the
     console (the pre-fetch phase owns the status line while logger.console is
-    off); every message is also written to the run log via `logger`."""
+    off); every message is also written to the run log via `logger`. The per-type
+    `sf org list metadata` calls run in parallel (``io_threads``) and are merged
+    in the original type order for a deterministic result."""
     def _report(msg):
         logger.log('PREFETCH: %s' % msg)
         if status:
@@ -39,24 +43,21 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
         if blocks:
             active.append((mdtype, blocks))
 
-    removals = []
-    seen = set()
     n_types = len(active)
     _report('%d metadata type(s) to check' % n_types)
-    for i, (mdtype, blocks) in enumerate(active, 1):
+
+    def _one(mdtype_blocks):
+        mdtype, blocks = mdtype_blocks
         list_name = LIST_METADATA_NAME.get(mdtype, mdtype)
-        _report('[%d/%d] listing %s...' % (i, n_types, list_name))
         names, err = list_metadata(sf, org, list_name)
         if names is None:
-            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, list_name, err))
-            continue
+            return {'err': err}
         if not names:
             # An empty list is almost always a permissions/feature problem, not
             # a genuinely empty org; removing everything would be destructive.
-            _report('[%d/%d] %s: zero members, skipping' % (i, n_types, mdtype))
-            continue
+            return {'empty': True}
         existing = set(names)
-        before = len(removals)
+        removals = []
         for block, child in blocks:
             for member in dangling_members(groups[block], child, existing):
                 if mdtype == 'CustomTab' and member.lower().startswith('standard-'):
@@ -64,24 +65,38 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None):
                     # listMetadata --metadata-type CustomTab cannot see them, so
                     # they must never be treated as dangling.
                     continue
-                key = (mdtype, member)
-                if key not in seen:
-                    seen.add(key)
-                    removals.append(key)
+                removals.append((mdtype, member))
+        return {'existing': len(existing), 'removals': removals}
+
+    results, errors = run_parallel(active, _one, max_workers=io_threads)
+
+    removals = []
+    seen = set()
+    for i, ((mdtype, _blocks), err) in enumerate(zip(active, errors), 1):
+        list_name = LIST_METADATA_NAME.get(mdtype, mdtype)
+        if err:
+            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, list_name, err))
+            continue
+        r = results[i - 1]
+        if r.get('err'):
+            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, list_name, r['err']))
+            continue
+        if r.get('empty'):
+            _report('[%d/%d] %s: zero members, skipping' % (i, n_types, mdtype))
+            continue
+        before = len(removals)
+        for key in r['removals']:
+            if key not in seen:
+                seen.add(key)
+                removals.append(key)
         dangled = len(removals) - before
         _report('[%d/%d] %s: %d existing, %d dangling' %
-                (i, n_types, mdtype, len(existing), dangled))
+                (i, n_types, list_name, r['existing'], dangled))
     return removals
 
 
-def _chunked(seq, size):
-    """Yield `seq` in slices of at most `size` elements."""
-    seq = list(seq)
-    for i in range(0, len(seq), size):
-        yield seq[i:i + size]
-
-
-def prefetch_standard_dangling(sf, org, groups, logger, status=None):
+def prefetch_standard_dangling(sf, org, groups, logger, status=None,
+                               io_threads=8):
     """Detect standard metadata the target org does not have, via its Tooling
     API, and return (type, member, source) removals.
 
@@ -136,19 +151,34 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None):
             std_objs.add(v)
     if std_objs:
         _report('listing %d standard object(s) via EntityDefinition...' % len(std_objs))
-        existing = set()
-        failed = False
-        for batch in _chunked(sorted(std_objs), 100):
+        objects = sorted(std_objs)
+        batches = [objects[i:i + 100] for i in range(0, len(objects), 100)]
+
+        def _one(batch):
             in_clause = ', '.join("'%s'" % o for o in batch)
             recs, err = tooling_query(
                 sf, org,
                 'SELECT QualifiedApiName FROM EntityDefinition '
                 'WHERE QualifiedApiName IN (%s)' % in_clause)
             if recs is None:
+                return err, set()
+            return None, {r.get('QualifiedApiName', '') for r in recs
+                          if r.get('QualifiedApiName')}
+
+        results, errors = run_parallel(batches, _one, max_workers=io_threads)
+        existing = set()
+        failed = False
+        for i in range(len(batches)):
+            if errors[i]:
+                _report('EntityDefinition skipped: %s' % errors[i])
+                failed = True
+                break
+            err, batch_existing = results[i]
+            if err:
                 _report('EntityDefinition skipped: %s' % err)
                 failed = True
                 break
-            existing.update(r.get('QualifiedApiName', '') for r in recs)
+            existing |= batch_existing
         if not failed:
             dangling = sorted(std_objs - existing)
             for o in dangling:
@@ -175,10 +205,11 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None):
                 fields_by_obj.setdefault(obj, set()).add(fname)
 
     def _collect(batch):
-        """Collect fields for a list of objects. Returns True on success,
-        False if a batch cannot be enumerated (kept for caller diagnostics)."""
+        """Collect fields for a list of objects. Returns ``(ok, existing_set,
+        err)``; on EXCEEDED_ID_LIMIT the batch is split in half and retried
+        (recursively) within the same task."""
         if not batch:
-            return True
+            return True, set(), None
         in_clause = ', '.join("'%s'" % o for o in batch)
         recs, err = tooling_query(
             sf, org,
@@ -186,16 +217,18 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None):
             'FROM FieldDefinition '
             'WHERE EntityDefinition.QualifiedApiName IN (%s)' % in_clause)
         if recs is not None:
+            out = set()
             for r in recs:
                 ed = r.get('EntityDefinition') or {}
                 o = ed.get('QualifiedApiName') if isinstance(ed, dict) else ''
-                existing.add('%s.%s' % (o, r.get('QualifiedApiName')))
-            return True
+                out.add('%s.%s' % (o, r.get('QualifiedApiName')))
+            return True, out, None
         if err and 'EXCEEDED_ID_LIMIT' in err and len(batch) > 1:
             mid = len(batch) // 2
-            return _collect(batch[:mid]) and _collect(batch[mid:])
-        _report('FieldDefinition batch skipped: %s' % err)
-        return False
+            ok_a, out_a, err_a = _collect(batch[:mid])
+            ok_b, out_b, err_b = _collect(batch[mid:])
+            return (ok_a and ok_b), (out_a | out_b), (err_a or err_b)
+        return False, set(), err
 
     if fields_by_obj:
         total = sum(len(s) for s in fields_by_obj.values())
@@ -203,12 +236,20 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None):
                 % (total, len(fields_by_obj)))
         existing = set()  # 'Object.Field' values present in the org
         objects = sorted(fields_by_obj)
+        batches = [objects[i:i + 40] for i in range(0, len(objects), 40)]
+        results, errors = run_parallel(batches, _collect, max_workers=io_threads)
         ok = True
-        for i in range(0, len(objects), 40):
-            batch = objects[i:i + 40]
-            if not _collect(batch):
+        for i in range(len(batches)):
+            if errors[i]:
+                _report('FieldDefinition batch skipped: %s' % errors[i])
                 ok = False
                 break
+            ok_b, out_b, err_b = results[i]
+            if not ok_b:
+                _report('FieldDefinition batch skipped: %s' % (err_b or 'unknown error'))
+                ok = False
+                break
+            existing |= out_b
         if ok:
             dangling = []
             for obj in objects:

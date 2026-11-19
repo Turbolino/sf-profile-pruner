@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '2.17.0'
+__version__ = '2.18.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -179,6 +179,14 @@ STANDARD_TYPES = frozenset({'StandardObject', 'StandardField', 'StandardTab'})
 MIN_CHUNK_SIZE = 100
 MAX_CHUNK_SIZE = 10000
 DEFAULT_BATCH_SIZE = 200
+
+# Concurrency ceiling for the independent, read-only ``sf`` calls that feed the
+# run (list metadata, Tooling queries, sobject describe). Kept deliberately low:
+# the org rate limit and the per-call ``node`` subprocess cost both blow up past
+# a handful of concurrent calls, while the per-org deploy lock is NOT involved
+# here (those calls never touch deploy start). 0 or 1 means sequential.
+DEFAULT_IO_THREADS = 8
+MAX_IO_THREADS = 16
 
 
 def version_ge(a, b):

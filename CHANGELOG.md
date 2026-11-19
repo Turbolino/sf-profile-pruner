@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-11-19
+
+### Added
+
+- `-itn` / `--io-threads-number`: parallel threads for the read-only IO calls
+  (list metadata, Tooling queries, sobject describe). Default `8`, `0`/`1` =
+  sequential, clamped to a ceiling of `16`. The per-type `sf org list metadata`
+  pre-pass, the standard-metadata Tooling batches (EntityDefinition /
+  FieldDefinition), the field DataType batches and the sobject-describe
+  normalization pass now run in parallel and merge their results in input order
+  (deterministic output, no shared mutable state between workers).
+- Rate-limit errors are now retried: `_NETWORK_HINTS` recognises `rate limit`,
+  `ratelimit`, `REQUEST_LIMIT_EXCEEDED`, `TotalRequests limit`, and `too many
+  requests`, without catching the Tooling `EXCEEDED_ID_LIMIT` (still handled by
+  the caller's batch-splitting).
+
 ## [2.17.0] - 2026-11-19
 
 ### Added

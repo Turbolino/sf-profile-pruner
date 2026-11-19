@@ -49,7 +49,7 @@ def _rel(base, path):
 
 def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
                 api_version, poll_interval, job_timeout, thread_number,
-                batch_size, max_iter, quiet, fresh, logger):
+                batch_size, max_iter, quiet, fresh, logger, io_threads=8):
     """Prune `profile_name` (from `source_profile_path`) against `org`.
 
     Writes COMMON/, MISSING/, missing_log.txt, report.txt and run.log under
@@ -187,7 +187,7 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     ps.start()
     try:
         pref = prefetch_dangling(sf, org, state.groups, api_version,
-                                 logger, status=ps.update)
+                                 logger, status=ps.update, io_threads=io_threads)
     finally:
         ps.stop()
         if ps.active:
@@ -210,7 +210,8 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     ps.start()
     try:
         pref = prefetch_standard_dangling(sf, org, state.groups,
-                                          logger, status=ps.update)
+                                          logger, status=ps.update,
+                                          io_threads=io_threads)
     finally:
         ps.stop()
         if ps.active:

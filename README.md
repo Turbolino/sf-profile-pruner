@@ -195,6 +195,8 @@ values as they come from the org.
    `sf org list metadata` (one call per type) and removes every reference that
    has no matching component — login flows, agent access, enhanced summaries,
    flows, layouts, record types, and every other listable type — in one shot.
+   The per-type list calls and the Tooling queries run in parallel
+   (`--io-threads-number`, default 8) with results merged deterministically.
    This is much faster than discovering each missing reference through dry-runs
    and covers the newest Profile sections automatically. The per-section dry-run
    below remains the authoritative fallback.
@@ -264,6 +266,7 @@ Options are grouped in the `-h` help.
 | `-od`, `--out-dir` | Output directory for report/packages/logs. Default: current directory. |
 | `-bs`, `--batch-size` | Split a section into chunks of `N` entries (min 100, max 10000, default 200); `0` disables. |
 | `-tn`, `--thread-number` | Max parallel workers, `1`–`64`. Default `16`. |
+| `-itn`, `--io-threads-number` | Max parallel threads for the read-only IO calls (list metadata, Tooling queries, sobject describe). `1`–`16`, default `8`; `0` or `1` disables parallelism. |
 | `--job-timeout` | Minutes to wait for a deploy job before aborting (`1`–`60`; `0` = no timeout). Default `0`. |
 | `-av`, `--api-version` | Manifest API version. Default: detected from the destination org. |
 | `--deploy-throttle-ms` | Min interval between deploy starts (ms). Default `500`; `0` disables. |

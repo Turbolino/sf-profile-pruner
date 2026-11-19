@@ -155,6 +155,40 @@ class TestAlignResumeSummary(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestRunParallel(unittest.TestCase):
+    def test_preserves_input_order_and_captures_errors(self):
+        from prune_profile.parallel import run_parallel
+
+        def fn(x):
+            if x == 'boom':
+                raise ValueError('bad')
+            return x * 2
+
+        results, errors = run_parallel(['a', 'boom', 'c'], fn, max_workers=4)
+        self.assertEqual(results, ['aa', None, 'cc'])
+        self.assertEqual(errors, [None, 'bad', None])
+
+    def test_sequential_when_one_or_zero_threads(self):
+        from prune_profile.parallel import run_parallel
+        seen = []
+
+        def fn(x):
+            seen.append(x)
+            return x
+
+        # max_workers=1 (and 0) must run strictly in order, no threads.
+        results, errors = run_parallel([3, 1, 2], fn, max_workers=1)
+        self.assertEqual(seen, [3, 1, 2])
+        self.assertEqual(results, [3, 1, 2])
+        self.assertEqual(errors, [None, None, None])
+
+    def test_single_item_runs_inline(self):
+        from prune_profile.parallel import run_parallel
+        results, errors = run_parallel([42], lambda x: x + 1, max_workers=8)
+        self.assertEqual(results, [43])
+        self.assertEqual(errors, [None])
+
+
 class TestResolveError(unittest.TestCase):
     def test_tab_error(self):
         self.assertEqual(pp.resolve_error("You can't edit tab settings for JobProfile, as it's not a valid tab."),
@@ -444,6 +478,14 @@ class TestNetworkRetry(unittest.TestCase):
             {'name': 'TypeError', 'message': 'fetch failed', 'exitCode': 10}, None))
         self.assertTrue(pp.sfcli._is_network_error(None, 'connection reset by peer'))
         self.assertTrue(pp.sfcli._is_network_error(None, 'getaddrinfo ENOTFOUND login.salesforce.com'))
+        # org rate limits are transient and must be retried
+        self.assertTrue(pp.sfcli._is_network_error(
+            {'message': 'REQUEST_LIMIT_EXCEEDED: TotalRequests Limit exceeded'}, None))
+        self.assertTrue(pp.sfcli._is_network_error(None, 'too many requests'))
+        # EXCEEDED_ID_LIMIT (Tooling single-batch ceiling) is NOT a rate limit:
+        # it must not be caught here (the caller splits the batch instead).
+        self.assertFalse(pp.sfcli._is_network_error(
+            {'message': 'EXCEEDED_ID_LIMIT: EntityDefinition does not support queryMore'}, None))
         self.assertFalse(pp.sfcli._is_network_error({'message': 'No such column'}, None))
         self.assertFalse(pp.sfcli._is_network_error(None, 'profile not found'))
 
@@ -1018,7 +1060,7 @@ class TestPrefetch(unittest.TestCase):
             removals = pp.prefetch_dangling('sf', 'org', groups, '68.0',
                                             pp.Logger(True), status=messages.append)
         self.assertEqual(removals, [('Flow', 'MissingFlow')])
-        self.assertTrue(any('listing Flow' in m for m in messages))
+        self.assertTrue(any('Flow: 1 existing, 1 dangling' in m for m in messages))
         self.assertTrue(any('1 existing, 1 dangling' in m for m in messages))
 
     def test_prefetch_skip_reports_status(self):
@@ -2050,7 +2092,7 @@ class TestMerge(unittest.TestCase):
     def test_align_default_normalizes_read_only(self):
         """Scenario 1: --align-from-source WITHOUT the flag -> normalization runs."""
         from prune_profile import cli as cli
-        args = types.SimpleNamespace(avoid_normalize_ro=False)
+        args = types.SimpleNamespace(avoid_normalize_ro=False, io_threads_number=8)
         logger = types.SimpleNamespace(log=lambda *a: None)
         with mock.patch.object(cli, '_read_only_field_set',
                                return_value={'Obj.Formula__c'}) as det:
@@ -2062,7 +2104,7 @@ class TestMerge(unittest.TestCase):
     def test_align_avoid_normalize_ro_skips(self):
         """Scenario 2: --align-from-source WITH --avoid-normalize-ro -> empty set."""
         from prune_profile import cli as cli
-        args = types.SimpleNamespace(avoid_normalize_ro=True)
+        args = types.SimpleNamespace(avoid_normalize_ro=True, io_threads_number=8)
         logger = types.SimpleNamespace(log=lambda *a: None)
         with mock.patch.object(cli, '_read_only_field_set') as det:
             ro = cli._align_read_only_fields(
@@ -2073,7 +2115,7 @@ class TestMerge(unittest.TestCase):
     def test_prune_default_normalizes_read_only(self):
         """Scenario 3: plain prune WITHOUT the flag -> normalize in place."""
         from prune_profile import cli as cli
-        args = types.SimpleNamespace(avoid_normalize_ro=False)
+        args = types.SimpleNamespace(avoid_normalize_ro=False, io_threads_number=8)
         logger = types.SimpleNamespace(log=lambda *a: None)
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, 'p.xml')
@@ -2091,7 +2133,7 @@ class TestMerge(unittest.TestCase):
     def test_prune_avoid_normalize_ro_skips(self):
         """Scenario 4: plain prune WITH --avoid-normalize-ro -> no change, no detect."""
         from prune_profile import cli as cli
-        args = types.SimpleNamespace(avoid_normalize_ro=True)
+        args = types.SimpleNamespace(avoid_normalize_ro=True, io_threads_number=8)
         logger = types.SimpleNamespace(log=lambda *a: None)
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, 'p.xml')

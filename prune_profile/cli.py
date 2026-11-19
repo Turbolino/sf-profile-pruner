@@ -40,8 +40,10 @@ from .constants import (
     BANNER,
     COPYLEFT,
     DEFAULT_BATCH_SIZE,
+    DEFAULT_IO_THREADS,
     DISCLAIMER,
     MAX_CHUNK_SIZE,
+    MAX_IO_THREADS,
     MIN_CHUNK_SIZE,
     STORY,
     __version__,
@@ -56,6 +58,7 @@ from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
+from .parallel import run_parallel
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
@@ -163,7 +166,7 @@ def _clamp_batch_size(n):
 
 
 def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
-                         logger):
+                         logger, io_threads=8):
     """Detect ``fieldPermissions`` fields whose ``editable`` flag is dead
     metadata (the org always keeps them read-only), so the tool normalizes them
     to ``false`` instead of reporting a fake grant/revoke (align) or leaving a
@@ -202,7 +205,8 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             progress['last'] = pct
             logger.log('  ▸ field types: %d/%d object(s) (%d%%)' % (done, total, pct))
 
-    types, terr = field_data_types(sf, dest_org, entities, on_progress=_on_progress)
+    types, terr = field_data_types(sf, dest_org, entities, on_progress=_on_progress,
+                                   io_threads=io_threads)
     if types is None:
         logger.log('  ⚠ could not fetch field types (%s); editable flags left as-is.' % terr)
         return set()
@@ -251,7 +255,8 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     # may not even be describable (NOT_FOUND), so scoping to standard entities
     # removes the noise and the wasted round-trips.
     dest_entities = set(cand_entities)
-    existing, eerr = standard_entities(sf, dest_org, cand_entities)
+    existing, eerr = standard_entities(sf, dest_org, cand_entities,
+                                       io_threads=io_threads)
     if existing is not None:
         dest_entities = {e for e in cand_entities if e in existing}
     elif eerr:
@@ -269,37 +274,49 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     logger.log('  ▸ describing %d object(s) to detect system read-only field(s)...'
                % len(cand_entities))
 
-    _not_found = {'count': 0}
+    def _describe_org(org, entities):
+        """Describe `entities` in `org` in parallel, returning
+        ``(info, not_found_count)``. Logging and counting happen here (caller
+        thread), never in the workers, so the output order is deterministic."""
+        def _one(entity):
+            return describe_object(sf, org, entity)
 
-    def _updatable(org, entity):
-        res, err = describe_object(sf, org, entity)
-        if res is None:
-            # NOT_FOUND on a describe means the object is not describable in this
-            # org (missing / restricted package object). Not an actionable error:
-            # those fields are left as-is, so only count them and stay quiet.
-            if err and ('NOT_FOUND' in str(err) or 'does not exist' in str(err)):
-                _not_found['count'] += 1
-                return None
-            logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
-                       % (entity, org, err))
-            return None
-        fields = res.get('fields') or []
-        return {
-            'object_updateable': bool(res.get('updateable')),
-            'fields': {str(f.get('name')): bool(f.get('updateable')) for f in fields
-                       if f.get('name')},
-        }
+        results, errors = run_parallel(entities, _one, max_workers=io_threads)
+        info = {}
+        not_found = 0
+        for i, entity in enumerate(entities):
+            if errors[i]:
+                logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
+                           % (entity, org, errors[i]))
+                continue
+            res, err = results[i]
+            if res is None:
+                # NOT_FOUND = object not describable in this org (missing /
+                # restricted). Not actionable: leave those fields as-is and just
+                # count it, staying quiet.
+                if err and ('NOT_FOUND' in str(err) or 'does not exist' in str(err)):
+                    not_found += 1
+                else:
+                    logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
+                               % (entity, org, err))
+                continue
+            fields = res.get('fields') or []
+            info[entity] = {
+                'object_updateable': bool(res.get('updateable')),
+                'fields': {str(f.get('name')): bool(f.get('updateable')) for f in fields
+                           if f.get('name')},
+            }
+        return info, not_found
 
     # Source-first: describe the source org, keep only the fields the profile
     # marks editable=true but the source org itself reports read-only. Only
     # those (few) objects need a destination describe to confirm the field is
     # system read-only (false on both) rather than FLS-locked on the source.
+    not_found_total = 0
     src_describe = {}
     if src_org:
-        for ent in cand_entities:
-            s = _updatable(src_org, ent)
-            if s is not None:
-                src_describe[ent] = s
+        src_describe, nf = _describe_org(src_org, cand_entities)
+        not_found_total += nf
 
     suspected = []
     for n in candidates:
@@ -316,6 +333,9 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             # objects.
             suspected.append(n)
     if not suspected:
+        if not_found_total:
+            logger.log('  ▸ %d object(s) not describable in the org(s) — their fields left '
+                       'as-is (not normalized).' % not_found_total)
         return read_only
 
     dst_entities = []
@@ -323,11 +343,8 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         ent = n.split('.', 1)[0]
         if ent and ent not in dst_entities:
             dst_entities.append(ent)
-    dst_describe = {}
-    for ent in dst_entities:
-        d = _updatable(dest_org, ent)
-        if d is not None:
-            dst_describe[ent] = d
+    dst_describe, nf = _describe_org(dest_org, dst_entities)
+    not_found_total += nf
 
     added = []
     for n in suspected:
@@ -353,9 +370,9 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     if added:
         logger.log('  ✓ %d system read-only field(s) (updateable=false on both orgs) '
                    'normalized: %s' % (len(added), ', '.join(sorted(added))))
-    if _not_found['count']:
+    if not_found_total:
         logger.log('  ▸ %d object(s) not describable in the org(s) — their fields left '
-                   'as-is (not normalized).' % _not_found['count'])
+                   'as-is (not normalized).' % not_found_total)
     return read_only
 
 
@@ -567,7 +584,8 @@ def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger)
     if args.avoid_normalize_ro:
         logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
         return 0
-    read_only = _read_only_field_set(sf, src_org, dest_org, common_path, None, logger)
+    read_only = _read_only_field_set(sf, src_org, dest_org, common_path, None, logger,
+                                     io_threads=args.io_threads_number)
     if not read_only:
         return 0
     n = normalize_profile_read_only(common_path, read_only)
@@ -583,7 +601,8 @@ def _align_read_only_fields(args, sf, src_org, dest_org, src_clean, dst_clean, l
     if args.avoid_normalize_ro:
         logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
         return set()
-    return _read_only_field_set(sf, src_org, dest_org, src_clean, dst_clean, logger)
+    return _read_only_field_set(sf, src_org, dest_org, src_clean, dst_clean, logger,
+                                io_threads=args.io_threads_number)
 
 
 def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
@@ -839,7 +858,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         api_version=args.api_version, poll_interval=args.poll_interval,
         job_timeout=args.job_timeout, thread_number=args.thread_number,
         batch_size=args.batch_size, max_iter=args.max_iter,
-        quiet=args.quiet, fresh=args.fresh, logger=logger)
+        quiet=args.quiet, fresh=args.fresh, logger=logger,
+        io_threads=args.io_threads_number)
     if src_res['outcome'] != 'SUCCESS':
         print('ERROR: source prune failed: %s' % (src_res.get('reason') or 'unknown error'))
         sys.exit(2)
@@ -878,7 +898,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         api_version=args.api_version, poll_interval=args.poll_interval,
         job_timeout=args.job_timeout, thread_number=args.thread_number,
         batch_size=args.batch_size, max_iter=args.max_iter,
-        quiet=args.quiet, fresh=args.fresh, logger=logger)
+        quiet=args.quiet, fresh=args.fresh, logger=logger,
+        io_threads=args.io_threads_number)
     if dst_res['outcome'] != 'SUCCESS':
         print('ERROR: destination prune failed: %s' % (dst_res.get('reason') or 'unknown error'))
         sys.exit(2)
@@ -925,7 +946,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
             api_version=args.api_version, poll_interval=args.poll_interval,
             job_timeout=args.job_timeout, thread_number=args.thread_number,
             batch_size=args.batch_size, max_iter=args.max_iter,
-            quiet=args.quiet, fresh=True, logger=logger)
+            quiet=args.quiet, fresh=True, logger=logger,
+            io_threads=args.io_threads_number)
         if heal_res['outcome'] != 'SUCCESS':
             print('ERROR: merged self-heal prune failed: %s'
                   % (heal_res.get('reason') or 'unknown error'))
@@ -1081,6 +1103,12 @@ def _main():
     g_tune.add_argument('-tn', '--thread-number', type=int, default=16, metavar='X',
                         help='max parallel worker threads, 1..64 (default: 16); capped to '
                              'the number of work items (chunks) to prune')
+    g_tune.add_argument('-itn', '--io-threads-number', type=int,
+                        default=DEFAULT_IO_THREADS, metavar='X',
+                        help='max parallel threads for the read-only io calls '
+                             '(list metadata, Tooling queries, sobject describe). '
+                             '1..%d (default: %d); 0 or 1 disables parallelism'
+                             % (MAX_IO_THREADS, DEFAULT_IO_THREADS))
     g_tune.add_argument('--job-timeout', type=int, default=0, metavar='M',
                         help='minutes to wait for a deploy job before aborting '
                              '(1..60; 0 = no timeout, the default)')
@@ -1151,6 +1179,18 @@ def _main():
     if not (1 <= args.thread_number <= 64):
         print('ERROR: --thread-number must be between 1 and 64 (got %d).' % args.thread_number)
         sys.exit(2)
+
+    # --io-threads-number: 0 or 1 = sequential; above the ceiling is clamped.
+    if args.io_threads_number < 0:
+        print('ERROR: --io-threads-number must be >= 0 (got %d).' % args.io_threads_number)
+        sys.exit(2)
+    if args.io_threads_number <= 1:
+        args.io_threads_number = 1
+    elif args.io_threads_number > MAX_IO_THREADS:
+        print('NOTE: --io-threads-number %d is above the maximum of %d; using %d.'
+              % (args.io_threads_number, MAX_IO_THREADS, MAX_IO_THREADS),
+              file=sys.stderr)
+        args.io_threads_number = MAX_IO_THREADS
 
     if args.batch_size < 0:
         print('ERROR: --batch-size must be >= 0 (got %d).' % args.batch_size)
@@ -1414,6 +1454,7 @@ def _main():
         quiet=args.quiet,
         fresh=args.fresh,
         logger=logger,
+        io_threads=args.io_threads_number,
     )
 
     # Normalize system read-only field editable flags (default; --avoid-normalize-ro
@@ -1488,6 +1529,7 @@ def _main():
                 quiet=args.quiet,
                 fresh=False,
                 logger=logger,
+                io_threads=args.io_threads_number,
             )
             result_state = result['outcome']
             if result_state != 'SUCCESS':

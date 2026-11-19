@@ -13,6 +13,7 @@ import threading
 import time
 
 from .constants import TERMINAL_STATUSES, decode_bytes
+from .parallel import run_parallel
 from .xmlio import humanize_status
 
 
@@ -164,6 +165,13 @@ _NETWORK_HINTS = (
     'etimedout', 'timed out', 'enotfound', 'getaddrinfo', 'socket hang up',
     'network error', 'network', 'proxy', 'dns', 'unreachable', 'certificate',
     'tls', 'ssl',
+    # Org API rate limits are transient: retrying after a short backoff is the
+    # right move. These are deliberately SPECIFIC so the Tooling API's
+    # EXCEEDED_ID_LIMIT (a fixed single-batch ceiling, already handled by the
+    # caller's batch-splitting) is NOT caught here — its error code does not
+    # contain any of these substrings.
+    'rate limit', 'ratelimit', 'request_limit_exceeded',
+    'totalrequests limit', 'too many requests',
 )
 _LOCK_HINTS = (
     'lock file is already being held',
@@ -309,7 +317,8 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
-def standard_entities(sf, org, entities, cwd=None, control=None, batch=200):
+def standard_entities(sf, org, entities, cwd=None, control=None, batch=200,
+                      io_threads=8):
     """Return the subset of ``entities`` that are STANDARD objects present in
     ``org`` (``IsCustomizable=false`` in EntityDefinition). Used to scope the
     ``sobject describe`` read-only pass: system read-only fields live on
@@ -317,11 +326,12 @@ def standard_entities(sf, org, entities, cwd=None, control=None, batch=200):
     never describable/interesting for that pass — skipping them removes
     ``NOT_FOUND`` noise and wasted round-trips. Returns ``(set_or_None, error)``;
     a ``None`` result means "assume all standard" so a transient failure degrades
-    to extra describes instead of skipping a real object."""
+    to extra describes instead of skipping a real object. The batches are queried
+    in parallel (``io_threads``) and merged in input order for determinism."""
     entities = [str(e) for e in entities if e]
-    found = set()
-    for i in range(0, len(entities), batch):
-        chunk = entities[i:i + batch]
+    batches = [entities[i:i + batch] for i in range(0, len(entities), batch)]
+
+    def _one(chunk):
         in_list = ', '.join("'%s'" % e.replace("'", "\\'") for e in chunk)
         records, err = tooling_query(
             sf, org,
@@ -329,16 +339,25 @@ def standard_entities(sf, org, entities, cwd=None, control=None, batch=200):
             "WHERE IsCustomizable = false AND QualifiedApiName IN (%s)" % in_list,
             cwd=cwd, control=control)
         if err:
+            return err, set()
+        return None, {str(r.get('QualifiedApiName')) for r in records
+                      if r.get('QualifiedApiName')}
+
+    results, errors = run_parallel(batches, _one, max_workers=io_threads,
+                                   control=control)
+    found = set()
+    for i in range(len(batches)):
+        if errors[i]:
+            return None, errors[i]
+        err, batch_found = results[i]
+        if err:
             return None, err
-        for r in records:
-            qn = r.get('QualifiedApiName')
-            if qn:
-                found.add(str(qn))
+        found |= batch_found
     return found, None
 
 
 def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
-                     on_progress=None):
+                     on_progress=None, io_threads=8):
     """Return ``{fieldFullName: DataType}`` for every field of ``entities`` via
     FieldDefinition (Tooling API). Returns (dict_or_None, error).
 
@@ -347,16 +366,17 @@ def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
     keeps the number of `sf` round-trips to ``ceil(len(entities)/batch)``
     instead of one per entity (which stalls for hundreds of objects). Field full
     names are reconstructed as ``<EntityDefinitionId>.<QualifiedApiName>`` so
-    they match the Profile XML.
+    they match the Profile XML. Batches are queried in parallel (``io_threads``)
+    and merged in input order for determinism.
 
-    ``on_progress(done, total)`` is called after every batch (``done`` = number
+    ``on_progress(done, total)`` is called as batches complete (``done`` = number
     of entities whose fields have been fetched so far)."""
     out = {}
     entities = [str(e) for e in entities if e]
     total = len(entities)
-    done = 0
-    for i in range(0, total, batch):
-        chunk = entities[i:i + batch]
+    batches = [entities[i:i + batch] for i in range(0, total, batch)]
+
+    def _one(chunk):
         in_list = ', '.join("'%s'" % e.replace("'", "\\'") for e in chunk)
         records, err = tooling_query(
             sf, org,
@@ -364,7 +384,8 @@ def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
             "FROM FieldDefinition WHERE EntityDefinitionId IN (%s)" % in_list,
             cwd=cwd, control=control)
         if err:
-            return None, err
+            return err, {}
+        batch_out = {}
         for r in records:
             # ``EntityDefinitionId`` resolves to a DurableId (e.g. ``01I...``)
             # for custom objects, so reconstruct the field full name from the
@@ -374,7 +395,19 @@ def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
                 or r.get('EntityDefinitionId')
             qn = r.get('QualifiedApiName')
             if ent and qn:
-                out['%s.%s' % (ent, qn)] = str(r.get('DataType') or '')
+                batch_out['%s.%s' % (ent, qn)] = str(r.get('DataType') or '')
+        return None, batch_out
+
+    results, errors = run_parallel(batches, _one, max_workers=io_threads,
+                                   control=control)
+    done = 0
+    for i, chunk in enumerate(batches):
+        if errors[i]:
+            return None, errors[i]
+        err, batch_out = results[i]
+        if err:
+            return None, err
+        out.update(batch_out)
         done += len(chunk)
         if on_progress:
             on_progress(done, total)
