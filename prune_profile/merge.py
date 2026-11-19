@@ -181,15 +181,37 @@ def _layout_object(el):
     return layout.split('-', 1)[0] if '-' in layout else layout
 
 
+def _layout_assignment_key(el):
+    """Identity of a ``layoutAssignments`` entry: ``(object, recordType)``.
+
+    A profile holds at most one layout per object+recordType, so two layouts
+    for the same slot (e.g. ``Account-LayoutA`` vs ``Account-LayoutB``) are the
+    SAME assignment with a different value — a CHANGE the deploy applies, not
+    two independent entries. Keying by the full layout name would misclassify
+    that change as a destination-only removal (a manual op the deploy actually
+    resolves on its own).
+    """
+    return (_layout_object(el), _txt(el, 'recordType'))
+
+
 # ---------------------------------------------------------------------------
 # Profile diff (pure profile-to-profile comparison; no prune, no deploy).
 # ---------------------------------------------------------------------------
 
+# Sentinel returned by _diff_key_spec for layoutAssignments: their structural
+# key is (object, recordType), derived from the layout full name, not a direct
+# child element.
+_LAYOUT_ASSIGNMENT_KEY = object()
+
+
 def _diff_key_spec(section):
     """Child elements that identify an entry of `section` for diffing. ``None``
-    means "no structural key": fall back to the element's serialized form."""
+    means "no structural key": fall back to the element's serialized form.
+    ``_LAYOUT_ASSIGNMENT_KEY`` means the (object, recordType) key."""
     if section in MERGE_TABLE:
         return [MERGE_TABLE[section][0]]
+    if section == 'layoutAssignments':
+        return _LAYOUT_ASSIGNMENT_KEY
     if section in NON_ALIGNABLE:
         keys = _keys_for(section)
         return keys or None
@@ -197,6 +219,8 @@ def _diff_key_spec(section):
 
 
 def _diff_key(el, spec):
+    if spec is _LAYOUT_ASSIGNMENT_KEY:
+        return _layout_assignment_key(el)
     if spec:
         return tuple(_txt(el, k) for k in spec)
     return etree.tostring(el, encoding='unicode')
@@ -615,6 +639,24 @@ def _render_alignable_change(change, dest_env):
     return out
 
 
+def _render_layout_change(change, dest_env):
+    """Render one layout CHANGE (same object+recordType slot, different layout):
+    the source entry that will be deployed, annotated with the destination's old
+    layout. Applied by the deploy — not a manual action."""
+    el = change['element']
+    old = change['old_values']
+    out = ['<layoutAssignments>']
+    out.append('    <layout>%s</layout>' % _txt(el, 'layout'))
+    rt = _txt(el, 'recordType')
+    if rt:
+        out.append('    <recordType>%s</recordType>' % rt)
+    old_layout = old.get('layout')
+    old_note = 'not present' if old_layout is None else old_layout
+    out.append('</layoutAssignments>  <!-- old layout from %s: %s -->'
+               % (dest_env, old_note))
+    return out
+
+
 def _removed_block(section, entries, dest_env, verdict_note=None):
     """One grouped block per non-alignable section: a single <section> wrapper
     listing every removed key, plus a comment enumerating them. ``verdict_note``
@@ -660,8 +702,10 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 
     Returns ``(merged_xml_bytes, manual_ops, changes)`` where ``changes`` is the
     full list of differences the deploy will apply, each ``kind`` being
-    ``grant`` (turned ON in the destination), ``revoke`` (turned OFF) or
-    ``removed`` (non-alignable, manual action).
+    ``grant`` (turned ON in the destination), ``revoke`` (turned OFF),
+    ``layout_change`` (a layout assignment for the same object+recordType slot
+    changed to the source value — applied by the deploy), or ``removed``
+    (non-alignable, manual action).
     """
     src_root = etree.parse(source_path).getroot()
     dst_root = etree.parse(dest_path).getroot()
@@ -755,6 +799,45 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                     'element': deepcopy(m_el) if m_el is not None else deepcopy(d_el),
                     'old_values': old_values,
                 })
+        elif section == 'layoutAssignments':
+            # Keyed by (object, recordType): a profile holds at most one layout
+            # per slot, so a different layout for the same slot is a CHANGE the
+            # deploy applies (source is authoritative), not a manual removal.
+            src_by_slot = {_layout_assignment_key(el): el for el in src_els}
+            dst_by_slot = {_layout_assignment_key(el): el for el in dst_els}
+            for el in src_els:
+                out.append(deepcopy(el))
+            for slot, d_el in dst_by_slot.items():
+                if slot in src_by_slot:
+                    s_el = src_by_slot[slot]
+                    if _txt(s_el, 'layout') != _txt(d_el, 'layout'):
+                        # CHANGE: the merged profile already carries the source
+                        # entry verbatim, so the deploy upserts the source layout
+                        # over the destination one. Reported as a deploy-applied
+                        # change, not a manual operation.
+                        changes.append({
+                            'kind': 'layout_change',
+                            'section': section,
+                            'key': _txt(s_el, 'layout'),
+                            'object': slot[0],
+                            'element': deepcopy(s_el),
+                            'old_values': {
+                                'layout': _txt(d_el, 'layout'),
+                                'recordType': _txt(d_el, 'recordType'),
+                            },
+                        })
+                else:
+                    # REMOVE: destination-only slot. A Profile deploy cannot turn
+                    # an assignment off, so this is a manual operation.
+                    manual_ops.append(_describe_entry(section, d_el))
+                    changes.append({
+                        'kind': 'removed',
+                        'section': section,
+                        'key': _txt(d_el, 'layout'),
+                        'object': slot[0],
+                        'element': deepcopy(d_el),
+                        'old_values': {},
+                    })
         elif section in NON_ALIGNABLE:
             keys = _keys_for(section)
             src_keys = {_entry_key(el, keys) for el in src_els}
@@ -770,8 +853,6 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                         'element': deepcopy(el),
                         'old_values': {},
                     }
-                    if section == 'layoutAssignments':
-                        change['object'] = _layout_object(el)
                     changes.append(change)
         else:
             # Unknown or scalar section (custom, userLicense, ...): source is
@@ -840,7 +921,10 @@ def classify_layout_ops(manual_ops, changes, layout_count):
             op['operation'] = ('Object has %d layouts; verify this assignment '
                                'matches the default and change it if it does not' % n)
     for c in changes:
-        if c.get('section') != 'layoutAssignments':
+        # Only a REMOVED assignment (destination-only slot) is a manual action
+        # worth classifying; a layout CHANGE is applied by the deploy and has no
+        # "verify the default" question.
+        if c.get('section') != 'layoutAssignments' or c.get('kind') != 'removed':
             continue
         n = layout_count.get(c.get('object'), 0)
         c['verdict'] = 'redundant' if n == 1 else 'check'
@@ -952,6 +1036,7 @@ def write_what_is_changed(path, changes, dest_env):
     granted = [c for c in changes if c['kind'] == 'grant']
     revoked = [c for c in changes if c['kind'] == 'revoke']
     removed = [c for c in changes if c['kind'] == 'removed']
+    layout_changes = [c for c in changes if c['kind'] == 'layout_change']
 
     lines = [
         'WHAT IS CHANGED - alignment (destination: %s)' % dest_env,
@@ -967,6 +1052,8 @@ def write_what_is_changed(path, changes, dest_env):
         'Sections',
         '  GRANTED : the destination was OFF (or missing) and is turned ON.',
         '  REVOKED : the destination was ON and is turned OFF.',
+        '  LAYOUT  : the profile\'s layout assignment for an object+recordType',
+        '            is CHANGED to the source value by the deploy.',
         '  MANUAL  : cannot be changed by a Profile deploy - do it in Setup.',
         '',
         'Layout assignments in MANUAL are split into:',
@@ -977,6 +1064,7 @@ def write_what_is_changed(path, changes, dest_env):
         '',
         'GRANTED: %d' % len(granted),
         'REVOKED: %d' % len(revoked),
+        'LAYOUT CHANGED: %d' % len(layout_changes),
         'MANUAL: %d' % len(removed),
         '',
     ]
@@ -993,6 +1081,14 @@ def write_what_is_changed(path, changes, dest_env):
 
     _emit_change_group(granted, 'GRANTED (turned ON in the destination)')
     _emit_change_group(revoked, 'REVOKED (turned OFF in the destination)')
+
+    if layout_changes:
+        lines.append('=' * 78)
+        lines.append('LAYOUT CHANGED (applied by the deploy)')
+        lines.append('=' * 78)
+        for c in layout_changes:
+            lines.extend(_render_layout_change(c, dest_env))
+            lines.append('')
 
     if removed:
         lines.append('=' * 78)

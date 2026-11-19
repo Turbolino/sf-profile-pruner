@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.8] - 2026-11-19
+
+### Fixed
+
+- Layout assignments are now keyed by `(object, recordType)` instead of the
+  full layout name, so an alignment that changes the layout of an existing
+  slot (same object+recordType, different layout) is reported as a
+  **layout change applied by the deploy** — the merged profile carries the
+  source layout and `what-is-changed.txt` shows it under `LAYOUT CHANGED`,
+  annotated with the destination's old layout. Previously a changed layout was
+  misclassified as a destination-only *removal* (a manual op the deploy
+  actually resolves on its own). A destination-only slot with no source
+  counterpart remains a manual operation (a Profile deploy cannot turn an
+  assignment off).
+
 ## [2.16.7] - 2026-11-19
 
 ### Fixed

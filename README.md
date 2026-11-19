@@ -321,9 +321,20 @@ run/
 └── run.log                        # full log
 ```
 
-`layoutAssignments` manual operations are auto-classified: **REDUNDANT
-(ignorable)** when the object has a single page layout, or **NEEDS CHECK** when
-it has several — so you don't chase assignments that would have no effect.
+`layoutAssignments` are handled in two distinct ways during alignment:
+
+- **Layout CHANGE (applied by the deploy)** — the source assigns a different
+  layout to the same object+recordType slot. A Profile deploy *can* change the
+  layout of an existing slot (it upserts the source value), so the merged
+  profile carries the source layout and `what-is-changed.txt` reports it under
+  `LAYOUT CHANGED (applied by the deploy)`, annotated with the destination's old
+  layout.
+- **Layout REMOVE (manual operation)** — the destination assigns a layout to a
+  slot the source does not have. A Profile deploy cannot turn an assignment
+  off, so this is listed in `MANUAL-OPERATIONS.txt` and auto-classified:
+  **REDUNDANT (ignorable)** when the object has a single page layout, or
+  **NEEDS CHECK** when it has several — so you don't chase assignments that
+  would have no effect.
 
 ### Behaviour details
 
@@ -342,8 +353,8 @@ it has several — so you don't chase assignments that would have no effect.
   resolved in one pass.
 - **Alignment report**: the merged profile lives in `4-merged/` with
   `MANUAL-OPERATIONS.txt` and `what-is-changed.txt` (diff split into
-  `GRANTED` / `REVOKED` / `MANUAL`, each changed field annotated with
-  `old value from <org>: <value>`).
+  `GRANTED` / `REVOKED` / `LAYOUT CHANGED` / `MANUAL`, each changed field
+  annotated with `old value from <org>: <value>`).
 - **Merged-profile validation**: before any deploy, the merged profile is
   dry-run against the destination; deploy runs only when that dry-run is clean.
 - **Resumable**: if it stops (network hiccup, error), re-run the same command

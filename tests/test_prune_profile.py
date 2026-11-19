@@ -1574,6 +1574,75 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(len(changes), 1)
         self.assertEqual(changes[0]['kind'], 'removed')
 
+    def test_layout_change_same_slot_is_deploy_change_not_manual(self):
+        """Same object+recordType, DIFFERENT layout: this is a CHANGE the deploy
+        applies (source-authoritative), not a destination-only manual removal."""
+        xml, manual_ops, changes = self._merge(
+            '<layoutAssignments><layout>Account-Account Layout</layout></layoutAssignments>',
+            '<layoutAssignments><layout>Account-Other Layout</layout></layoutAssignments>',
+        )
+        # no manual operation: the deploy resolves it
+        self.assertEqual(manual_ops, [])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['kind'], 'layout_change')
+        self.assertEqual(changes[0]['object'], 'Account')
+        self.assertEqual(changes[0]['key'], 'Account-Account Layout')
+        self.assertEqual(changes[0]['old_values']['layout'], 'Account-Other Layout')
+        # merged profile carries the SOURCE layout
+        root = pp.etree.fromstring(xml)
+        layouts = [el.find('{%s}layout' % self.NS).text
+                   for el in root.findall('{%s}layoutAssignments' % self.NS)]
+        self.assertEqual(layouts, ['Account-Account Layout'])
+
+    def test_layout_change_record_type_scopes_slots(self):
+        """Same object but different recordType = separate slots: one is a
+        change, the other is a destination-only removal."""
+        xml, manual_ops, changes = self._merge(
+            '<layoutAssignments><layout>Account-Account Layout</layout><recordType>Foo.Bar</recordType></layoutAssignments>',
+            ('<layoutAssignments><layout>Account-Other Layout</layout><recordType>Foo.Bar</recordType></layoutAssignments>\n'
+             '<layoutAssignments><layout>Account-Account Layout</layout><recordType>Foo.Baz</recordType></layoutAssignments>'),
+        )
+        kinds = sorted(c['kind'] for c in changes)
+        self.assertEqual(kinds, ['layout_change', 'removed'])
+        # the removal is the destination-only recordType slot
+        removed = next(c for c in changes if c['kind'] == 'removed')
+        self.assertEqual(removed['object'], 'Account')
+        self.assertEqual(len(manual_ops), 1)
+
+    def test_what_is_changed_reports_layout_change(self):
+        xml, _, changes = self._merge(
+            '<layoutAssignments><layout>Account-Account Layout</layout></layoutAssignments>',
+            '<layoutAssignments><layout>Account-Other Layout</layout></layoutAssignments>',
+        )
+        with tempfile.TemporaryDirectory() as d:
+            path = pp.write_what_is_changed(os.path.join(d, 'w.txt'), changes, 'devorg')
+            s = read_text(path)
+        self.assertIn('LAYOUT CHANGED (applied by the deploy)', s)
+        self.assertIn('LAYOUT CHANGED: 1', s)
+        self.assertIn('<layout>Account-Account Layout</layout>', s)
+        self.assertIn('old layout from devorg: Account-Other Layout', s)
+
+    def test_named_layout_and_default_coexist_not_a_change(self):
+        """The User object's default layout (`User-User Layout`) and its named
+        layout (`UserAlt-User Profile Layout`) are TWO independent assignment
+        slots that coexist in a profile. A destination-only named layout is a
+        removal (manual op), not a change of the default layout."""
+        xml, manual_ops, changes = self._merge(
+            '<layoutAssignments><layout>User-User Layout</layout></layoutAssignments>',
+            ('<layoutAssignments><layout>User-User Layout</layout></layoutAssignments>\n'
+             '<layoutAssignments><layout>UserAlt-User Profile Layout</layout></layoutAssignments>'),
+        )
+        # source keeps its default layout; the dest-only named layout is removed.
+        root = pp.etree.fromstring(xml)
+        layouts = sorted(el.find('{%s}layout' % self.NS).text
+                         for el in root.findall('{%s}layoutAssignments' % self.NS))
+        self.assertEqual(layouts, ['User-User Layout'])
+        kinds = [c['kind'] for c in changes]
+        self.assertEqual(kinds, ['removed'])
+        self.assertEqual(len(manual_ops), 1)
+        self.assertIn('UserAlt-User Profile Layout', manual_ops[0]['item'])
+
+
     def test_removed_non_alignable_detects_dropped_layout(self):
         with tempfile.TemporaryDirectory() as d:
             orig = os.path.join(d, 'orig.xml')

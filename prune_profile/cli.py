@@ -586,7 +586,7 @@ ALIGN_STATE_FILE = 'align-state.json'
 
 def _write_align_state(out_dir, args, src_profile_name, dest_profile_name,
                        dest_org, merged_path, validation, n_granted, n_revoked,
-                       n_manual):
+                       n_layout, n_manual):
     """Persist the run identity + validated merged profile of a completed
     alignment, so a later invocation on the same folder can deploy the cached
     merge instead of redoing the whole pipeline."""
@@ -602,6 +602,7 @@ def _write_align_state(out_dir, args, src_profile_name, dest_profile_name,
         'validation': validation,
         'granted': n_granted,
         'revoked': n_revoked,
+        'layout_changed': n_layout,
         'manual': n_manual,
         'completed_at': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime()),
     }
@@ -874,8 +875,9 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
 
     n_granted = sum(1 for c in changes if c['kind'] == 'grant')
     n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
-    logger.log('  ✓ merge result: %d granted (ON), %d revoked (OFF), %d manual'
-               % (n_granted, n_revoked, len(manual_ops)))
+    n_layout = sum(1 for c in changes if c['kind'] == 'layout_change')
+    logger.log('  ✓ merge result: %d granted (ON), %d revoked (OFF), %d layout changed, '
+               '%d manual' % (n_granted, n_revoked, n_layout, len(manual_ops)))
 
     # 6. classify layoutAssignments manual ops (redundant vs needs check) using
     #    the destination org's Layout components.
@@ -905,7 +907,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     if validation == 'clean':
         state_path = _write_align_state(
             out_dir, args, src_profile_name, dest_profile_name, dest_org,
-            merged_path, validation, n_granted, n_revoked, len(manual_ops))
+            merged_path, validation, n_granted, n_revoked, n_layout, len(manual_ops))
         logger.log('  ✓ run state saved: %s' % _rel(out_dir, state_path))
 
     # 8. optional deploy of the merged profile (only after a clean validation).
@@ -927,6 +929,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('OUTCOME: %s' % outcome)
     logger.log('GRANTED (turned ON): %d' % n_granted)
     logger.log('REVOKED (turned OFF): %d' % n_revoked)
+    logger.log('LAYOUT CHANGED (applied by the deploy): %d' % n_layout)
     redundant_count = sum(1 for o in manual_ops
                           if (o.get('verdict') or '').startswith('REDUNDANT'))
     check_count = len(manual_ops) - redundant_count
