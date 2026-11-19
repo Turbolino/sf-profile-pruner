@@ -24,6 +24,24 @@ _deploy_start_lock = threading.Lock()
 _last_deploy_start = 0.0
 _deploy_start_interval = 1.0  # seconds
 
+# Serializes the actual `sf deploy start` call across workers. The per-org lock
+# file means only ONE deploy start can be in flight per org at a time; without
+# this mutex, N workers all submit at once, N-1 of them trip the lock and burn
+# retry cycles. Serializing our own submissions makes the contention disappear
+# (the CLI lock is only ever contended by an external `sf` process, not by our
+# own threads).
+_deploy_mutex = threading.Lock()
+
+
+def _acquire_deploy_slot(control):
+    """Wait for the exclusive deploy-start slot, honoring a stop request.
+    Returns True when acquired, False when a stop was requested."""
+    while True:
+        if control is not None and control.stop.is_set():
+            return False
+        if _deploy_mutex.acquire(timeout=0.2):
+            return True
+
 
 def set_deploy_start_interval(seconds):
     """Set the minimum interval (seconds) between deploy start submissions.
@@ -107,7 +125,8 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
         lock = _is_lock_error(res, err)
         if not net and not lock:
             return res, err
-        if attempt >= NETWORK_RETRIES:
+        max_retries = LOCK_RETRIES if lock else NETWORK_RETRIES
+        if attempt >= max_retries:
             detail = err or (json.dumps(res)[:300] if res else 'unknown transient failure')
             if lock:
                 return None, ('LOCK ERROR running %s after %d attempts: %s. '
@@ -124,16 +143,22 @@ def _run_sf(cmd, sf, what, cwd=None, control=None):
             return None, 'stopped by user'
         # Jittered backoff: without jitter, N parallel workers that all hit the
         # same blip would retry in lockstep and keep hammering the org together.
-        delay = 2.0 * attempt * (0.5 + random.random())
+        # The lock is held for seconds (not milliseconds), so it gets a slower
+        # backoff and more attempts than a plain network blip.
+        if lock:
+            delay = 3.0 * attempt * (0.5 + random.random())
+        else:
+            delay = 2.0 * attempt * (0.5 + random.random())
         kind = 'LOCK' if lock else 'NETWORK'
         hint = err or (json.dumps(res)[:120] if isinstance(res, (dict, list)) else str(res)[:120])
         print('%s ERROR running %s (attempt %d/%d): %s - retrying in %.0fs...'
-              % (kind, what, attempt, NETWORK_RETRIES, hint, delay),
+              % (kind, what, attempt, max_retries, hint, delay),
               file=sys.stderr, flush=True)
         time.sleep(delay)
 
 
 NETWORK_RETRIES = 5
+LOCK_RETRIES = 12
 _NETWORK_HINTS = (
     'fetch failed', 'connection reset', 'econnreset', 'econnrefused',
     'etimedout', 'timed out', 'enotfound', 'getaddrinfo', 'socket hang up',
@@ -356,20 +381,30 @@ def org_username(sf, org, cwd=None, control=None):
 
 
 def start_deploy(sf, manifest_path, org, dry_run=False, cwd=None, control=None):
-    """Start an async deploy. Returns (job_id, error)."""
+    """Start an async deploy. Returns (job_id, error).
+
+    Serialized across workers: the per-org CLI lock allows only one `deploy
+    start` at a time, so submitting them one-by-one (instead of N at once)
+    removes the self-inflicted "Lock file is already being held" contention.
+    """
     _throttle_deploy_start()
-    cmd = [sf, 'project', 'deploy', 'start', '--async']
-    if dry_run:
-        cmd.append('--dry-run')
-    cmd += ['--manifest', manifest_path, '--target-org', org, '--json']
-    res, err = _run_sf(cmd, sf, 'deploy start', cwd=cwd, control=control)
-    if err:
-        return None, err
-    result = res.get('result', {})
-    job_id = result.get('id') or result.get('jobId')
-    if not job_id:
-        return None, 'deploy start returned no job id: %s' % json.dumps(res)[:400]
-    return job_id, None
+    if not _acquire_deploy_slot(control):
+        return None, 'stopped by user'
+    try:
+        cmd = [sf, 'project', 'deploy', 'start', '--async']
+        if dry_run:
+            cmd.append('--dry-run')
+        cmd += ['--manifest', manifest_path, '--target-org', org, '--json']
+        res, err = _run_sf(cmd, sf, 'deploy start', cwd=cwd, control=control)
+        if err:
+            return None, err
+        result = res.get('result', {})
+        job_id = result.get('id') or result.get('jobId')
+        if not job_id:
+            return None, 'deploy start returned no job id: %s' % json.dumps(res)[:400]
+        return job_id, None
+    finally:
+        _deploy_mutex.release()
 
 
 def report_deploy(sf, job_id, org, cwd=None, control=None):

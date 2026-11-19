@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.6] - 2026-11-19
+
+### Fixed
+
+- Serialized `sf deploy start` submissions across workers with a process-local
+  mutex. With high thread counts (`-tn 64`) every worker previously submitted a
+  deploy start at once, so N-1 of them tripped the per-org CLI lock and burned
+  retries (and the short 5-attempt window was not enough to clear a busy lock).
+  Submissions are now one-at-a-time, so the CLI lock is only ever contended by
+  an external `sf` process.
+- The deploy-lock retry is now more patient: `LOCK_RETRIES` (12) with a slower
+  backoff than a network blip, reflecting that the lock is held for seconds.
+
 ## [2.16.5] - 2026-11-19
 
 ### Fixed

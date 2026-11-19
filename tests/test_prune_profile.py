@@ -469,8 +469,51 @@ class TestNetworkRetry(unittest.TestCase):
             res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
         self.assertIsNone(res)
         self.assertIn('LOCK ERROR', err)
-        self.assertIn('5 attempts', err)
-        self.assertEqual(once.call_count, pp.sfcli.NETWORK_RETRIES)
+        self.assertIn('%d attempts' % pp.sfcli.LOCK_RETRIES, err)
+        self.assertEqual(once.call_count, pp.sfcli.LOCK_RETRIES)
+
+    def test_lock_retry_recovers(self):
+        with mock.patch.object(pp.sfcli, 'find_node', return_value=r'C:\node.exe'), \
+                mock.patch.object(pp.sfcli.time, 'sleep'), \
+                mock.patch.object(pp.sfcli, '_run_sf_once',
+                                  side_effect=[(None, 'Lock file is already being held'),
+                                               (None, 'Lock file is already being held'),
+                                               ({'result': {'id': 'j1'}}, None)]) as once:
+            res, err = pp.sfcli._run_sf(['sf', 'x'], 'sf', 'deploy start')
+        self.assertEqual(res, {'result': {'id': 'j1'}})
+        self.assertIsNone(err)
+        self.assertEqual(once.call_count, 3)
+
+    def test_start_deploy_uses_serialization_slot(self):
+        """start_deploy acquires the deploy slot before the sf call and always
+        releases it afterwards (so two workers never submit a deploy start at
+        the same time)."""
+        from prune_profile import sfcli as s
+        order = []
+        def fake_slot(control):
+            s._deploy_mutex.acquire()  # take the real mutex, like the real helper
+            order.append('acquire')
+            return True
+        def fake_run(*a, **k):
+            order.append('sf')
+            return ({'result': {'id': 'j1'}}, None)
+        with mock.patch.object(s, '_acquire_deploy_slot', side_effect=fake_slot), \
+                mock.patch.object(s, '_run_sf', side_effect=fake_run), \
+                mock.patch.object(s, '_throttle_deploy_start'):
+            job_id, err = s.start_deploy('sf', 'manifest.xml', 'org', dry_run=True)
+        self.assertEqual(job_id, 'j1')
+        self.assertIsNone(err)
+        self.assertEqual(order, ['acquire', 'sf'])
+        # the real mutex must have been released after the call
+        self.assertTrue(s._deploy_mutex.acquire(blocking=False))
+        s._deploy_mutex.release()
+
+    def test_acquire_deploy_slot_releases_on_stop(self):
+        """The deploy slot wait is interruptible: a stop request makes it
+        return False instead of blocking forever on a busy mutex."""
+        from prune_profile import sfcli as s
+        control = types.SimpleNamespace(stop=types.SimpleNamespace(is_set=lambda: True))
+        self.assertFalse(s._acquire_deploy_slot(control))
 
 
 class TestUpdateCheck(unittest.TestCase):
