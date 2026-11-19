@@ -61,7 +61,8 @@ from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
                     set_deploy_start_interval, standard_entities, tooling_query)
 from .stage import prune_stage
-from .xmlio import load_log_entries, write_package_xml, write_sfdx_project
+from .xmlio import (load_log_entries, read_report_summary, write_package_xml,
+                    write_sfdx_project)
 
 
 def _rel(base, path):
@@ -654,6 +655,38 @@ def _load_align_state(out_dir):
         return None
 
 
+def _align_resume_summary(out_dir, state):
+    """Per-phase summary of a completed alignment, read back from the run
+    folder's artifacts so a resume prints what each phase already did (instead
+    of just "this folder is done"). Returns a list of log lines."""
+    src_report = os.path.join(out_dir, '1-source-pruned', 'report.txt')
+    dst_report = os.path.join(out_dir, '3-destination-pruned', 'report.txt')
+    src = read_report_summary(src_report)
+    dst = read_report_summary(dst_report)
+
+    def _phase1():
+        if src.get('outcome') is None and src.get('removed') is None:
+            return '  PHASE 1/4 · PRUNE SOURCE: not recorded in %s' % _rel(out_dir, src_report)
+        return '  PHASE 1/4 · PRUNE SOURCE: %s (%d reference(s) removed)' % (
+            src.get('outcome') or '?', src.get('removed') or 0)
+
+    def _phase2():
+        if dst.get('outcome') is None and dst.get('removed') is None:
+            return '  PHASE 2/4 · PRUNE DESTINATION: not recorded in %s' % _rel(out_dir, dst_report)
+        return '  PHASE 2/4 · PRUNE DESTINATION: %s (%d reference(s) removed)' % (
+            dst.get('outcome') or '?', dst.get('removed') or 0)
+
+    return [
+        'Completed phases (from the previous run):',
+        _phase1(),
+        _phase2(),
+        '  PHASE 3/4 · MERGE: %d granted, %d revoked, %d layout changed, %d manual' % (
+            state.get('granted', 0), state.get('revoked', 0),
+            state.get('layout_changed', 0), state.get('manual', 0)),
+        '  PHASE 4/4 · VALIDATE: %s' % (state.get('validation') or '?'),
+    ]
+
+
 def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
                       dest_org, do_deploy, out_dir, logger, sf):
     """Resume an alignment whose folder already holds a completed, validated
@@ -704,6 +737,9 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
     logger.log('  src_profile  : %s' % src_profile_name)
     logger.log('  dest_profile : %s' % dest_profile_name)
     logger.log('  merged       : %s' % _rel(out_dir, merged_path))
+    logger.log('')
+    for line in _align_resume_summary(out_dir, state):
+        logger.log(line)
 
     if not do_deploy:
         print('This folder already contains a completed, validated alignment.')
@@ -1391,7 +1427,11 @@ def _main():
     if result['already_clean'] and not do_deploy:
         _finalize_prune_output(result, merge_dir, src_out, original_copy,
                                dest_profile_name, dest_org, logger, args.quiet)
-        print('Profile "%s" is already clean (previous run: SUCCESS). Nothing to do.' % src_profile_name)
+        prev = read_report_summary(os.path.join(src_out, 'report.txt'))
+        print('Profile "%s" is already clean (previous run: %s). Nothing to do.'
+              % (src_profile_name, prev.get('outcome') or 'SUCCESS'))
+        if prev.get('removed') is not None:
+            print('Previous run removed %d metadata reference(s).' % prev['removed'])
         sys.exit(0)
 
     # ---------- deploy with retry-on-failure loop (only with --deploy-on-success) ----------

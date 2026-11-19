@@ -146,6 +146,29 @@ def read_outcome(report):
     return None
 
 
+def read_report_summary(report):
+    """Read ``OUTCOME`` and ``METADATA REMOVED (total)`` from a previous
+    ``report.txt``. Returns a dict with keys ``outcome`` (str or None) and
+    ``removed`` (int or None); both are None when the file is unreadable or
+    lacks the line."""
+    out = {'outcome': None, 'removed': None}
+    try:
+        with open(report, 'rb') as f:
+            text = decode_bytes(f.read())
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('OUTCOME:'):
+                out['outcome'] = line.split(':', 1)[1].strip()
+            elif line.startswith('METADATA REMOVED (total):'):
+                try:
+                    out['removed'] = int(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
 def load_log_entries(missing_log):
     """Ordered, deduplicated (type, member) pairs from missing_log.txt."""
     entries = []

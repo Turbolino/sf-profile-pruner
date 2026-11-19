@@ -113,6 +113,47 @@ class TestLogEntries(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_read_report_summary(self):
+        d = tempfile.mkdtemp()
+        try:
+            report = os.path.join(d, 'report.txt')
+            write_text(report,
+                       'OUTCOME: SUCCESS\n'
+                       'METADATA REMOVED (total): 2261\n'
+                       'TIME: 385.2s\n')
+            s = pp.read_report_summary(report)
+            self.assertEqual(s['outcome'], 'SUCCESS')
+            self.assertEqual(s['removed'], 2261)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_read_report_summary_missing(self):
+        s = pp.read_report_summary(os.path.join(tempfile.mkdtemp(), 'nope.txt'))
+        self.assertIsNone(s['outcome'])
+        self.assertIsNone(s['removed'])
+
+
+class TestAlignResumeSummary(unittest.TestCase):
+    def test_summary_lists_completed_phases(self):
+        from prune_profile import cli as cli
+        d = tempfile.mkdtemp()
+        try:
+            for sub, outcome, removed in (('1-source-pruned', 'SUCCESS', 0),
+                                          ('3-destination-pruned', 'SUCCESS', 116)):
+                os.makedirs(os.path.join(d, sub))
+                write_text(os.path.join(d, sub, 'report.txt'),
+                           'OUTCOME: %s\nMETADATA REMOVED (total): %d\n' % (outcome, removed))
+            state = {'granted': 0, 'revoked': 14, 'layout_changed': 2,
+                     'manual': 16, 'validation': 'clean'}
+            lines = cli._align_resume_summary(d, state)
+            text = '\n'.join(lines)
+            self.assertIn('PHASE 1/4 · PRUNE SOURCE: SUCCESS (0 reference(s) removed)', text)
+            self.assertIn('PHASE 2/4 · PRUNE DESTINATION: SUCCESS (116 reference(s) removed)', text)
+            self.assertIn('PHASE 3/4 · MERGE: 0 granted, 14 revoked, 2 layout changed, 16 manual', text)
+            self.assertIn('PHASE 4/4 · VALIDATE: clean', text)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 class TestResolveError(unittest.TestCase):
     def test_tab_error(self):

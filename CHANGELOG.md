@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] - 2026-11-19
+
+### Added
+
+- **Talkative resume**: resuming a previously completed alignment now prints a
+  per-phase summary read back from the run folder (`PHASE 1/4 PRUNE SOURCE`,
+  `PHASE 2/4 PRUNE DESTINATION` with removed counts from their `report.txt`,
+  `PHASE 3/4 MERGE` with granted/revoked/layout-changed/manual, and
+  `PHASE 4/4 VALIDATE`). The plain prune resume now lists the already-removed
+  metadata broken down by type, and the "already clean" short-circuit reports
+  the previous run's outcome and removed count.
+
 ## [2.16.10] - 2026-11-19
 
 ### Fixed

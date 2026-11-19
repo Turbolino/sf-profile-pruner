@@ -97,6 +97,7 @@ from .xmlio import (
     prepare_work_copy,
     prunable_blocks,
     read_outcome,
+    read_report_summary,
     remove_block,
     remove_from_list,
     remove_temp_project,
@@ -138,7 +139,8 @@ __all__ = [
     'apply_removals_batch', 'build_subprofile', 'candidates_for_block',
     'dangling_members', 'extract_common_members', 'humanize_status',
     'load_log_entries',
-    'prepare_work_copy', 'prunable_blocks', 'read_outcome', 'remove_block',
+    'prepare_work_copy', 'prunable_blocks', 'read_outcome', 'read_report_summary',
+    'remove_block',
     'remove_from_list', 'remove_temp_project', 'resolve_error',
     'strip_blank_lines', 'write_package_xml', 'write_sfdx_project', 'etree',
 ]

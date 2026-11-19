@@ -158,6 +158,8 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     total_resumed = sum(len(v) for v in removed_by_type.values())
     if total_resumed:
         logger.log('RESUME: %d metadata already removed.' % total_resumed)
+        for typ, members in sorted(removed_by_type.items(), key=lambda kv: -len(kv[1])):
+            logger.log('  ▸ %s: %d' % (typ, len(members)))
     else:
         logger.log('FIRST RUN.')
 
