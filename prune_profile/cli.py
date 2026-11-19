@@ -1408,6 +1408,12 @@ def _main():
         dest_profile_name, dest_org, logger, args.quiet)
     logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, wic_path))
 
+    # Propagate a non-zero exit code when the prune did not succeed. The
+    # alignment flow already does this; without it a run ending in ABORTED
+    # (e.g. a deploy lock that hard-failed a section) exits 0 and is
+    # indistinguishable from SUCCESS to scripts/CI that rely on the exit code.
+    sys.exit(0 if result_state == 'SUCCESS' else 1)
+
 
 def _reconfigure_output_encoding():
     """Force UTF-8 with a ``replace`` fallback on stdout/stderr.

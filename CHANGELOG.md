@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.5] - 2026-11-19
+
+### Fixed
+
+- The plain prune now exits with a non-zero code when the outcome is not
+  `SUCCESS` (e.g. `ABORTED` after a deploy-lock hard failure). Previously it
+  fell through `_main()` without `sys.exit()`, so a failed run returned exit
+  code 0 and was indistinguishable from a success to scripts/CI.
+
 ## [2.16.4] - 2026-11-18
 
 ### Fixed
