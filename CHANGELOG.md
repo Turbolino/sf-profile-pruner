@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.9] - 2026-11-19
+
+### Fixed
+
+- Read-only normalization now describes only objects that exist in the
+  destination org (verified via EntityDefinition). Previously the plain-prune
+  describe pass described every candidate object, so objects present only in
+  the source (one-org-only) answered `NOT_FOUND` and produced a wall of
+  warnings. Dangling fields on absent objects are pruned anyway, so they are
+  skipped up front.
+
+### Added
+
+- A startup note when read-only normalization is ON, explaining that system
+  read-only fields (formula, roll-up summary, auto number, compound
+  Address/Location, and system read-only fields such as ChatKey/AccountId)
+  will be normalized to `editable=false`, and that `--avoid-normalize-ro`
+  keeps the raw flags. Shown for prune and align (not `--diff`, which never
+  normalizes).
+
 ## [2.16.8] - 2026-11-19
 
 ### Fixed

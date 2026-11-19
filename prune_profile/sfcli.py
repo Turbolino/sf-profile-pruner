@@ -309,6 +309,32 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
+def existing_entities(sf, org, entities, cwd=None, control=None, batch=200):
+    """Return the subset of ``entities`` that exist in ``org``, via
+    EntityDefinition (Tooling API). Used to skip ``sobject describe`` on objects
+    that live only on one side of a comparison, which would otherwise answer
+    ``NOT_FOUND``. Queried in ``IN`` batches to keep round-trips low; a
+    ``None`` result (query error) means "assume all exist" so a transient
+    failure degrades to extra describes instead of skipping a real object."""
+    entities = [str(e) for e in entities if e]
+    found = set()
+    for i in range(0, len(entities), batch):
+        chunk = entities[i:i + batch]
+        in_list = ', '.join("'%s'" % e.replace("'", "\\'") for e in chunk)
+        records, err = tooling_query(
+            sf, org,
+            "SELECT QualifiedApiName FROM EntityDefinition "
+            "WHERE QualifiedApiName IN (%s)" % in_list,
+            cwd=cwd, control=control)
+        if err:
+            return None, err
+        for r in records:
+            qn = r.get('QualifiedApiName')
+            if qn:
+                found.add(str(qn))
+    return found, None
+
+
 def field_data_types(sf, org, entities, cwd=None, control=None, batch=40,
                      on_progress=None):
     """Return ``{fieldFullName: DataType}`` for every field of ``entities`` via

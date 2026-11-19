@@ -1859,6 +1859,8 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'existing_entities',
+                                      return_value=({'LiveChatTranscript', 'Campaign', 'Obj'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set(
                     'sf', 'mysandbox', 'devorg', src, dst, logger)
@@ -1894,6 +1896,8 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'existing_entities',
+                                      return_value=({'LiveChatTranscript', 'Campaign'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set(
                     'sf', None, 'devorg', src, dst, logger)
@@ -1943,6 +1947,8 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'existing_entities',
+                                      return_value=({'WorkOrder', 'Case', 'Account'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set('sf', 'src', 'dst', src, None, logger)
 
@@ -1958,6 +1964,43 @@ class TestMerge(unittest.TestCase):
         # and the custom field's object is never described.
         self.assertNotIn(('dst', 'Case'), described)
         self.assertNotIn(('src', 'Account'), described)
+
+    def test_read_only_field_set_skips_objects_absent_from_destination(self):
+        """Objects that exist only in the source must not be described on the
+        destination (they would answer NOT_FOUND and produce noise). The
+        existing_entities filter drops them before any describe call."""
+        from prune_profile import cli as cli
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            write_text(src, self._profile(
+                '<fieldPermissions><field>WorkOrder.IsClosed</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>BenefitAssignment.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            dt_map = {
+                'WorkOrder.IsClosed': 'Checkbox',
+                'BenefitAssignment.Status': 'Picklist',
+            }
+            described = []
+
+            def describe(_sf, org, entity):
+                described.append((org, entity))
+                return {'updateable': True,
+                        'fields': [{'name': 'IsClosed', 'updateable': False},
+                                   {'name': 'Status', 'updateable': False}]}, None
+
+            logger = types.SimpleNamespace(log=lambda *a: None)
+            with mock.patch.object(cli, 'field_data_types',
+                                   return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'existing_entities',
+                                      # BenefitAssignment exists only in source
+                                      return_value=({'WorkOrder'}, None)), \
+                    mock.patch.object(cli, 'describe_object', side_effect=describe):
+                ro = cli._read_only_field_set('sf', 'src', 'dst', src, None, logger)
+
+        self.assertIn('WorkOrder.IsClosed', ro)
+        # absent object: not described, not normalized
+        self.assertNotIn('BenefitAssignment.Status', ro)
+        self.assertNotIn(('dst', 'BenefitAssignment'), described)
+        self.assertNotIn(('src', 'BenefitAssignment'), described)
 
 
     # --- the 4 --avoid-normalize-ro scenarios (align/prune x on/off) ---

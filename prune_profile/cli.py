@@ -57,7 +57,8 @@ from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, describe_object, dry_run, field_data_types,
+from .sfcli import (deploy, describe_object, dry_run, existing_entities,
+                    field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
                     set_deploy_start_interval, tooling_query)
 from .stage import prune_stage
@@ -243,6 +244,28 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         ent = n.split('.', 1)[0]
         if ent and ent not in cand_entities:
             cand_entities.append(ent)
+
+    # Describe only objects that actually exist in the destination org: a field
+    # on an object absent from the destination is a dangling reference (already
+    # removed by pruning), not a read-only field to normalize, and describing it
+    # would just answer NOT_FOUND. This keeps the describe pass to the shared
+    # objects and removes the noisy warnings for one-org-only objects.
+    dest_entities = set(cand_entities)
+    existing, eerr = existing_entities(sf, dest_org, cand_entities)
+    if existing is not None:
+        dest_entities = {e for e in cand_entities if e in existing}
+    elif eerr:
+        logger.log('  ⚠ could not list destination entities (%s); describing all candidates.' % eerr)
+    cand_entities = [e for e in cand_entities if e in dest_entities]
+    if not cand_entities:
+        return read_only
+    # Keep only candidates whose object exists in the destination: a field on
+    # an absent object is dangling (pruned), never a read-only field to
+    # normalize. This also covers the file-source path, where every candidate
+    # would otherwise be suspected.
+    candidates = [n for n in candidates if n.split('.', 1)[0] in dest_entities]
+    if not candidates:
+        return read_only
     logger.log('  ▸ describing %d object(s) to detect system read-only field(s)...'
                % len(cand_entities))
 
@@ -1206,6 +1229,14 @@ def _main():
         print(DISCLAIMER, flush=True)
         print(COPYLEFT, flush=True)
         print('', flush=True)
+        if not args.avoid_normalize_ro and not args.diff:
+            print('NOTE: read-only normalization is ON. System read-only fields '
+                  '(formula, roll-up summary, auto number, compound '
+                  'Address/Location, and system read-only fields such as '
+                  'ChatKey/AccountId) will be normalized to editable=false in '
+                  'the output. Use --avoid-normalize-ro to keep the raw flags.',
+                  flush=True)
+            print('', flush=True)
 
     # ---------- names and mode ----------
     out_dir = os.path.abspath(args.out_dir or os.getcwd())
