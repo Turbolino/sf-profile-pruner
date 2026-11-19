@@ -1859,7 +1859,7 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
-                    mock.patch.object(cli, 'existing_entities',
+                    mock.patch.object(cli, 'standard_entities',
                                       return_value=({'LiveChatTranscript', 'Campaign', 'Obj'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set(
@@ -1896,7 +1896,7 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
-                    mock.patch.object(cli, 'existing_entities',
+                    mock.patch.object(cli, 'standard_entities',
                                       return_value=({'LiveChatTranscript', 'Campaign'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set(
@@ -1947,7 +1947,7 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
-                    mock.patch.object(cli, 'existing_entities',
+                    mock.patch.object(cli, 'standard_entities',
                                       return_value=({'WorkOrder', 'Case', 'Account'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set('sf', 'src', 'dst', src, None, logger)
@@ -1965,10 +1965,11 @@ class TestMerge(unittest.TestCase):
         self.assertNotIn(('dst', 'Case'), described)
         self.assertNotIn(('src', 'Account'), described)
 
-    def test_read_only_field_set_skips_objects_absent_from_destination(self):
-        """Objects that exist only in the source must not be described on the
-        destination (they would answer NOT_FOUND and produce noise). The
-        existing_entities filter drops them before any describe call."""
+    def test_read_only_field_set_skips_custom_and_absent_objects(self):
+        """Custom objects (BenefitAssignment is custom=True in both orgs) must
+        not be described for the system-read-only pass — the describe would
+        answer NOT_FOUND. The standard_entities filter keeps only standard
+        destination objects, dropping both custom and one-org-only objects."""
         from prune_profile import cli as cli
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, 'src.xml')
@@ -1990,14 +1991,14 @@ class TestMerge(unittest.TestCase):
             logger = types.SimpleNamespace(log=lambda *a: None)
             with mock.patch.object(cli, 'field_data_types',
                                    return_value=(dt_map, None)), \
-                    mock.patch.object(cli, 'existing_entities',
-                                      # BenefitAssignment exists only in source
+                    mock.patch.object(cli, 'standard_entities',
+                                      # only WorkOrder is a standard object
                                       return_value=({'WorkOrder'}, None)), \
                     mock.patch.object(cli, 'describe_object', side_effect=describe):
                 ro = cli._read_only_field_set('sf', 'src', 'dst', src, None, logger)
 
         self.assertIn('WorkOrder.IsClosed', ro)
-        # absent object: not described, not normalized
+        # custom/absent object: not described, not normalized
         self.assertNotIn('BenefitAssignment.Status', ro)
         self.assertNotIn(('dst', 'BenefitAssignment'), described)
         self.assertNotIn(('src', 'BenefitAssignment'), described)

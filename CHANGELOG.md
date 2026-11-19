@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.10] - 2026-11-19
+
+### Fixed
+
+- The read-only describe pass now scopes to STANDARD destination objects
+  (`EntityDefinition.IsCustomizable=false`), not merely "existing" objects.
+  System read-only fields live on standard objects; custom objects (even ones
+  present in both orgs, like `BenefitAssignment`) are never describable for that
+  pass and were still producing `NOT_FOUND` warnings. Residual `NOT_FOUND` on a
+  standard object is now a silent, counted skip instead of a per-object warning.
+
 ## [2.16.9] - 2026-11-19
 
 ### Fixed

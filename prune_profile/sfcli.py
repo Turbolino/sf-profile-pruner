@@ -309,13 +309,15 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
-def existing_entities(sf, org, entities, cwd=None, control=None, batch=200):
-    """Return the subset of ``entities`` that exist in ``org``, via
-    EntityDefinition (Tooling API). Used to skip ``sobject describe`` on objects
-    that live only on one side of a comparison, which would otherwise answer
-    ``NOT_FOUND``. Queried in ``IN`` batches to keep round-trips low; a
-    ``None`` result (query error) means "assume all exist" so a transient
-    failure degrades to extra describes instead of skipping a real object."""
+def standard_entities(sf, org, entities, cwd=None, control=None, batch=200):
+    """Return the subset of ``entities`` that are STANDARD objects present in
+    ``org`` (``IsCustomizable=false`` in EntityDefinition). Used to scope the
+    ``sobject describe`` read-only pass: system read-only fields live on
+    standard objects, and custom objects (or objects absent from the org) are
+    never describable/interesting for that pass — skipping them removes
+    ``NOT_FOUND`` noise and wasted round-trips. Returns ``(set_or_None, error)``;
+    a ``None`` result means "assume all standard" so a transient failure degrades
+    to extra describes instead of skipping a real object."""
     entities = [str(e) for e in entities if e]
     found = set()
     for i in range(0, len(entities), batch):
@@ -324,7 +326,7 @@ def existing_entities(sf, org, entities, cwd=None, control=None, batch=200):
         records, err = tooling_query(
             sf, org,
             "SELECT QualifiedApiName FROM EntityDefinition "
-            "WHERE QualifiedApiName IN (%s)" % in_list,
+            "WHERE IsCustomizable = false AND QualifiedApiName IN (%s)" % in_list,
             cwd=cwd, control=control)
         if err:
             return None, err

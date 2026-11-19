@@ -57,10 +57,9 @@ from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
 from .retrieve import retrieve_profiles
-from .sfcli import (deploy, describe_object, dry_run, existing_entities,
-                    field_data_types,
+from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
-                    set_deploy_start_interval, tooling_query)
+                    set_deploy_start_interval, standard_entities, tooling_query)
 from .stage import prune_stage
 from .xmlio import load_log_entries, write_package_xml, write_sfdx_project
 
@@ -245,33 +244,41 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         if ent and ent not in cand_entities:
             cand_entities.append(ent)
 
-    # Describe only objects that actually exist in the destination org: a field
-    # on an object absent from the destination is a dangling reference (already
-    # removed by pruning), not a read-only field to normalize, and describing it
-    # would just answer NOT_FOUND. This keeps the describe pass to the shared
-    # objects and removes the noisy warnings for one-org-only objects.
+    # Describe only STANDARD objects present in the destination org. System
+    # read-only fields (Status, IsClosed, ChatKey, AccountId, …) live on
+    # standard objects; custom objects are never interesting for this pass and
+    # may not even be describable (NOT_FOUND), so scoping to standard entities
+    # removes the noise and the wasted round-trips.
     dest_entities = set(cand_entities)
-    existing, eerr = existing_entities(sf, dest_org, cand_entities)
+    existing, eerr = standard_entities(sf, dest_org, cand_entities)
     if existing is not None:
         dest_entities = {e for e in cand_entities if e in existing}
     elif eerr:
-        logger.log('  ⚠ could not list destination entities (%s); describing all candidates.' % eerr)
+        logger.log('  ⚠ could not list standard destination entities (%s); describing all candidates.' % eerr)
     cand_entities = [e for e in cand_entities if e in dest_entities]
     if not cand_entities:
         return read_only
-    # Keep only candidates whose object exists in the destination: a field on
-    # an absent object is dangling (pruned), never a read-only field to
-    # normalize. This also covers the file-source path, where every candidate
-    # would otherwise be suspected.
+    # Keep only candidates whose object is a standard object in the destination:
+    # a field on a custom object (or an absent object) is never a system
+    # read-only field to normalize. This also covers the file-source path, where
+    # every candidate would otherwise be suspected.
     candidates = [n for n in candidates if n.split('.', 1)[0] in dest_entities]
     if not candidates:
         return read_only
     logger.log('  ▸ describing %d object(s) to detect system read-only field(s)...'
                % len(cand_entities))
 
+    _not_found = {'count': 0}
+
     def _updatable(org, entity):
         res, err = describe_object(sf, org, entity)
         if res is None:
+            # NOT_FOUND on a describe means the object is not describable in this
+            # org (missing / restricted package object). Not an actionable error:
+            # those fields are left as-is, so only count them and stay quiet.
+            if err and ('NOT_FOUND' in str(err) or 'does not exist' in str(err)):
+                _not_found['count'] += 1
+                return None
             logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
                        % (entity, org, err))
             return None
@@ -345,6 +352,9 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     if added:
         logger.log('  ✓ %d system read-only field(s) (updateable=false on both orgs) '
                    'normalized: %s' % (len(added), ', '.join(sorted(added))))
+    if _not_found['count']:
+        logger.log('  ▸ %d object(s) not describable in the org(s) — their fields left '
+                   'as-is (not normalized).' % _not_found['count'])
     return read_only
 
 
