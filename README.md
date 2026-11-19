@@ -160,8 +160,12 @@ converges, because a deploy cannot make the field editable.
   `BillingCity`, …) are the real editable fields.
 - **System read-only fields** whose `DataType` looks normal, e.g.
   `LiveChatTranscript.ChatKey` (`Text(200)`) and `ServiceAppointment.AccountId`
-  (`Lookup(Account)`) — detected by `sobject describe` on both orgs (only during
-  alignment, where both sides are available).
+  (`Lookup(Account)`) — detected by `sobject describe` on both orgs. During
+  alignment the candidates are the fields whose `editable` differs between the
+  two profiles; during the plain prune (source org via `-so`) the candidates are
+  the standard fields the source marks `editable=true`. A field is normalized
+  only when it is read-only on **both** orgs, so a field that is merely
+  FLS-locked on one side is kept.
 
 **Default behaviour (normalization ON).** By default the tool rewrites those
 fields to `editable=false` in **both** modes:

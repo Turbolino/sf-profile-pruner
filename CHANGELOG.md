@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.7] - 2026-11-19
+
+### Fixed
+
+- `--batch-size` help now reports the true maximum (`max 10000`) instead of the
+  stale `max 4000` (the clamp and README already said 10000).
+- Manifest classification (`toDeploy.xml` / `MISSING/package.xml`) now uses the
+  same `is_standard_api_name` criterion as the standard-metadata pre-pass: any
+  API name containing `__` is custom (so big objects `__b`, external objects
+  `__x`, platform events `__e` are `CustomObject`), and a standard field on a
+  custom object (`MyObj__c.CreatedDate`) stays `StandardField` instead of being
+  misclassified as `CustomField` by the old `'__c' in` substring.
+- Read-only normalization is now symmetric between plain prune and align: the
+  plain prune (source org via `-so`) also runs the `sobject describe` pass for
+  system read-only fields whose `DataType` looks normal (e.g.
+  `WorkOrder.IsClosed`, `ServiceContract.Status`), not just the DataType pass.
+  Candidates are the standard fields the source marks `editable=true`; a field
+  is normalized only when read-only on both orgs (FLS-locked-on-one-side fields
+  are kept). The describe runs source-first, so only objects that actually show
+  a disagreement are re-described on the destination.
+
 ## [2.16.6] - 2026-11-19
 
 ### Fixed

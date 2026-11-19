@@ -1222,6 +1222,31 @@ class TestExtractCommonMembers(unittest.TestCase):
         self.assertNotIn('StandardTab', out)
         self.assertNotIn('StandardObject', out)
 
+    def test_extract_common_members_custom_vs_standard(self):
+        """Regression: manifest classification must treat any `__` API name as
+        custom (big/external objects, platform events) and a standard field on a
+        custom object as standard — not the old `endswith('__c')` / `'__c' in`
+        substring heuristics."""
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<fieldPermissions><field>Account.MyField__c</field></fieldPermissions>'
+               '<fieldPermissions><field>MyObj__c.CreatedDate</field></fieldPermissions>'
+               '<fieldPermissions><field>ns__Obj__c.ns__F__c</field></fieldPermissions>'
+               '<objectPermissions><object>Account</object></objectPermissions>'
+               '<objectPermissions><object>MyObj__c</object></objectPermissions>'
+               '<objectPermissions><object>BigObj__b</object></objectPermissions>'
+               '<objectPermissions><object>Event__e</object></objectPermissions>'
+               '<objectPermissions><object>ExtObj__x</object></objectPermissions>'
+               '</Profile>')
+        out = pp.extract_common_members(self._groups(xml))
+        # custom fields (field component carries `__`)
+        self.assertEqual(out['CustomField'], {'Account.MyField__c', 'ns__Obj__c.ns__F__c'})
+        # a standard field on a custom object stays STANDARD (was CustomField)
+        self.assertNotIn('MyObj__c.CreatedDate', out.get('CustomField', set()))
+        # custom objects with any custom suffix, not just `__c`
+        self.assertEqual(out['CustomObject'],
+                         {'MyObj__c', 'BigObj__b', 'Event__e', 'ExtObj__x'})
+        self.assertNotIn('StandardObject', out)
+
 
 class TestProfileJsonToXml(unittest.TestCase):
     """Serializer for readMetadata Profile objects (no network required)."""
@@ -1808,6 +1833,63 @@ class TestMerge(unittest.TestCase):
         self.assertIn('LiveChatTranscript.ChatKey', ro)
         # Campaign.Status: object locked -> rejected despite field False.
         self.assertNotIn('Campaign.Status', ro)
+
+    def test_read_only_field_set_plain_prune_describes_system_fields(self):
+        """Plain prune (no destination profile) must ALSO normalize system
+        read-only fields via describe, not just DataType. Custom fields are not
+        candidates; a field editable in the source org is never normalized even
+        when the destination is FLS-locked."""
+        from prune_profile import cli as cli
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            write_text(src, self._profile(
+                '<fieldPermissions><field>WorkOrder.IsClosed</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>WorkOrder.Subject</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Case.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                '<fieldPermissions><field>Account.MyField__c</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
+            dt_map = {
+                'WorkOrder.IsClosed': 'Checkbox',
+                'WorkOrder.Subject': 'Text(80)',
+                'Case.Status': 'Picklist',
+                'Account.MyField__c': 'Text(200)',
+            }
+            described = []
+
+            def describe(_sf, org, entity):
+                described.append((org, entity))
+                if entity == 'WorkOrder':
+                    return {'updateable': True,
+                            'fields': [{'name': 'IsClosed', 'updateable': False},
+                                       {'name': 'Subject', 'updateable': True}]}, None
+                if entity == 'Case':
+                    # source: editable; dest: object FLS-locked -> must NOT be
+                    # classified read-only.
+                    if org == 'src':
+                        return {'updateable': True,
+                                'fields': [{'name': 'Status', 'updateable': True}]}, None
+                    return {'updateable': False,
+                            'fields': [{'name': 'Status', 'updateable': False}]}, None
+                return {'updateable': True, 'fields': []}, None
+
+            logger = types.SimpleNamespace(log=lambda *a: None)
+            with mock.patch.object(cli, 'field_data_types',
+                                   return_value=(dt_map, None)), \
+                    mock.patch.object(cli, 'describe_object', side_effect=describe):
+                ro = cli._read_only_field_set('sf', 'src', 'dst', src, None, logger)
+
+        # system read-only: updateable=False on both orgs -> normalized
+        self.assertIn('WorkOrder.IsClosed', ro)
+        # editable in source -> kept
+        self.assertNotIn('WorkOrder.Subject', ro)
+        # FLS-locked on destination only -> kept (not a system read-only field)
+        self.assertNotIn('Case.Status', ro)
+        # custom field -> not a describe candidate at all
+        self.assertNotIn('Account.MyField__c', ro)
+        # source-first: Case is never described on dest (source said editable),
+        # and the custom field's object is never described.
+        self.assertNotIn(('dst', 'Case'), described)
+        self.assertNotIn(('src', 'Account'), described)
+
 
     # --- the 4 --avoid-normalize-ro scenarios (align/prune x on/off) ---
 

@@ -45,6 +45,7 @@ from .constants import (
     MIN_CHUNK_SIZE,
     STORY,
     __version__,
+    is_standard_api_name,
     version_ge,
 )
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
@@ -163,23 +164,24 @@ def _clamp_batch_size(n):
 def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
                          logger):
     """Detect ``fieldPermissions`` fields whose ``editable`` flag is dead
-    metadata (the org always keeps them read-only), so the alignment normalizes
-    them to ``false`` instead of reporting a fake grant/revoke.
+    metadata (the org always keeps them read-only), so the tool normalizes them
+    to ``false`` instead of reporting a fake grant/revoke (align) or leaving a
+    dead ``true`` in the deliverable (plain prune).
 
     Two layers:
 
     1. ``FieldDefinition.DataType`` (user-independent, batched) catches the
        self-evident read-only types: Formula, Roll-Up Summary, Auto Number,
        Address, Location.
-    2. ``sobject describe`` on both orgs catches the remaining system read-only
-       fields whose DataType looks normal (e.g. ``LiveChatTranscript.ChatKey``
-       is ``Text(200)`` and ``ServiceAppointment.AccountId`` is
-       ``Lookup(Account)``). A field is read-only only when ``updateable=False``
-       on BOTH orgs: a field that is merely FLS-locked on one org (e.g.
-       ``Campaign.Status`` shows ``updateable=False`` only on the dev org whose
-       Campaign object is locked) reports ``True`` on the other side and is kept
-       as a real grant/revoke. Describe is scoped to the few objects whose
-       fields actually differ on ``editable``, so it stays fast.
+    2. ``sobject describe`` catches the remaining system read-only fields whose
+       DataType looks normal (e.g. ``LiveChatTranscript.ChatKey`` is
+       ``Text(200)`` and ``ServiceAppointment.AccountId`` is ``Lookup(Account)``).
+       A field is read-only only when ``updateable=False`` on BOTH orgs: a field
+       that is merely FLS-locked on one org (e.g. ``Campaign.Status`` shows
+       ``updateable=False`` only on the dev org whose Campaign object is locked)
+       reports ``True`` on the other side and is kept. Describe runs source-first
+       (only objects that actually show a disagreement are re-described on the
+       destination), so it stays cheap.
     """
     names = field_permissions_names(src_clean_path)
     entities = []
@@ -212,18 +214,28 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         logger.log('  ✓ %d field(s) read-only by type (formula/roll-up/auto-number/address); '
                    'editable normalized to false.' % len(read_only))
 
-    # --- layer 2: describe on both orgs for editable-differing non-formula fields ---
-    # This layer needs a destination profile to scope candidates cheaply, so it
-    # runs only during alignment. The plain prune (no destination profile)
-    # normalizes by DataType only.
-    if not dst_clean_path:
-        return read_only
+    # --- layer 2: describe-based detection of system read-only fields ---
+    # Scope differs by mode:
+    #   * align (dst_clean_path present): the two profiles exist, so candidates
+    #     are the (few) fields whose editable flag differs between them.
+    #   * plain prune (no destination profile): candidates are the standard
+    #     fields the source marks editable=true. Custom fields are excluded — a
+    #     custom field is read-only only when formula / roll-up summary / auto
+    #     number (already caught by layer 1) or FLS-locked (which must NOT be
+    #     normalized) — so only standard system fields (Status, IsClosed,
+    #     ChatKey, AccountId, …) are worth describing.
     src_edit = field_permissions_editable(src_clean_path)
-    dst_edit = field_permissions_editable(dst_clean_path)
-    candidates = [n for n in names
-                  if n not in read_only
-                  and n in dst_edit
-                  and src_edit.get(n, '') != dst_edit.get(n)]
+    if dst_clean_path is not None:
+        dst_edit = field_permissions_editable(dst_clean_path)
+        candidates = [n for n in names
+                      if n not in read_only
+                      and n in dst_edit
+                      and src_edit.get(n, '') != dst_edit.get(n)]
+    else:
+        candidates = [n for n in names
+                      if n not in read_only
+                      and src_edit.get(n) == 'true'
+                      and is_standard_api_name(n.rsplit('.', 1)[-1])]
     if not candidates:
         return read_only
     cand_entities = []
@@ -231,8 +243,8 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         ent = n.split('.', 1)[0]
         if ent and ent not in cand_entities:
             cand_entities.append(ent)
-    logger.log('  ▸ describing %d object(s) on both orgs to disambiguate %d '
-               'read-only system field(s)...' % (len(cand_entities), len(candidates)))
+    logger.log('  ▸ describing %d object(s) to detect system read-only field(s)...'
+               % len(cand_entities))
 
     def _updatable(org, entity):
         res, err = describe_object(sf, org, entity)
@@ -247,21 +259,48 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
                        if f.get('name')},
         }
 
+    # Source-first: describe the source org, keep only the fields the profile
+    # marks editable=true but the source org itself reports read-only. Only
+    # those (few) objects need a destination describe to confirm the field is
+    # system read-only (false on both) rather than FLS-locked on the source.
     src_describe = {}
-    dst_describe = {}
-    for ent in cand_entities:
-        d = _updatable(dest_org, ent)
-        if d is not None:
-            dst_describe[ent] = d
-        if src_org:
+    if src_org:
+        for ent in cand_entities:
             s = _updatable(src_org, ent)
             if s is not None:
                 src_describe[ent] = s
 
-    added = []
+    suspected = []
     for n in candidates:
+        ent, field = n.split('.', 1)
+        if src_org:
+            src = src_describe.get(ent)
+            if src is None or field not in src['fields']:
+                continue
+            if src['fields'][field] is False:
+                suspected.append(n)
+        else:
+            # File source: no source org to compare against. Suspect every
+            # candidate; the destination-side object guard filters FLS-locked
+            # objects.
+            suspected.append(n)
+    if not suspected:
+        return read_only
+
+    dst_entities = []
+    for n in suspected:
         ent = n.split('.', 1)[0]
-        field = n.split('.', 1)[1]
+        if ent and ent not in dst_entities:
+            dst_entities.append(ent)
+    dst_describe = {}
+    for ent in dst_entities:
+        d = _updatable(dest_org, ent)
+        if d is not None:
+            dst_describe[ent] = d
+
+    added = []
+    for n in suspected:
+        ent, field = n.split('.', 1)
         dst = dst_describe.get(ent)
         if dst is None or field not in dst['fields']:
             continue
@@ -272,9 +311,9 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             read_only_on_both = (src['fields'][field] is False
                                  and dst['fields'][field] is False)
         else:
-            # File source: no source org to describe. Trust dest-only read-only
-            # only when the object itself is updateable there (otherwise the
-            # whole object being FLS-locked makes every field look read-only).
+            # File source: trust dest-only read-only only when the object itself
+            # is updateable there (otherwise the whole object being FLS-locked
+            # makes every field look read-only).
             read_only_on_both = (dst['object_updateable'] is True
                                  and dst['fields'][field] is False)
         if read_only_on_both:
@@ -486,10 +525,11 @@ def _finalize_prune_output(result, merge_dir, src_out, original_copy,
 
 def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger):
     """Normalize system read-only field ``editable`` flags in a pruned (plain,
-    non-merged) profile unless ``--avoid-normalize-ro`` is set. Runs the
-    DataType-based detection (formula / roll-up summary / auto number / compound
-    address & location) and forces ``editable=false`` in place. Returns the
-    number of fields normalized."""
+    non-merged) profile unless ``--avoid-normalize-ro`` is set. Detects read-only
+    fields by DataType (formula / roll-up summary / auto number / compound
+    address & location) plus — when a source org is available — the
+    ``sobject describe`` system-read-only pass, then forces ``editable=false``
+    in place. Returns the number of fields normalized."""
     if args.avoid_normalize_ro:
         logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
         return 0
@@ -965,7 +1005,7 @@ def _main():
     g_tune = ap.add_argument_group('tuning')
     g_tune.add_argument('-bs', '--batch-size', type=int, default=DEFAULT_BATCH_SIZE, metavar='N',
                         help='split a section into parallel chunks of N entries '
-                             '(min 100, max 4000, default 200); 0 disables splitting')
+                             '(min 100, max 10000, default 200); 0 disables splitting')
     g_tune.add_argument('-tn', '--thread-number', type=int, default=16, metavar='X',
                         help='max parallel worker threads, 1..64 (default: 16); capped to '
                              'the number of work items (chunks) to prune')

@@ -15,7 +15,7 @@ from copy import deepcopy
 
 from lxml import etree
 
-from .constants import BLOCK_MAP, M, NS, decode_bytes
+from .constants import BLOCK_MAP, M, NS, decode_bytes, is_standard_api_name
 
 
 def resolve_error(problem):
@@ -399,11 +399,22 @@ def extract_common_members(groups):
         elif block == 'objectPermissions':
             for el in els:
                 v = _txt(el, 'object')
-                add('CustomObject' if v.endswith('__c') else 'StandardObject', v)
+                # Custom = any metadata whose API name carries a namespace and/or
+                # a custom suffix (`__`): custom objects, big/external objects,
+                # platform events, custom settings, knowledge (`__kav`), etc. This
+                # matches engine.py's is_standard_api_name() criterion instead of
+                # the old `endswith('__c')` which misclassified `__b`/`__e`/`__x`.
+                add('CustomObject' if not is_standard_api_name(v) else 'StandardObject', v)
         elif block == 'fieldPermissions':
             for el in els:
                 v = _txt(el, 'field')
-                add('CustomField' if '__c' in v else 'StandardField', v)
+                # `v` is `Object.Field`. A field is custom only when the FIELD
+                # component carries `__` (e.g. Account.MyField__c); a standard
+                # field on a custom object (MyObj__c.CreatedDate) is standard.
+                # The old `'__c' in v` matched the object part and misclassified
+                # those standard fields as CustomField.
+                field = v.rsplit('.', 1)[-1]
+                add('CustomField' if not is_standard_api_name(field) else 'StandardField', v)
         elif block == 'customSettingAccesses':
             for el in els:
                 add('CustomObject', _txt(el, 'name'))
