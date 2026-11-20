@@ -6,7 +6,7 @@ error-type -> (block, child, mode) mapping that drives the pruning. Kept free
 of I/O so every other module can import it without side effects.
 """
 
-__version__ = '2.18.0'
+__version__ = '2.19.0'
 __author__ = "Lorenzo D'Aleo"
 __email__ = 'turbolino.dev@proton.me'
 AUTHOR_NOTE = "Made with <3 by %s (%s)" % (__author__, __email__)
@@ -62,6 +62,12 @@ TERMINAL_STATUSES = {'Succeeded', 'SucceededPartial', 'Failed', 'Canceled'}
 
 # Error-type -> list of (block, child, mode)
 # mode: 'exact' | 'prefix' (X__c.*) | 'suffix' (-X)
+#
+# The tab-related entries list BOTH ``tabVisibilities`` (Profile) and
+# ``tabSettings`` (PermissionSet): the two metadata types name the same
+# logical tab section differently, and only the section actually present in the
+# XML ever matches (a Profile never has tabSettings, a PermissionSet never has
+# tabVisibilities). This keeps the removal engine metadata-type agnostic.
 BLOCK_MAP = {
     'CustomField':        [('fieldPermissions', 'field', 'exact')],
     'StandardField':      [('fieldPermissions', 'field', 'exact')],
@@ -69,6 +75,9 @@ BLOCK_MAP = {
         ('tabVisibilities', 'tab', 'exact'),
         ('tabVisibilities', 'tab', 'prefix'),
         ('tabVisibilities', 'tab', 'suffix'),
+        ('tabSettings', 'tab', 'exact'),
+        ('tabSettings', 'tab', 'prefix'),
+        ('tabSettings', 'tab', 'suffix'),
     ],
     'ApexClass':          [('classAccesses', 'apexClass', 'exact')],
     'ApexPage':           [
@@ -95,7 +104,8 @@ BLOCK_MAP = {
     ],
     'CustomPermission':   [('customPermissions', 'name', 'exact')],
     'CustomMetadataType': [('customMetadataTypeAccesses', 'name', 'exact')],
-    'StandardTab':        [('tabVisibilities', 'tab', 'exact')],
+    'StandardTab':        [('tabVisibilities', 'tab', 'exact'),
+                           ('tabSettings', 'tab', 'exact')],
     'ExternalDataSource': [('externalDataSourceAccesses', 'externalDataSource', 'exact')],
     'CustomObject':       [
         ('objectPermissions', 'object', 'exact'),
@@ -135,7 +145,8 @@ LISTABLE = {
     'ApexPage':           [('pageAccesses', 'apexPage'),
                            ('loginFlows', 'visualForcePage')],
     'CustomApplication':  [('applicationVisibilities', 'application')],
-    'CustomTab':          [('tabVisibilities', 'tab')],
+    'CustomTab':          [('tabVisibilities', 'tab'),
+                           ('tabSettings', 'tab')],
     'CustomPermission':   [('customPermissions', 'name')],
     'CustomMetadataType': [('customMetadataTypeAccesses', 'name')],
     'ExternalDataSource': [('externalDataSourceAccesses', 'externalDataSource')],
@@ -187,6 +198,57 @@ DEFAULT_BATCH_SIZE = 200
 # here (those calls never touch deploy start). 0 or 1 means sequential.
 DEFAULT_IO_THREADS = 8
 MAX_IO_THREADS = 16
+
+# ---------------------------------------------------------------------------
+# Metadata type model (Profile / PermissionSet).
+#
+# The tool treats Profile and PermissionSet as two concrete shapes of the same
+# "permission container": identical permission sections (fieldPermissions,
+# objectPermissions, classAccesses, pageAccesses, flowAccesses,
+# applicationVisibilities, recordTypeVisibilities, customPermissions, …) plus
+# one schema difference — the tab section is ``tabVisibilities`` in a Profile
+# and ``tabSettings`` in a PermissionSet (with different visibility values).
+# ---------------------------------------------------------------------------
+METADATA_TYPES = {
+    'Profile': {
+        'root': 'Profile',
+        'folder': 'profiles',
+        'suffix': '.profile-meta.xml',
+        'manifest': 'Profile',
+    },
+    'PermissionSet': {
+        'root': 'PermissionSet',
+        'folder': 'permissionsets',
+        'suffix': '.permissionset-meta.xml',
+        'manifest': 'PermissionSet',
+    },
+}
+
+
+def meta_root(mdtype):
+    """XML root element name for a metadata type."""
+    return METADATA_TYPES[mdtype]['root']
+
+
+def meta_folder(mdtype):
+    """Source directory name for a metadata type."""
+    return METADATA_TYPES[mdtype]['folder']
+
+
+def meta_filename(mdtype, name):
+    """Source filename for `name` of a metadata type (e.g. ``Admin.profile-meta.xml``)."""
+    return name + METADATA_TYPES[mdtype]['suffix']
+
+
+def meta_manifest(mdtype):
+    """Metadata API type name for a package.xml / manifest entry."""
+    return METADATA_TYPES[mdtype]['manifest']
+
+
+def tab_section(mdtype):
+    """Tab section name for a metadata type: Profile -> tabVisibilities,
+    PermissionSet -> tabSettings."""
+    return 'tabSettings' if mdtype == 'PermissionSet' else 'tabVisibilities'
 
 
 def version_ge(a, b):

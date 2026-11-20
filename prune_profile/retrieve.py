@@ -19,7 +19,7 @@ import subprocess
 
 from lxml import etree
 
-from .constants import decode_bytes
+from .constants import decode_bytes, meta_root
 from .sfcli import find_node, find_sf_node_modules
 
 METADATA_NS = 'http://soap.sforce.com/2006/04/metadata'
@@ -87,9 +87,10 @@ def _build(parent, obj):
             el.text = _scalar_text(value)
 
 
-def profile_json_to_xml(data, clean=True):
-    """Serialise a readMetadata Profile object to source-format XML (bytes)."""
-    root = etree.Element('Profile', nsmap={None: METADATA_NS})
+def profile_json_to_xml(data, clean=True, mdtype='Profile'):
+    """Serialise a readMetadata object (Profile or PermissionSet) to source-format
+    XML (bytes)."""
+    root = etree.Element(meta_root(mdtype), nsmap={None: METADATA_NS})
     _build(root, data)
     if clean:
         for section in CLEAN_SECTIONS:
@@ -100,8 +101,9 @@ def profile_json_to_xml(data, clean=True):
 
 
 def retrieve_profiles(username, profile_names, clean=True,
-                      sf_node_modules=None, node=None, timeout=300):
-    """Retrieve complete profiles via readMetadata().
+                      sf_node_modules=None, node=None, timeout=300,
+                      mdtype='Profile'):
+    """Retrieve complete profiles or permission sets via readMetadata().
 
     Returns (profiles, error) where `profiles` is a list of
     ``(fullName, xml_bytes)`` and `error` is None on full success, otherwise a
@@ -123,7 +125,7 @@ def retrieve_profiles(username, profile_names, clean=True,
     existing = env.get('NODE_PATH', '')
     env['NODE_PATH'] = nm + (os.pathsep + existing if existing else '')
 
-    cmd = [node, helper, '--username', username]
+    cmd = [node, helper, '--username', username, '--type', mdtype]
     for name in profile_names:
         cmd += ['--profile', name]
 
@@ -148,7 +150,7 @@ def retrieve_profiles(username, profile_names, clean=True,
 
     profiles = []
     for p in payload.get('profiles', []):
-        xml = profile_json_to_xml(p['data'], clean=clean)
+        xml = profile_json_to_xml(p['data'], clean=clean, mdtype=mdtype)
         profiles.append((p['fullName'], xml))
 
     errs = payload.get('errors', [])

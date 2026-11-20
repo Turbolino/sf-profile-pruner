@@ -6,10 +6,10 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-Profile Pruner removes every reference in a Salesforce **Profile** to metadata
-that does **not** exist in the target org, so the profile deploys cleanly on
-the first try. Dry-run by default: the org is never touched unless you ask for
-it.
+Profile Pruner removes every reference in a Salesforce **Profile** (or
+**PermissionSet**) to metadata that does **not** exist in the target org, so it
+deploys cleanly on the first try. Dry-run by default: the org is never touched
+unless you ask for it.
 
 ---
 
@@ -64,6 +64,19 @@ sfpp -so dev -sp "Sales Rep" -do prod -dp "Sales Rep" --deploy-on-success --sure
 
   Use `--diff` when you only want to **see** the differences; use
   `--align-from-source` when you want to **apply** them.
+
+**PermissionSets too.** Everything above works identically for PermissionSets:
+use `-sps` / `-dps` (or `--src-permissionset` / `--dest-permissionset`) instead
+of `-sp` / `-dp`:
+
+```bash
+sfpp -so dev -sps "Sales_Ops" -do prod -dps "Sales_Ops" -od ./out
+```
+
+The source and destination may even be different types (a Profile against a
+PermissionSet, or vice versa): the tab section — `tabVisibilities` on a
+Profile, `tabSettings` on a PermissionSet — is mapped across the two
+vocabularies, and the merged output always uses the destination's schema.
 
 **Who it's for.** Anyone promoting Profiles across an environment chain
 (dev → uat → prod), moving a Profile between orgs that don't carry the same
@@ -260,9 +273,11 @@ Options are grouped in the `-h` help.
 | `-pp`, `--profile-path` | Path of the source `.profile-meta.xml` file (via 1). |
 | `-so`, `--src-org` | Source org alias/username to retrieve from (via 2). |
 | `-sp`, `--src-profile` | Name of the Profile to retrieve from `--src-org` (via 2). |
+| `-sps`, `--src-permissionset` | Name of the PermissionSet to retrieve from `--src-org` (via 2). Mutually exclusive with `--src-profile`. |
 | `-fp`, `--full-profile` | Retrieve the full (non-stripped) profile; default removes `loginIpRanges`/`loginHours`/`userLicense`. |
-| `-do`, `--dest-org` | Destination org alias/username (dry-run and optional deploy target). Omit it (with `-so` + `-sp`) for retrieve only. |
-| `-dp`, `--dest-profile` | Name to deploy the cleaned profile under; created if it does not exist. Default: source name. |
+| `-do`, `--dest-org` | Destination org alias/username (dry-run and optional deploy target). Omit it (with `-so` + `-sp`/`-sps`) for retrieve only. |
+| `-dp`, `--dest-profile` | Name to deploy the cleaned Profile under; created if it does not exist. Default: source name. |
+| `-dps`, `--dest-permissionset` | Name to deploy the cleaned PermissionSet under; created if it does not exist. Mutually exclusive with `--dest-profile`. Enables cross-type source/destination (Profile ↔ PermissionSet). |
 | `-od`, `--out-dir` | Output directory for report/packages/logs. Default: current directory. |
 | `-bs`, `--batch-size` | Split a section into chunks of `N` entries (min 100, max 10000, default 200); `0` disables. |
 | `-tn`, `--thread-number` | Max parallel workers, `1`–`64`. Default `16`. |

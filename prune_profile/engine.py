@@ -4,7 +4,8 @@
 import json
 import os
 
-from .constants import LISTABLE, LIST_METADATA_NAME, M, MIN_API, is_standard_api_name, version_ge
+from .constants import LISTABLE, LIST_METADATA_NAME, M, MIN_API, is_standard_api_name, version_ge, \
+    meta_filename, meta_folder, meta_manifest
 from .parallel import run_parallel
 from .sfcli import dry_run, list_metadata, tooling_query
 from .xmlio import (
@@ -124,12 +125,13 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
 
     removals = []  # (type, member, source)
 
-    # ---------- standard tabs (tabVisibilities: standard-*) ----------
+    # ---------- standard tabs (tabVisibilities / tabSettings: standard-*) ----------
     std_tabs = set()
-    for el in groups.get('tabVisibilities', []):
-        v = _txt(el, 'tab')
-        if v.startswith('standard-'):
-            std_tabs.add(v)
+    for section in ('tabVisibilities', 'tabSettings'):
+        for el in groups.get(section, []):
+            v = _txt(el, 'tab')
+            if v.startswith('standard-'):
+                std_tabs.add(v)
     if std_tabs:
         _report('listing %d standard tab(s) via TabDefinition...' % len(std_tabs))
         recs, err = tooling_query(sf, org, 'SELECT Name FROM TabDefinition')
@@ -267,14 +269,14 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
 
 def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
                     job_timeout, profile_name, api_version, worker_proj, logger,
-                    max_iter, control):
+                    max_iter, control, mdtype='Profile'):
     """Prune a single chunk (a slice of a section) until its sub-profile
     dry-runs clean. Returns (ok, reason)."""
     manifest_path = os.path.join(worker_proj, 'manifest.xml')
     profile_path = os.path.join(worker_proj, 'force-app', 'main', 'default',
-                                'profiles', '%s.profile-meta.xml' % profile_name)
+                                meta_folder(mdtype), meta_filename(mdtype, profile_name))
     os.makedirs(os.path.dirname(profile_path), exist_ok=True)
-    write_package_xml(manifest_path, {'Profile': [profile_name]}, api_version)
+    write_package_xml(manifest_path, {meta_manifest(mdtype): [profile_name]}, api_version)
 
     with state.lock:
         initial = state.chunk_initials.get(block, [0])[chunk_id]
@@ -291,7 +293,7 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
         if not elements:
             return True, 'no entries left'
         with open(profile_path, 'wb') as f:
-            f.write(build_subprofile(elements))
+            f.write(build_subprofile(elements, mdtype))
 
         board.set(tid, 'dry-run', block, 'polling', initial, initial - len(elements))
         res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,
@@ -340,7 +342,7 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
 
 def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
            poll_interval, job_timeout, profile_name, api_version, worker_proj,
-           logger, max_iter):
+           logger, max_iter, mdtype='Profile'):
     """Consume one chunk at a time until the queue is empty."""
     while True:
         if control.stop.is_set():
@@ -355,7 +357,7 @@ def worker(tid, state, queue, queue_lock, board, progress, control, sf, org,
         ok, reason = process_section(tid, block, chunk_id, state, board, sf, org,
                                      poll_interval, job_timeout, profile_name,
                                      api_version, worker_proj, logger, max_iter,
-                                     control)
+                                     control, mdtype)
         state.record_chunk(block, chunk_id, ok, reason)
         progress.finish(ok)
         if control.stop.is_set():

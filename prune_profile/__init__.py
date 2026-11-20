@@ -14,6 +14,7 @@ Public package surface. The implementation is split into thematic modules:
 
 from lxml import etree
 
+from . import constants
 from .board import Control, Logger, PrefetchStatus, Progress, StatusBoard
 from .constants import (
     APP_NAME,
@@ -94,6 +95,7 @@ from .xmlio import (
     build_subprofile,
     candidates_for_block,
     dangling_members,
+    detect_metadata_type,
     extract_common_members,
     humanize_status,
     load_log_entries,
@@ -105,6 +107,7 @@ from .xmlio import (
     remove_from_list,
     remove_temp_project,
     resolve_error,
+    root_metadata_type,
     strip_blank_lines,
     write_package_xml,
     write_sfdx_project,
@@ -141,10 +144,10 @@ __all__ = [
     'poll_deploy', 'report_deploy', 'start_deploy',
     'tooling_query',
     'apply_removals_batch', 'build_subprofile', 'candidates_for_block',
-    'dangling_members', 'extract_common_members', 'humanize_status',
+    'dangling_members', 'detect_metadata_type', 'extract_common_members', 'humanize_status',
     'load_log_entries',
     'prepare_work_copy', 'prunable_blocks', 'read_outcome', 'read_report_summary',
     'remove_block',
-    'remove_from_list', 'remove_temp_project', 'resolve_error',
+    'remove_from_list', 'remove_temp_project', 'resolve_error', 'root_metadata_type',
     'strip_blank_lines', 'write_package_xml', 'write_sfdx_project', 'etree',
 ]

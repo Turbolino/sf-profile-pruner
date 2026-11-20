@@ -2253,5 +2253,130 @@ class TestMerge(unittest.TestCase):
         self.assertIn('Multi-Picked Layout object has several layouts - verify it matches the default', s)
 
 
+class TestPermissionSet(unittest.TestCase):
+    """Metadata-type model + PermissionSet / cross-type (Profile <-> PermissionSet)."""
+
+    NS = 'http://soap.sforce.com/2006/04/metadata'
+
+    @classmethod
+    def _ps(cls, sections_xml):
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<PermissionSet xmlns="%s">\n%s\n</PermissionSet>\n'
+                % (cls.NS, sections_xml))
+
+    @staticmethod
+    def _write(d, name, text):
+        write_text(os.path.join(d, name), text)
+
+    def test_meta_type_helpers(self):
+        self.assertEqual(pp.constants.meta_root('PermissionSet'), 'PermissionSet')
+        self.assertEqual(pp.constants.meta_folder('PermissionSet'), 'permissionsets')
+        self.assertEqual(pp.constants.meta_filename('PermissionSet', 'X'), 'X.permissionset-meta.xml')
+        self.assertEqual(pp.constants.meta_manifest('PermissionSet'), 'PermissionSet')
+        self.assertEqual(pp.constants.tab_section('Profile'), 'tabVisibilities')
+        self.assertEqual(pp.constants.tab_section('PermissionSet'), 'tabSettings')
+
+    def test_detect_metadata_type(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'x.permissionset-meta.xml')
+            self._write(d, 'x.permissionset-meta.xml', self._ps(''))
+            self.assertEqual(pp.detect_metadata_type(p), 'PermissionSet')
+            p2 = os.path.join(d, 'x.profile-meta.xml')
+            self._write(d, 'x.profile-meta.xml',
+                        '<?xml version="1.0"?><Profile xmlns="%s"></Profile>' % self.NS)
+            self.assertEqual(pp.detect_metadata_type(p2), 'Profile')
+
+    def test_build_subprofile_permissionset_root(self):
+        root = pp.etree.fromstring('<PermissionSet xmlns="%s"></PermissionSet>' % self.NS)
+        el = pp.etree.SubElement(root, '{%s}userPermissions' % self.NS)
+        pp.etree.SubElement(el, '{%s}name' % self.NS).text = 'X'
+        xml = pp.build_subprofile([el], mdtype='PermissionSet')
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % self.NS)
+
+    def test_profile_json_to_xml_permissionset(self):
+        xml = profile_json_to_xml(
+            {'fullName': 'PS1', 'label': 'PS1',
+             'userPermissions': [{'name': 'ViewSetup', 'enabled': True}]},
+            clean=False, mdtype='PermissionSet')
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % pp.NS)
+
+    def test_merge_profile_source_into_permissionset_dest(self):
+        """Cross-type: Profile source -> PermissionSet destination. The merged
+        file is a PermissionSet, tabs are converted to tabSettings, and a
+        destination-only tab is turned off with None."""
+        src = ('<Profile xmlns="%s">\n'
+               '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+               '<fieldPermissions><field>Acc.Skill__c</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<tabSettings><tab>TabA__c</tab><visibility>Visible</visibility></tabSettings>\n'
+               '<tabSettings><tab>TabB__c</tab><visibility>Visible</visibility></tabSettings>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % self.NS)
+        tabs = {el.find('{%s}tab' % self.NS).text: el.find('{%s}visibility' % self.NS).text
+                for el in r.findall('{%s}tabSettings' % self.NS)}
+        # source TabA converted to destination vocabulary (DefaultOn -> Visible)
+        self.assertEqual(tabs['TabA__c'], 'Visible')
+        # destination-only TabB turned off with the PermissionSet off value
+        self.assertEqual(tabs['TabB__c'], 'None')
+        # fieldPermissions carried across verbatim
+        fp = r.find('{%s}fieldPermissions' % self.NS)
+        self.assertEqual(fp.find('{%s}field' % self.NS).text, 'Acc.Skill__c')
+        kinds = sorted(c['kind'] for c in changes)
+        self.assertIn('grant', kinds)   # fieldPermissions grant
+        self.assertIn('revoke', kinds)  # TabB turned off
+
+    def test_merge_permissionset_source_into_profile_dest(self):
+        """Cross-type: PermissionSet source -> Profile destination; tabSettings
+        becomes tabVisibilities and the off value is Hidden."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<tabSettings><tab>TabA__c</tab><visibility>Visible</visibility></tabSettings>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+               '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}Profile' % self.NS)
+        tabs = {el.find('{%s}tab' % self.NS).text: el.find('{%s}visibility' % self.NS).text
+                for el in r.findall('{%s}tabVisibilities' % self.NS)}
+        self.assertEqual(tabs['TabA__c'], 'DefaultOn')   # Visible -> DefaultOn
+        self.assertEqual(tabs['TabB__c'], 'Hidden')      # dest-only -> Hidden
+
+    def test_diff_cross_type_normalizes_tab_section(self):
+        """Cross-type diff maps tabVisibilities/tabSettings to one comparable
+        section with on/off visibility."""
+        src = ('<Profile xmlns="%s">\n'
+               '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+               '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<tabSettings><tab>TabA__c</tab><visibility>Visible</visibility></tabSettings>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            sections = pp.diff_profiles(os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        tab = sections['tabVisibilities']
+        self.assertEqual(tab['source_count'], 2)
+        self.assertEqual(tab['dest_count'], 1)
+        # TabA present in both with the same effective state -> common, no diff
+        self.assertEqual(len(tab['different']), 0)
+        self.assertEqual(len(tab['only_source']), 1)  # TabB (off side has none)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

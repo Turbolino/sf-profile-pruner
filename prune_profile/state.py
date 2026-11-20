@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from lxml import etree
 
-from .constants import BLOCK_MAP, M, NS, STANDARD_TYPES
+from .constants import BLOCK_MAP, M, NS, STANDARD_TYPES, meta_root
 from .xmlio import extract_common_members, remove_from_list, write_package_xml
 
 
@@ -15,7 +15,8 @@ class SharedState:
     """Thread-safe shared results: per-section groups + cumulative errors."""
 
     def __init__(self, groups, original_seq, logger, missing_log, common_profile_path,
-                 missing_pkg_path, todeploy_path, profile_name, api_version):
+                 missing_pkg_path, todeploy_path, profile_name, api_version,
+                 mdtype='Profile'):
         self.lock = threading.Lock()
         self.groups = groups              # OrderedDict: block -> [lxml elements]
         self.original_seq = original_seq  # [lxml elements] in document order
@@ -26,6 +27,7 @@ class SharedState:
         self.todeploy_path = todeploy_path
         self.profile_name = profile_name
         self.api_version = api_version
+        self.mdtype = mdtype
         self.removed_by_type = {}         # type -> set(member)
         self.seq = 0
         self.section_status = {}           # block -> (ok, reason)
@@ -162,7 +164,7 @@ class SharedState:
         for elements in self.groups.values():
             for el in elements:
                 surviving.add(id(el))
-        root = etree.Element(M + 'Profile', nsmap={None: NS})
+        root = etree.Element(M + meta_root(self.mdtype), nsmap={None: NS})
         for el in self.original_seq:
             if id(el) in surviving:
                 root.append(deepcopy(el))

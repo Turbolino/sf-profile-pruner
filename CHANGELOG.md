@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.0] - 2026-11-20
+
+### Added
+
+- PermissionSet support, equivalent to Profile, plus cross-type comparison:
+  - `-sps` / `--src-permissionset` and `-dps` / `--dest-permissionset` name a
+    PermissionSet for the source / destination (mutually exclusive with
+    `-sp` / `-dp`).
+  - The retrieve helper (`readMetadata`), the prune engine, the deploy/validate
+    steps and the merged output all honor the metadata type (folder
+    `permissionsets/`, filename `.permissionset-meta.xml`, manifest type
+    `PermissionSet`, XML root `<PermissionSet>`).
+  - Cross-type merge/diff: a Profile source against a PermissionSet destination
+    (or vice versa) is supported. The tab section — `tabVisibilities` in a
+    Profile, `tabSettings` in a PermissionSet — is mapped across the two
+    vocabularies (DefaultOn/DefaultOff/Hidden ↔ Visible/Available/None), and the
+    merged file always uses the destination's schema. All other permission
+    sections are structurally identical and merge/diff directly.
+
 ## [2.18.0] - 2026-11-19
 
 ### Added

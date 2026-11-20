@@ -44,10 +44,14 @@ from .constants import (
     DISCLAIMER,
     MAX_CHUNK_SIZE,
     MAX_IO_THREADS,
+    METADATA_TYPES,
     MIN_CHUNK_SIZE,
     STORY,
     __version__,
     is_standard_api_name,
+    meta_filename,
+    meta_folder,
+    meta_manifest,
     version_ge,
 )
 from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
@@ -64,8 +68,8 @@ from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
                     set_deploy_start_interval, standard_entities, tooling_query)
 from .stage import prune_stage
-from .xmlio import (load_log_entries, read_report_summary, write_package_xml,
-                    write_sfdx_project)
+from .xmlio import (detect_metadata_type, load_log_entries, read_report_summary,
+                    write_package_xml, write_sfdx_project)
 
 
 def _rel(base, path):
@@ -87,11 +91,14 @@ _VALUE_FLAGS = {
     '--out-dir', '-od',
     '--src-org', '-so',
     '--src-profile', '-sp',
+    '--src-permissionset', '-sps',
     '--dest-org', '-do',
     '--dest-profile', '-dp',
+    '--dest-permissionset', '-dps',
     '--batch-size', '-bs',
     '--api-version', '-av',
     '--thread-number', '-tn',
+    '--io-threads-number', '-itn',
     '--job-timeout', '--deploy-throttle-ms', '--poll-interval',
     '--max-iter', '--sf',
 }
@@ -494,20 +501,20 @@ def _confirm(prompt):
 
 
 def _deploy_profile(sf, org, profile_path, profile_name, api_version,
-                    poll_interval, job_timeout, logger, out_dir):
+                    poll_interval, job_timeout, logger, out_dir, mdtype='Profile'):
     """Deploy `profile_path` to `org` under `profile_name`.
 
-    Salesforce creates the profile if the name does not exist and merges into it
-    otherwise, so a renamed deploy is exactly "create if missing". A fresh
-    micro-project is created under `.work/deploy` and removed afterwards.
+    Salesforce creates the Profile/PermissionSet if the name does not exist and
+    merges into it otherwise, so a renamed deploy is exactly "create if missing".
+    A fresh micro-project is created under `.work/deploy` and removed afterwards.
     """
     proj = os.path.join(out_dir, '.work', 'deploy')
     try:
         write_sfdx_project(proj, api_version)
         manifest = os.path.join(proj, 'manifest.xml')
-        write_package_xml(manifest, {'Profile': [profile_name]}, api_version)
-        dst = os.path.join(proj, 'force-app', 'main', 'default', 'profiles',
-                           '%s.profile-meta.xml' % profile_name)
+        write_package_xml(manifest, {meta_manifest(mdtype): [profile_name]}, api_version)
+        dst = os.path.join(proj, 'force-app', 'main', 'default',
+                           meta_folder(mdtype), meta_filename(mdtype, profile_name))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(profile_path, dst)
         return deploy(sf, manifest, org, poll_interval, job_timeout, logger, cwd=proj)
@@ -515,7 +522,8 @@ def _deploy_profile(sf, org, profile_path, profile_name, api_version,
         shutil.rmtree(proj, ignore_errors=True)
 
 
-def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quiet):
+def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quiet,
+                                 mdtype='Profile'):
     """Write MANUAL-OPERATIONS.txt and, when there is work to do by hand, print
     the table at the end of the run. Returns the file path, or None when there
     are no manual operations."""
@@ -523,7 +531,7 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
         logger.log('No manual operations required (every removed/off section is deploy-safe).')
         return None
     path = write_manual_ops(os.path.join(out_dir, 'MANUAL-OPERATIONS.txt'),
-                            manual_ops, profile_name)
+                            manual_ops, profile_name, mdtype=mdtype)
     logger.log('')
     logger.log('========================================================')
     logger.log('  MANUAL OPERATIONS REQUIRED (no deploy-able "off" value)')
@@ -553,13 +561,14 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
 
 
 def _finalize_prune_output(result, merge_dir, src_out, original_copy,
-                           dest_profile_name, dest_org, logger, quiet):
+                           dest_profile_name, dest_org, logger, quiet,
+                           mdtype='Profile'):
     """Assemble the ``4-merged/`` folder for a plain prune run: copy the clean
     profile, write ``what-is-changed.txt`` (removed dangling references +
     manual operations) and ``MANUAL-OPERATIONS.txt``. Returns the
     what-is-changed path."""
     os.makedirs(merge_dir, exist_ok=True)
-    final_profile = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
+    final_profile = os.path.join(merge_dir, meta_filename(mdtype, dest_profile_name))
     shutil.copyfile(result['common_profile_path'], final_profile)
     manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
     removed_by_type = {}
@@ -570,7 +579,7 @@ def _finalize_prune_output(result, merge_dir, src_out, original_copy,
         os.path.join(merge_dir, 'what-is-changed.txt'),
         removed_by_type, manual_ops, dest_org)
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name,
-                                 logger, quiet)
+                                 logger, quiet, mdtype=mdtype)
     return wic_path
 
 
@@ -606,17 +615,18 @@ def _align_read_only_fields(args, sf, src_org, dest_org, src_clean, dst_clean, l
 
 
 def _validate_profile_dry_run(sf, org, profile_path, profile_name, api_version,
-                              poll_interval, job_timeout, logger, out_dir):
-    """Dry-run a single Profile package. Returns (validation, component_failures)
-    where ``validation`` is ``'clean'`` on success or a failure description, and
-    ``component_failures`` is the list of raw component-failure dicts (empty on
-    clean)."""
+                              poll_interval, job_timeout, logger, out_dir,
+                              mdtype='Profile'):
+    """Dry-run a single Profile/PermissionSet package. Returns (validation,
+    component_failures) where ``validation`` is ``'clean'`` on success or a
+    failure description, and ``component_failures`` is the list of raw
+    component-failure dicts (empty on clean)."""
     proj = os.path.join(out_dir, '.work', 'align-final')
     write_sfdx_project(proj, api_version)
     manifest = os.path.join(proj, 'manifest.xml')
-    write_package_xml(manifest, {'Profile': [profile_name]}, api_version)
-    dst = os.path.join(proj, 'force-app', 'main', 'default', 'profiles',
-                       '%s.profile-meta.xml' % profile_name)
+    write_package_xml(manifest, {meta_manifest(mdtype): [profile_name]}, api_version)
+    dst = os.path.join(proj, 'force-app', 'main', 'default',
+                       meta_folder(mdtype), meta_filename(mdtype, profile_name))
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copyfile(profile_path, dst)
     try:
@@ -639,7 +649,7 @@ ALIGN_STATE_FILE = 'align-state.json'
 
 def _write_align_state(out_dir, args, src_profile_name, dest_profile_name,
                        dest_org, merged_path, validation, n_granted, n_revoked,
-                       n_layout, n_manual):
+                       n_layout, n_manual, src_mdtype='Profile', dest_mdtype='Profile'):
     """Persist the run identity + validated merged profile of a completed
     alignment, so a later invocation on the same folder can deploy the cached
     merge instead of redoing the whole pipeline."""
@@ -650,6 +660,8 @@ def _write_align_state(out_dir, args, src_profile_name, dest_profile_name,
         'dest_org': dest_org,
         'src_profile': src_profile_name,
         'dest_profile': dest_profile_name,
+        'src_mdtype': src_mdtype,
+        'dest_mdtype': dest_mdtype,
         'api_version': args.api_version,
         'merged_profile': os.path.relpath(merged_path, out_dir),
         'validation': validation,
@@ -707,7 +719,8 @@ def _align_resume_summary(out_dir, state):
 
 
 def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
-                      dest_org, do_deploy, out_dir, logger, sf):
+                      dest_org, do_deploy, out_dir, logger, sf,
+                      src_mdtype='Profile', dest_mdtype='Profile'):
     """Resume an alignment whose folder already holds a completed, validated
     merge. Returns an exit code when the invocation is handled here (deploy the
     cached merge, report done, or fail on a parameter mismatch), or None to run
@@ -723,12 +736,17 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
         'dest_org': state.get('dest_org'),
         'src_profile': state.get('src_profile'),
         'dest_profile': state.get('dest_profile'),
+        # Missing mdtype in a pre-PermissionSet align-state means a Profile run.
+        'src_mdtype': state.get('src_mdtype') or 'Profile',
+        'dest_mdtype': state.get('dest_mdtype') or 'Profile',
     }
     current = {
         'src_org': src_org,
         'dest_org': dest_org,
         'src_profile': src_profile_name,
         'dest_profile': dest_profile_name,
+        'src_mdtype': src_mdtype,
+        'dest_mdtype': dest_mdtype,
     }
     mismatches = sorted(k for k in saved if saved[k] != current.get(k))
     if mismatches:
@@ -741,7 +759,7 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
         return 2
 
     merged_rel = state.get('merged_profile') or os.path.join(
-        '4-merged', '%s.profile-meta.xml' % dest_profile_name)
+        '4-merged', meta_filename(dest_mdtype, dest_profile_name))
     merged_path = os.path.normpath(os.path.join(out_dir, merged_rel))
     if not os.path.isfile(merged_path):
         print('ERROR: a completed alignment run was found in this folder, but its')
@@ -771,7 +789,7 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
                % (dest_profile_name, dest_org))
     ok, detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
                                  api_version, args.poll_interval, args.job_timeout,
-                                 logger, out_dir)
+                                 logger, out_dir, mdtype=dest_mdtype)
     if ok:
         logger.log('DEPLOY: %s' % detail)
         logger.log('RESULT:SUCCESS')
@@ -784,34 +802,36 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
 
 
 def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
-              dest_profile_name, dest_org, src_org, logger):
-    """Run --diff: retrieve the destination profile and compare the two profiles
-    section by section (pure comparison; no prune, dry-run or deploy). Writes
-    ``diff/diff-report.txt`` and prints a summary table. Exits with 0."""
+              dest_profile_name, dest_org, src_org, src_mdtype, dest_mdtype,
+              logger):
+    """Run --diff: retrieve the destination profile/permission set and compare
+    the two section by section (pure comparison; no prune, dry-run or deploy).
+    Writes ``diff/diff-report.txt`` and prints a summary table. Exits with 0."""
     logger.log('')
     logger.log('── DIFF ───────────────────────────────────────────────')
-    logger.log('  purpose: compare the source profile against the destination profile')
+    logger.log('  purpose: compare the source against the destination')
 
     username, uerr = org_username(sf, dest_org)
     if not username:
         print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
         sys.exit(2)
     clean = not args.full_profile
-    logger.log('  ▸ retrieving destination profile %r from %s (%s)...'
-               % (dest_profile_name, dest_org, 'full' if args.full_profile else 'clean'))
-    dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean)
+    logger.log('  ▸ retrieving destination %s %r from %s (%s)...'
+               % (dest_mdtype, dest_profile_name, dest_org, 'full' if args.full_profile else 'clean'))
+    dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean,
+                                            mdtype=dest_mdtype)
     if not dest_profiles:
         print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
         sys.exit(2)
 
     diff_dir = os.path.join(out_dir, 'diff')
     os.makedirs(diff_dir, exist_ok=True)
-    dest_path = os.path.join(diff_dir, '%s.profile-meta.xml' % dest_profile_name)
+    dest_path = os.path.join(diff_dir, meta_filename(dest_mdtype, dest_profile_name))
     with open(dest_path, 'wb') as _f:
         _f.write(dest_profiles[0][1])
 
-    src_label = '%s "%s"' % (src_org or 'file', src_profile_name)
-    dst_label = '%s "%s"' % (dest_org, dest_profile_name)
+    src_label = '%s %s "%s"' % (src_mdtype, src_org or 'file', src_profile_name)
+    dst_label = '%s %s "%s"' % (dest_mdtype, dest_org, dest_profile_name)
     sections = diff_profiles(source_profile_path, dest_path)
     report_text = render_diff_report(sections, src_label, dst_label)
     report_path = os.path.join(diff_dir, 'diff-report.txt')
@@ -840,7 +860,8 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
 
 
 def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
-                   dest_profile_name, dest_org, src_org, do_deploy, logger):
+                   dest_profile_name, dest_org, src_org, src_mdtype, dest_mdtype,
+                   do_deploy, logger):
     """Run --align-from-source: prune the source against the destination,
     retrieve + prune the destination, merge (source authoritative, destination-
     only entries turned off), and optionally deploy. Exits with the result code."""
@@ -877,14 +898,15 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         sys.exit(2)
     dest_dir = os.path.join(out_dir, '2-destination-retrieved')
     os.makedirs(dest_dir, exist_ok=True)
-    logger.log('  ▸ retrieving the destination profile %r from %s...'
-               % (dest_profile_name, dest_org))
+    logger.log('  ▸ retrieving the destination %s %r from %s...'
+               % (dest_mdtype, dest_profile_name, dest_org))
     clean = not args.full_profile
-    dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean)
+    dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean,
+                                            mdtype=dest_mdtype)
     if not dest_profiles:
         print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
         sys.exit(2)
-    dest_raw = os.path.join(dest_dir, '%s.profile-meta.xml' % dest_profile_name)
+    dest_raw = os.path.join(dest_dir, meta_filename(dest_mdtype, dest_profile_name))
     with open(dest_raw, 'wb') as _f:
         _f.write(dest_profiles[0][1])
     logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
@@ -922,7 +944,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
     merge_dir = os.path.join(out_dir, '4-merged')
     os.makedirs(merge_dir, exist_ok=True)
-    merged_path = os.path.join(merge_dir, '%s.profile-meta.xml' % dest_profile_name)
+    merged_path = os.path.join(merge_dir, meta_filename(dest_mdtype, dest_profile_name))
     with open(merged_path, 'wb') as _f:
         _f.write(merged_xml)
 
@@ -936,7 +958,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('  ▸ validating the merged profile with a dry-run...')
     validation, _cf = _validate_profile_dry_run(
         sf, dest_org, merged_path, dest_profile_name, args.api_version,
-        args.poll_interval, args.job_timeout, logger, out_dir)
+        args.poll_interval, args.job_timeout, logger, out_dir, mdtype=dest_mdtype)
     if validation != 'clean':
         logger.log('  ⚠ dry-run not clean (%s); self-healing the merged profile...' % validation)
         heal_out = os.path.join(out_dir, '.work', 'align-heal')
@@ -961,7 +983,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
             _f.write(merged_xml)
         validation, _cf = _validate_profile_dry_run(
             sf, dest_org, merged_path, dest_profile_name, args.api_version,
-            args.poll_interval, args.job_timeout, logger, out_dir)
+            args.poll_interval, args.job_timeout, logger, out_dir, mdtype=dest_mdtype)
     logger.log('  ✓ merged dry-run: %s' % validation)
 
     n_granted = sum(1 for c in changes if c['kind'] == 'grant')
@@ -987,7 +1009,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     # 7. reports (only now, on the final validated merged profile).
     logger.log('  ▸ writing reports...')
     manual_ops_path = _write_and_report_manual_ops(
-        manual_ops, merge_dir, dest_profile_name, logger, args.quiet)
+        manual_ops, merge_dir, dest_profile_name, logger, args.quiet,
+        mdtype=dest_mdtype)
     change_path = write_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
     logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, change_path))
@@ -998,7 +1021,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     if validation == 'clean':
         state_path = _write_align_state(
             out_dir, args, src_profile_name, dest_profile_name, dest_org,
-            merged_path, validation, n_granted, n_revoked, n_layout, len(manual_ops))
+            merged_path, validation, n_granted, n_revoked, n_layout, len(manual_ops),
+            src_mdtype=src_mdtype, dest_mdtype=dest_mdtype)
         logger.log('  ✓ run state saved: %s' % _rel(out_dir, state_path))
 
     # 8. optional deploy of the merged profile (only after a clean validation).
@@ -1010,7 +1034,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         logger.log('  ▸ deploying the merged profile to %s...' % dest_org)
         ok, deploy_detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
                                             args.api_version, args.poll_interval,
-                                            args.job_timeout, logger, out_dir)
+                                            args.job_timeout, logger, out_dir,
+                                            mdtype=dest_mdtype)
         outcome = 'SUCCESS' if ok else 'DEPLOY_FAILED'
 
     logger.log('')
@@ -1079,6 +1104,9 @@ def _main():
                               '(via 2: org, or via 3: retrieve only)')
     g_input.add_argument('-sp', '--src-profile', default=None,
                          help='name of the Profile to retrieve from --src-org (via 2/3)')
+    g_input.add_argument('-sps', '--src-permissionset', default=None,
+                         help='name of the PermissionSet to retrieve from --src-org '
+                              '(via 2/3). Mutually exclusive with --src-profile.')
     g_input.add_argument('-fp', '--full-profile', action='store_true',
                          help='retrieve the full (non-stripped) profile; the default is a '
                               'clean retrieve (loginIpRanges/loginHours/userLicense removed)')
@@ -1088,8 +1116,14 @@ def _main():
                         help='destination org alias/username (dry-run and optional deploy '
                              'target). Optional: omit it (with -so + -sp) for retrieve only.')
     g_dest.add_argument('-dp', '--dest-profile', default=None,
-                        help='name to deploy the cleaned profile under; if it does not exist '
-                             'in the org it is created. Default: the source profile name')
+                        help='name to deploy the cleaned Profile under; if it does not '
+                             'exist in the org it is created. Default: the source name')
+    g_dest.add_argument('-dps', '--dest-permissionset', default=None,
+                        help='name to deploy the cleaned PermissionSet under; if it does '
+                             'not exist in the org it is created. Mutually exclusive with '
+                             '--dest-profile. Enables PermissionSet source/dest, including '
+                             'cross-type comparison (source Profile vs dest PermissionSet '
+                             'or vice versa).')
 
     g_out = ap.add_argument_group('output')
     g_out.add_argument('-od', '--out-dir', default=os.getcwd(),
@@ -1235,14 +1269,26 @@ def _main():
 
     # ---------- mode detection ----------
     # via 1 (file):           -pp + -do
-    # via 2 (org):            -so + -sp + -do + -dp   (retrieve -> prune -> dry-run/deploy)
-    # via 3 (retrieve only):  -so + -sp                (no prune, no dry-run/deploy)
-    if args.src_org or args.src_profile:
-        if not args.src_org or not args.src_profile:
-            print('ERROR: --src-org (-so) and --src-profile (-sp) must be provided together.')
+    # via 2 (org):            -so + (-sp|-sps) + -do + (-dp|-dps)  (retrieve -> prune -> dry-run/deploy)
+    # via 3 (retrieve only):  -so + (-sp|-sps)                     (no prune, no dry-run/deploy)
+    src_name = args.src_profile or args.src_permissionset
+    dest_name = args.dest_profile or args.dest_permissionset
+
+    if args.src_profile and args.src_permissionset:
+        print('ERROR: --src-profile (-sp) and --src-permissionset (-sps) are mutually exclusive.')
+        sys.exit(2)
+    if args.dest_profile and args.dest_permissionset:
+        print('ERROR: --dest-profile (-dp) and --dest-permissionset (-dps) are mutually exclusive.')
+        sys.exit(2)
+
+    if args.src_org or src_name:
+        if not args.src_org or not src_name:
+            print('ERROR: --src-org (-so) must be provided with --src-profile (-sp) or '
+                  '--src-permissionset (-sps).')
             sys.exit(2)
-        if bool(args.dest_org) != bool(args.dest_profile):
-            print('ERROR: --dest-org (-do) and --dest-profile (-dp) must be provided together.')
+        if bool(args.dest_org) != bool(dest_name):
+            print('ERROR: --dest-org (-do) must be provided with --dest-profile (-dp) or '
+                  '--dest-permissionset (-dps).')
             sys.exit(2)
         if args.profile_path:
             print('ERROR: --profile-path (-pp) and --src-org (-so) are mutually exclusive.')
@@ -1251,8 +1297,8 @@ def _main():
     else:
         if not args.profile_path:
             print('ERROR: provide --profile-path (-pp) [via 1], '
-                  '--src-org (-so) + --src-profile (-sp) + -do + -dp [via 2], '
-                  'or -so + -sp alone [via 3, retrieve only].')
+                  '--src-org (-so) + (--src-profile|-sp or --src-permissionset|-sps) '
+                  '+ -do + (-dp|-dps) [via 2], or -so + (-sp|-sps) alone [via 3, retrieve only].')
             sys.exit(2)
         if not args.dest_org:
             print('ERROR: --dest-org (-do) is required (the dry-run/deploy target).')
@@ -1276,14 +1322,15 @@ def _main():
             print('ERROR: could not resolve the org username for %r: %s' % (args.src_org, uerr))
             sys.exit(2)
         clean = not args.full_profile
-        print('Retrieving profile %r from org %s (%s)...' %
-              (args.src_profile, args.src_org, 'full' if args.full_profile else 'clean'))
-        profiles, rerr = retrieve_profiles(username, [args.src_profile], clean=clean)
+        src_mdtype = 'PermissionSet' if args.src_permissionset else 'Profile'
+        print('Retrieving %s %r from org %s (%s)...' %
+              (src_mdtype, src_name, args.src_org, 'full' if args.full_profile else 'clean'))
+        profiles, rerr = retrieve_profiles(username, [src_name], clean=clean, mdtype=src_mdtype)
         if not profiles:
             print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
             sys.exit(2)
         full_name, xml = profiles[0]
-        out_path = os.path.join(out_dir, '%s.profile-meta.xml' % full_name)
+        out_path = os.path.join(out_dir, meta_filename(src_mdtype, full_name))
         with open(out_path, 'wb') as _f:
             _f.write(xml)
         print('Retrieved %s -> %s (%d bytes)' % (full_name, out_path, len(xml)))
@@ -1329,17 +1376,22 @@ def _main():
     dest_org = args.dest_org
     if mode == 'org':
         src_org = args.src_org
-        src_profile_name = args.src_profile
-        dest_profile_name = args.dest_profile
+        src_profile_name = src_name
+        src_mdtype = 'PermissionSet' if args.src_permissionset else 'Profile'
+        dest_profile_name = dest_name
+        dest_mdtype = 'PermissionSet' if args.dest_permissionset else 'Profile'
         profile_path = None
     else:
         src_org = None
         profile_path = os.path.abspath(args.profile_path)
+        src_mdtype = detect_metadata_type(profile_path)
         base = os.path.basename(profile_path)
-        src_profile_name = re.sub(r'\.profile-meta\.xml$', '', base)
-        dest_profile_name = args.dest_profile or src_profile_name
+        src_profile_name = re.sub(re.escape(METADATA_TYPES[src_mdtype]['suffix']) + '$', '', base)
+        dest_profile_name = dest_name or src_profile_name
+        dest_mdtype = ('PermissionSet' if args.dest_permissionset is not None
+                       else 'Profile' if args.dest_profile is not None else src_mdtype)
 
-    original_copy = os.path.join(out_dir, 'ORIGINAL_%s.profile-meta.xml' % src_profile_name)
+    original_copy = os.path.join(out_dir, 'ORIGINAL_%s' % meta_filename(src_mdtype, src_profile_name))
     run_log = os.path.join(out_dir, 'run.log')
 
     try:
@@ -1377,7 +1429,8 @@ def _main():
     if do_align:
         resume_code = _resume_alignment(
             args, src_org, src_profile_name, dest_profile_name, dest_org,
-            do_deploy, out_dir, logger, sf)
+            do_deploy, out_dir, logger, sf, src_mdtype=src_mdtype,
+            dest_mdtype=dest_mdtype)
         if resume_code is not None:
             sys.exit(resume_code)
 
@@ -1401,9 +1454,10 @@ def _main():
             print('ERROR: could not resolve the org username for %r: %s' % (src_org, uerr))
             sys.exit(2)
         clean = not args.full_profile
-        logger.log('  ▸ retrieving profile %r from org %s (%s)...' %
-                   (src_profile_name, src_org, 'full' if args.full_profile else 'clean'))
-        profiles, rerr = retrieve_profiles(username, [src_profile_name], clean=clean)
+        logger.log('  ▸ retrieving %s %r from org %s (%s)...' %
+                   (src_mdtype, src_profile_name, src_org, 'full' if args.full_profile else 'clean'))
+        profiles, rerr = retrieve_profiles(username, [src_profile_name], clean=clean,
+                                           mdtype=src_mdtype)
         if not profiles:
             print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
             sys.exit(2)
@@ -1425,13 +1479,15 @@ def _main():
     # ---------- diff (--diff): pure profile-to-profile comparison ----------
     if args.diff:
         _run_diff(sf, args, out_dir, profile_path, src_profile_name,
-                  dest_profile_name, dest_org, src_org, logger)
+                  dest_profile_name, dest_org, src_org, src_mdtype, dest_mdtype,
+                  logger)
         sys.exit(1)  # _run_diff exits; safety net only
 
     # ---------- alignment (--align-from-source): separate flow ----------
     if do_align:
         _run_alignment(sf, args, out_dir, profile_path, src_profile_name,
-                       dest_profile_name, dest_org, src_org, do_deploy, logger)
+                       dest_profile_name, dest_org, src_org, src_mdtype,
+                       dest_mdtype, do_deploy, logger)
         sys.exit(1)  # _run_alignment exits; safety net only
 
     # ---------- run the prune stage ----------
@@ -1467,7 +1523,8 @@ def _main():
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
         _finalize_prune_output(result, merge_dir, src_out, original_copy,
-                               dest_profile_name, dest_org, logger, args.quiet)
+                               dest_profile_name, dest_org, logger, args.quiet,
+                               mdtype=dest_mdtype)
         prev = read_report_summary(os.path.join(src_out, 'report.txt'))
         print('Profile "%s" is already clean (previous run: %s). Nothing to do.'
               % (src_profile_name, prev.get('outcome') or 'SUCCESS'))
@@ -1506,7 +1563,7 @@ def _main():
             ok, detail = _deploy_profile(sf, dest_org, report_result['common_profile_path'],
                                          dest_profile_name, args.api_version,
                                          args.poll_interval, args.job_timeout,
-                                         logger, out_dir)
+                                         logger, out_dir, mdtype=dest_mdtype)
             if ok:
                 deploy_detail = detail
                 result_state = 'SUCCESS'
@@ -1571,7 +1628,7 @@ def _main():
     # ---------- finalize 4-merged/ (clean profile + WIC + manual ops) ----------
     wic_path = _finalize_prune_output(
         report_result, merge_dir, src_out, original_copy,
-        dest_profile_name, dest_org, logger, args.quiet)
+        dest_profile_name, dest_org, logger, args.quiet, mdtype=dest_mdtype)
     logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, wic_path))
 
     # Propagate a non-zero exit code when the prune did not succeed. The

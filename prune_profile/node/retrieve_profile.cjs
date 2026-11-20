@@ -7,18 +7,20 @@
 // third-party plugin. It is invoked by Python with NODE_PATH pointing at the
 // sf global node_modules directory.
 //
-// Usage:  node retrieve_profile.cjs --username <username> --profile <name> [...]
+// Usage:  node retrieve_profile.cjs --username <username> --type <Profile|PermissionSet> --profile <name> [...]
 // Output: {"profiles":[{"fullName":"...","data":{...}}],"errors":[...]}
 'use strict';
 
 const { AuthInfo, Connection } = require('@salesforce/core');
 
 function parseArgs(argv) {
-  const args = { username: null, profiles: [] };
+  const args = { username: null, type: 'Profile', profiles: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--username') {
       args.username = argv[++i];
+    } else if (a === '--type') {
+      args.type = argv[++i];
     } else if (a === '--profile') {
       args.profiles.push(argv[++i]);
     }
@@ -30,11 +32,12 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.username || args.profiles.length === 0) {
     process.stderr.write(
-      'usage: retrieve_profile.cjs --username <username> --profile <name> [--profile <name2> ...]\n',
+      'usage: retrieve_profile.cjs --username <username> --type <Profile|PermissionSet> --profile <name> [--profile <name2> ...]\n',
     );
     process.exit(2);
   }
 
+  const mdType = args.type === 'PermissionSet' ? 'PermissionSet' : 'Profile';
   const authInfo = await AuthInfo.create({ username: args.username });
   const connection = await Connection.create({ authInfo });
 
@@ -42,10 +45,10 @@ async function main() {
   for (const name of args.profiles) {
     try {
       // readMetadata returns a single object for one record, an array for many.
-      const raw = await connection.metadata.read('Profile', [name]);
+      const raw = await connection.metadata.read(mdType, [name]);
       const item = Array.isArray(raw) ? raw[0] : raw;
       if (!item || !item.fullName) {
-        out.errors.push({ name, error: 'Profile not found in org or not returned by readMetadata()' });
+        out.errors.push({ name, error: mdType + ' not found in org or not returned by readMetadata()' });
         continue;
       }
       out.profiles.push({ fullName: item.fullName, data: item });

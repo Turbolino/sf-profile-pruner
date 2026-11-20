@@ -24,9 +24,11 @@ from lxml import etree
 from .board import Control, PrefetchStatus, Progress, StatusBoard
 from .constants import BLOCK_MAP
 from .engine import prefetch_dangling, prefetch_standard_dangling, worker
+from .constants import meta_filename, meta_folder, meta_manifest
 from .sfcli import dry_run
 from .state import SharedState
 from .xmlio import (
+    detect_metadata_type,
     load_log_entries,
     prunable_blocks,
     read_outcome,
@@ -72,8 +74,14 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     work_dir = os.path.join(out_dir, '.work')
     missing_log = os.path.join(out_dir, 'missing_log.txt')
     report = os.path.join(out_dir, 'report.txt')
-    original_copy = os.path.join(out_dir, 'ORIGINAL_%s.profile-meta.xml' % profile_name)
     project_dir = os.path.join(work_dir, 'project')
+
+    # Metadata type (Profile | PermissionSet) declared by the source file. It
+    # drives the source filename, the deploy folder, the manifest type and the
+    # XML root of every sub-profile the engine builds.
+    mdtype = detect_metadata_type(source_profile_path)
+
+    original_copy = os.path.join(out_dir, 'ORIGINAL_%s' % meta_filename(mdtype, profile_name))
 
     for d in (out_dir, common_dir, missing_dir, work_dir):
         try:
@@ -99,7 +107,7 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
 
     # ---------- already clean? ----------
     prev_outcome = read_outcome(report)
-    common_profile = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
+    common_profile = os.path.join(common_dir, meta_filename(mdtype, profile_name))
     if (not fresh) and prev_outcome == 'SUCCESS' and os.path.isfile(common_profile):
         remove_temp_project(work_dir, out_dir)
         logger.log('Profile already clean (previous run: SUCCESS).')
@@ -165,11 +173,12 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
 
     # ---------- shared state + initial outputs ----------
     logger.log('Writing the initial COMMON/MISSING outputs...')
-    common_profile_path = os.path.join(common_dir, '%s.profile-meta.xml' % profile_name)
+    common_profile_path = os.path.join(common_dir, meta_filename(mdtype, profile_name))
     missing_pkg = os.path.join(missing_dir, 'package.xml')
     todeploy_pkg = os.path.join(common_dir, 'toDeploy.xml')
     state = SharedState(groups, original_seq, logger, missing_log, common_profile_path,
-                        missing_pkg, todeploy_pkg, profile_name, api_version)
+                        missing_pkg, todeploy_pkg, profile_name, api_version,
+                        mdtype=mdtype)
     state.removed_by_type = removed_by_type
     state.initial_counts = original_counts
     state.seq = total_resumed  # continue the error-log sequence on resume
@@ -265,7 +274,7 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
                 target=worker,
                 args=(tid, state, queue, queue_lock, board, progress, control,
                       sf, org, poll_interval, job_timeout,
-                      profile_name, api_version, wp, logger, max_iter),
+                      profile_name, api_version, wp, logger, max_iter, mdtype),
                 daemon=True)
             t.start()
             threads.append(t)
@@ -326,9 +335,9 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
         final_proj = os.path.join(work_dir, 'final')
         write_sfdx_project(final_proj, api_version)
         fmanifest = os.path.join(final_proj, 'manifest.xml')
-        write_package_xml(fmanifest, {'Profile': [profile_name]}, api_version)
-        fprofile = os.path.join(final_proj, 'force-app', 'main', 'default', 'profiles',
-                                '%s.profile-meta.xml' % profile_name)
+        write_package_xml(fmanifest, {meta_manifest(mdtype): [profile_name]}, api_version)
+        fprofile = os.path.join(final_proj, 'force-app', 'main', 'default',
+                                meta_folder(mdtype), meta_filename(mdtype, profile_name))
         os.makedirs(os.path.dirname(fprofile), exist_ok=True)
 
         guard = 0

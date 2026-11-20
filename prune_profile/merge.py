@@ -27,7 +27,7 @@ import os
 
 from lxml import etree
 
-from .constants import M, NS, __version__
+from .constants import M, NS, __version__, meta_root, tab_section
 
 # ---------------------------------------------------------------------------
 # section -> (key_child, {child: off_text})
@@ -49,6 +49,7 @@ MERGE_TABLE = {
     'fieldPermissions': ('field', {'readable': 'false', 'editable': 'false'}),
     'recordTypeVisibilities': ('recordType', {'default': 'false', 'visible': 'false'}),
     'tabVisibilities': ('tab', {'visibility': 'Hidden'}),
+    'tabSettings': ('tab', {'visibility': 'None'}),
     'customPermissions': ('name', {'enabled': 'false'}),
     'customMetadataTypeAccesses': ('name', {'enabled': 'false'}),
     'customSettingAccesses': ('name', {'enabled': 'false'}),
@@ -195,6 +196,121 @@ def _layout_assignment_key(el):
 
 
 # ---------------------------------------------------------------------------
+# Metadata type + tab-section helpers (Profile vs PermissionSet).
+#
+# A Profile names its tab section ``tabVisibilities`` with visibility values
+# DefaultOn / DefaultOff / Hidden; a PermissionSet names it ``tabSettings`` with
+# Visible / Available / None. The two schemas are otherwise identical for every
+# permission-bearing section, so the merge/diff only special-case the tab part.
+# ---------------------------------------------------------------------------
+
+def _mdtype(root):
+    """Metadata type ('Profile' | 'PermissionSet') declared by a parsed root."""
+    name = root.tag.split('}')[-1]
+    return name if name in ('Profile', 'PermissionSet') else 'Profile'
+
+
+def _tab_granted(value, mdtype):
+    """Whether a tab visibility value means "granted" (the tab is on/available)."""
+    if mdtype == 'PermissionSet':
+        return value in ('Visible', 'Available')
+    return value == 'DefaultOn'
+
+
+def _convert_tab_visibility(value, from_mdtype, to_mdtype):
+    """Map a tab visibility value between Profile and PermissionSet vocabularies.
+
+    Profile DefaultOn -> PS Visible; DefaultOff -> PS Available; Hidden -> PS
+    None (and the reverse). A value already in the target vocabulary is kept."""
+    if from_mdtype == to_mdtype:
+        return value
+    if to_mdtype == 'PermissionSet':
+        return {'DefaultOn': 'Visible', 'DefaultOff': 'Available', 'Hidden': 'None'}.get(value, value)
+    return {'Visible': 'DefaultOn', 'Available': 'DefaultOff', 'None': 'Hidden'}.get(value, value)
+
+
+def _convert_tab_element(el, from_mdtype, to_mdtype):
+    """Re-materialise a tab entry into the destination schema (section name +
+    visibility vocabulary)."""
+    ne = etree.Element(M + tab_section(to_mdtype))
+    etree.SubElement(ne, M + 'tab').text = _txt(el, 'tab')
+    etree.SubElement(ne, M + 'visibility').text = _convert_tab_visibility(
+        _txt(el, 'visibility'), from_mdtype, to_mdtype)
+    return ne
+
+
+def _make_tab_off_element(tab, mdtype):
+    """Build an explicit OFF tab entry in the destination schema."""
+    ne = etree.Element(M + tab_section(mdtype))
+    etree.SubElement(ne, M + 'tab').text = tab
+    etree.SubElement(ne, M + 'visibility').text = ('None' if mdtype == 'PermissionSet' else 'Hidden')
+    return ne
+
+
+def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
+    """Merge the tab section (tabVisibilities / tabSettings) into `out`.
+
+    Source is authoritative and re-materialised in the destination schema; a
+    destination-only tab that is currently granted is turned OFF with the
+    destination's native off value. Returns nothing (appends to `out` and
+    `changes`)."""
+    src_els = src_groups.get(tab_section(src_mdtype), [])
+    dst_els = dst_groups.get(tab_section(dst_mdtype), [])
+    src_by_tab = {_txt(el, 'tab'): el for el in src_els}
+    dst_by_tab = {_txt(el, 'tab'): el for el in dst_els}
+
+    merged = []
+    for tab, s_el in src_by_tab.items():
+        if tab not in dst_by_tab and not _tab_granted(_txt(s_el, 'visibility'), src_mdtype):
+            continue  # already aligned: source OFF and absent from destination
+        merged.append(_convert_tab_element(s_el, src_mdtype, dst_mdtype))
+    for tab, d_el in dst_by_tab.items():
+        if tab in src_by_tab:
+            continue
+        if not _tab_granted(_txt(d_el, 'visibility'), dst_mdtype):
+            continue  # already off in the destination: no change to report
+        merged.append(_make_tab_off_element(tab, dst_mdtype))
+    for m_el in merged:
+        out.append(m_el)
+
+    merged_by_tab = {_txt(e, 'tab'): e for e in merged}
+    for tab in sorted(set(merged_by_tab) | set(dst_by_tab)):
+        m_el = merged_by_tab.get(tab)
+        d_el = dst_by_tab.get(tab)
+        new = _txt(m_el, 'visibility') if m_el is not None else ''
+        old = _txt(d_el, 'visibility') if d_el is not None else None
+        if old == '':
+            old = None
+        if new == '' or old == new:
+            continue
+        new_on = _tab_granted(new, dst_mdtype)
+        old_on = bool(old) and _tab_granted(old, dst_mdtype)
+        kind = 'grant' if (new_on and not old_on) else ('revoke' if (old_on and not new_on) else 'revoke')
+        changes.append({
+            'kind': kind,
+            'section': tab_section(dst_mdtype),
+            'key': tab,
+            'element': deepcopy(m_el) if m_el is not None else deepcopy(d_el),
+            'old_values': {'visibility': old},
+        })
+
+
+def _normalize_tab_section(groups, mdtype):
+    """Rewrite a tab section into a canonical ``tabVisibilities`` section whose
+    ``visibility`` values are 'on'/'off' (for cross-type comparison only)."""
+    entries = groups.pop(tab_section(mdtype), [])
+    norm = []
+    for el in entries:
+        ne = etree.Element(M + 'tabVisibilities')
+        etree.SubElement(ne, M + 'tab').text = _txt(el, 'tab')
+        etree.SubElement(ne, M + 'visibility').text = (
+            'on' if _tab_granted(_txt(el, 'visibility'), mdtype) else 'off')
+        norm.append(ne)
+    if norm:
+        groups['tabVisibilities'] = norm
+
+
+# ---------------------------------------------------------------------------
 # Profile diff (pure profile-to-profile comparison; no prune, no deploy).
 # ---------------------------------------------------------------------------
 
@@ -268,6 +384,15 @@ def diff_profiles(source_path, dest_path):
     dst_root = etree.parse(dest_path).getroot()
     src_groups = _groups(src_root)
     dst_groups = _groups(dst_root)
+
+    # Cross-type (Profile <-> PermissionSet): the tab section is named
+    # differently on each side, so normalise both to a common 'tabVisibilities'
+    # section with on/off visibility before the generic comparison below.
+    src_mdtype = _mdtype(src_root)
+    dst_mdtype = _mdtype(dst_root)
+    if src_mdtype != dst_mdtype:
+        _normalize_tab_section(src_groups, src_mdtype)
+        _normalize_tab_section(dst_groups, dst_mdtype)
 
     sections = []
     for s in list(src_groups):
@@ -714,7 +839,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 
     read_only_fields = read_only_fields or set()
 
-    out = etree.Element(M + 'Profile', nsmap={None: NS})
+    # The merged file is deployed to the DESTINATION org, so it must use the
+    # destination's metadata type (Profile or PermissionSet).
+    src_mdtype = _mdtype(src_root)
+    dst_mdtype = _mdtype(dst_root)
+    out = etree.Element(M + meta_root(dst_mdtype), nsmap={None: NS})
     manual_ops = []
     changes = []
 
@@ -722,6 +851,13 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     for s in dst_groups:
         if s not in sections:
             sections.append(s)
+
+    # The tab section is the one schema difference between Profile and
+    # PermissionSet: handle it once (special-case), before the generic loop.
+    tab_sections_present = [s for s in sections if s in ('tabVisibilities', 'tabSettings')]
+    sections = [s for s in sections if s not in ('tabVisibilities', 'tabSettings')]
+    if tab_sections_present:
+        _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes)
 
     for section in sections:
         src_els = src_groups.get(section, [])
@@ -968,17 +1104,18 @@ def format_ops_table(ops, show_verdict=None, omit_operation=False):
     return '\n'.join(out)
 
 
-def write_manual_ops(path, ops, profile_name):
+def write_manual_ops(path, ops, profile_name, mdtype='Profile'):
     """Write the manual-operations file, split into REDUNDANT (ignorable) and
     NEEDS CHECK (real action) groups. Returns its path."""
+    label = meta_root(mdtype)
     header = [
         'MANUAL OPERATIONS REQUIRED FOR A COMPLETE ALIGNMENT',
         '==================================================',
         '',
-        'Profile: %s' % profile_name,
+        '%s: %s' % (label, profile_name),
         '',
         'These sections have no expressible "off" value in the Metadata API, so',
-        'they cannot be turned off or removed by a Profile deploy (omitting an',
+        'they cannot be turned off or removed by a %s deploy (omitting an' % label,
         'entry is a silent no-op). Perform the actions below in the destination',
         'org to finish the alignment.',
         '',

@@ -15,7 +15,7 @@ from copy import deepcopy
 
 from lxml import etree
 
-from .constants import BLOCK_MAP, M, NS, decode_bytes, is_standard_api_name
+from .constants import BLOCK_MAP, M, NS, METADATA_TYPES, decode_bytes, is_standard_api_name, meta_root
 
 
 def resolve_error(problem):
@@ -77,7 +77,7 @@ def remove_block(work_path, member, candidates):
         if leaf.text is not None and leaf.text.strip() == member:
             block = leaf
             parent = block.getparent()
-            while parent is not None and parent.tag != M + 'Profile':
+            while parent is not None and parent.getparent() is not None:
                 block = parent
                 parent = block.getparent()
             if parent is not None:
@@ -224,7 +224,7 @@ def apply_removals_batch(work_path, removals):
                 if leaf.text is not None and leaf.text.strip() == member:
                     block = leaf
                     parent = block.getparent()
-                    while parent is not None and parent.tag != M + 'Profile':
+                    while parent is not None and parent.getparent() is not None:
                         block = parent
                         parent = block.getparent()
                     if parent is not None:
@@ -353,12 +353,30 @@ def dangling_members(elements, child, existing):
     return out
 
 
-def build_subprofile(elements):
-    """Serialize a list of top-level section elements into a Profile XML bytes."""
-    root = etree.Element(M + 'Profile', nsmap={None: NS})
+def build_subprofile(elements, mdtype='Profile'):
+    """Serialize a list of top-level section elements into metadata source XML
+    of type `mdtype` (Profile or PermissionSet)."""
+    root = etree.Element(M + meta_root(mdtype), nsmap={None: NS})
     for el in elements:
         root.append(deepcopy(el))
     return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+def root_metadata_type(root):
+    """Metadata type ('Profile' | 'PermissionSet') declared by a parsed root,
+    defaulting to 'Profile' for unknown roots."""
+    name = root.tag.split('}')[-1]
+    return name if name in METADATA_TYPES else 'Profile'
+
+
+def detect_metadata_type(path):
+    """Metadata type of the source file at `path`, read from its root element.
+    Falls back to 'Profile' when the file is unreadable/unparseable."""
+    try:
+        root = etree.parse(path).getroot()
+        return root_metadata_type(root)
+    except (OSError, etree.LxmlError):
+        return 'Profile'
 
 
 def extract_common_members(groups):
@@ -391,7 +409,7 @@ def extract_common_members(groups):
         elif block == 'applicationVisibilities':
             for el in els:
                 add('CustomApplication', _txt(el, 'application'))
-        elif block == 'tabVisibilities':
+        elif block == 'tabVisibilities' or block == 'tabSettings':
             for el in els:
                 v = _txt(el, 'tab')
                 if v and not v.startswith('standard-'):
