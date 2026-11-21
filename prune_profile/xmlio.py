@@ -353,10 +353,19 @@ def dangling_members(elements, child, existing):
     return out
 
 
-def build_subprofile(elements, mdtype='Profile'):
+def build_subprofile(elements, mdtype='Profile', label=None):
     """Serialize a list of top-level section elements into metadata source XML
-    of type `mdtype` (Profile or PermissionSet)."""
+    of type `mdtype` (Profile or PermissionSet).
+
+    A PermissionSet REQUIRES a ``<label>`` even for a partial dry-run
+    (deploying a PermissionSet without it fails with
+    ``Required field is missing: label``). A Profile derives its name from the
+    file name, so it needs nothing extra. ``label`` is used for a PermissionSet
+    (falls back to a placeholder when not given)."""
     root = etree.Element(M + meta_root(mdtype), nsmap={None: NS})
+    if mdtype == 'PermissionSet':
+        lbl = etree.SubElement(root, M + 'label')
+        lbl.text = label or 'Pruner'
     for el in elements:
         root.append(deepcopy(el))
     return etree.tostring(root, xml_declaration=True, encoding='UTF-8')

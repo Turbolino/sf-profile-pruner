@@ -293,7 +293,7 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
         if not elements:
             return True, 'no entries left'
         with open(profile_path, 'wb') as f:
-            f.write(build_subprofile(elements, mdtype))
+            f.write(build_subprofile(elements, mdtype, label=profile_name))
 
         board.set(tid, 'dry-run', block, 'polling', initial, initial - len(elements))
         res, err = dry_run(sf, manifest_path, org, poll_interval, job_timeout,

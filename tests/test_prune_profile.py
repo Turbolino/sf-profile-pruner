@@ -2290,9 +2290,19 @@ class TestPermissionSet(unittest.TestCase):
         root = pp.etree.fromstring('<PermissionSet xmlns="%s"></PermissionSet>' % self.NS)
         el = pp.etree.SubElement(root, '{%s}userPermissions' % self.NS)
         pp.etree.SubElement(el, '{%s}name' % self.NS).text = 'X'
-        xml = pp.build_subprofile([el], mdtype='PermissionSet')
+        xml = pp.build_subprofile([el], mdtype='PermissionSet', label='MyPS')
         r = pp.etree.fromstring(xml)
         self.assertEqual(r.tag, '{%s}PermissionSet' % self.NS)
+        # a PermissionSet requires a label even for partial dry-runs
+        self.assertEqual(r.find('{%s}label' % self.NS).text, 'MyPS')
+
+    def test_build_subprofile_permissionset_placeholder_label(self):
+        """A PermissionSet sub-profile must never be emitted without a label."""
+        xml = pp.build_subprofile([], mdtype='PermissionSet')
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % self.NS)
+        self.assertIsNotNone(r.find('{%s}label' % self.NS))
+        self.assertTrue((r.find('{%s}label' % self.NS).text or '').strip())
 
     def test_profile_json_to_xml_permissionset(self):
         xml = profile_json_to_xml(

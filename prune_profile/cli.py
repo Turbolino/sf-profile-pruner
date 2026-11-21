@@ -622,15 +622,16 @@ def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
                                clean_source_path, dest_profile_name,
                                dest_org, out_dir, logger):
     """Cross-type plain prune: convert the clean source into the destination
-    metadata type and return the converted deliverable path.
+    metadata type and return the converted deliverable path (written to a
+    temporary work area — `_finalize_prune_output` copies it into 4-merged).
 
     Profile -> PermissionSet: portable content is re-materialised as a PS
     (tabs mapped, Profile-only sections dropped, a `label` synthesised).
     PermissionSet -> Profile: the PS content becomes a Profile; the destination
     Profile's own Profile-only sections are retrieved and kept verbatim so they
     remain present and unchanged."""
-    merge_dir = os.path.join(out_dir, '4-merged')
-    os.makedirs(merge_dir, exist_ok=True)
+    work_dir = os.path.join(out_dir, '.work')
+    os.makedirs(work_dir, exist_ok=True)
 
     dst_exclusive_path = None
     if dest_mdtype == 'Profile':
@@ -644,13 +645,15 @@ def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
         if not dst_profiles:
             print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
             sys.exit(2)
-        dst_exclusive_path = os.path.join(merge_dir, '.dest-exclusive.profile-meta.xml')
+        dst_exclusive_path = os.path.join(work_dir, '.dest-exclusive.profile-meta.xml')
         with open(dst_exclusive_path, 'wb') as _f:
             _f.write(dst_profiles[0][1])
 
     xml, notes = convert_metadata_type(clean_source_path, dst_exclusive_path,
                                        label=dest_profile_name)
-    out_path = os.path.join(merge_dir, meta_filename(dest_mdtype, dest_profile_name))
+    # Write to .work (NOT 4-merged): the finalizer will copy this into
+    # 4-merged/<name>, so a same-path copyfile would raise SameFileError.
+    out_path = os.path.join(work_dir, 'converted-%s' % meta_filename(dest_mdtype, dest_profile_name))
     with open(out_path, 'wb') as _f:
         _f.write(xml)
     logger.log('  ▸ cross-type conversion: %s → %s' % (src_mdtype, dest_mdtype))
