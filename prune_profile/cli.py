@@ -408,6 +408,36 @@ def _warn_if_not_admin(sf, org, logger):
                    'current profile permissions.' % (org, profile))
 
 
+def _warn_permissionset_deploy(logger, dest_mdtype, quiet, deploy=False):
+    """Surface the PermissionSet deploy-semantics difference.
+
+    A Profile deploy is a per-element MERGE: omitting an entry is a silent
+    no-op. A PermissionSet deploy is authoritative: every permission NOT
+    present in the deployed file is REVOKED in the target org. This matters
+    whenever the tool hands back a PermissionSet whose content is a subset of
+    what the org currently grants (plain prune removes dangling references;
+    align turns destination-only permissions off — deliberate in the align case,
+    but still worth stating explicitly). Never raises and never stops the run.
+    """
+    if dest_mdtype != 'PermissionSet':
+        return
+    verb = 'deploying' if deploy else 'producing'
+    logger.log('')
+    logger.log('  ⚠ PERMISSIONSET SEMANTICS: %s a PermissionSet, unlike a Profile,' % verb)
+    logger.log('    is AUTHORITATIVE: every permission NOT present in the file is')
+    logger.log('    REVOKED in the target org (a Profile deploy only MERGES and')
+    logger.log('    leaves omitted entries untouched).')
+    logger.log('    - plain prune: the dangling references it removes are NOT re-granted.')
+    logger.log('    - align: destination-only permissions are turned OFF on purpose'
+               ' (that is the alignment goal).')
+    if not quiet:
+        print('')
+        print('WARNING: PermissionSet is authoritative — permissions not present in')
+        print('         the deployed file are REVOKED in the target org (unlike a')
+        print('         Profile, where an omitted entry is simply ignored).')
+        print('', flush=True)
+
+
 def _repair_mangled_argv(argv):
     """Reconstruct argv after PowerShell/Windows mangled a quoted argument.
 
@@ -1447,6 +1477,13 @@ def _main():
     _warn_if_not_admin(sf, dest_org, logger)
     if src_org and src_org != dest_org:
         _warn_if_not_admin(sf, src_org, logger)
+
+    # PermissionSet deploy is authoritative (unlike a Profile merge): surface
+    # the difference up front, for every mode that produces a PermissionSet.
+    # --diff is pure comparison (no file produced/deployed), so it is excluded.
+    if not args.diff:
+        _warn_permissionset_deploy(logger, dest_mdtype, args.quiet,
+                                   deploy=args.deploy_on_success)
 
     # ---------- resume a completed alignment (same folder + same parameters) ----------
     # If this folder already holds a validated alignment with identical

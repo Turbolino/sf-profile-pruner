@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `userLicense`) are not carried across the type boundary (a Profile source
     cannot move them into a PermissionSet; a PermissionSet source leaves the
     destination Profile's own values there).
+  - PermissionSet deploy semantics are surfaced explicitly: unlike a Profile
+    (per-element MERGE, omission = no-op), a PermissionSet deploy is
+    AUTHORITATIVE — every permission not present in the deployed file is
+    REVOKED in the target org. The warning appears for every mode that produces
+    a PermissionSet (plain prune and align; `--diff` is read-only and excluded).
+    The cross-type merge filters Profile-only sections out of a PermissionSet
+    output (they have no PS schema), so they are never injected into an invalid
+    PermissionSet file.
 
 ## [2.18.0] - 2026-11-19
 

@@ -897,6 +897,15 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     if tab_sections_present:
         _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes)
 
+    # Profile-only sections have no PermissionSet counterpart: they must never
+    # be injected into a PermissionSet output (an invalid PS). In a Profile ->
+    # PermissionSet merge they are dropped (not carried across the boundary);
+    # the reverse direction needs no filtering because a PermissionSet source
+    # simply has none of these sections (the destination Profile keeps its own
+    # values, reported as manual ops by the branches below).
+    if dst_mdtype == 'PermissionSet':
+        sections = [s for s in sections if s not in PROFILE_EXCLUSIVE_SECTIONS]
+
     for section in sections:
         src_els = src_groups.get(section, [])
         dst_els = dst_groups.get(section, [])

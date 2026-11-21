@@ -2426,6 +2426,50 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(tab['different'][0]['diffs'],
                          [('visibility', 'available', 'off')])
 
+    def test_profile_exclusive_sections_are_not_injected_into_permissionset(self):
+        """A Profile source merged into a PermissionSet destination must NOT
+        carry its Profile-only sections (layoutAssignments, loginFlows,
+        loginIpRanges, loginHours, userLicense) into the PermissionSet output —
+        they have no PS schema and would make the file invalid."""
+        src = ('<Profile xmlns="%s">\n'
+               '<userLicense>Salesforce</userLicense>\n'
+               '<fieldPermissions><field>Acc.Skill__c</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+               '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>\n'
+               '<loginFlows><flow>MyLoginFlow</flow></loginFlows>\n'
+               '<loginIpRanges><startAddress>1.1.1.1</startAddress><endAddress>1.1.1.1</endAddress></loginIpRanges>\n'
+               '<loginHours><mondayStart>08:00</mondayStart><mondayEnd>18:00</mondayEnd></loginHours>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s"></PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % self.NS)
+        present = {el.tag.split('}')[-1] for el in r}
+        self.assertIn('fieldPermissions', present)  # shared section carried
+        for exclusive in ('layoutAssignments', 'loginFlows', 'loginIpRanges',
+                          'loginHours', 'userLicense'):
+            self.assertNotIn(exclusive, present)
+
+    def test_permissionset_deploy_warning_is_logged(self):
+        """The PermissionSet authoritative-deploy warning must be logged (and
+        suppressed for a Profile destination)."""
+        from prune_profile.cli import _warn_permissionset_deploy
+        lines = []
+        logger = types.SimpleNamespace(log=lambda *a: lines.append(' '.join(map(str, a))))
+        _warn_permissionset_deploy(logger, 'PermissionSet', quiet=True, deploy=True)
+        text = '\n'.join(lines)
+        self.assertIn('PERMISSIONSET SEMANTICS', text)
+        self.assertIn('AUTHORITATIVE', text)
+        self.assertIn('REVOKED', text)
+        # Profile destination: no warning
+        lines2 = []
+        logger2 = types.SimpleNamespace(log=lambda *a: lines2.append(' '.join(map(str, a))))
+        _warn_permissionset_deploy(logger2, 'Profile', quiet=True, deploy=True)
+        self.assertEqual(lines2, [])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
