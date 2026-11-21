@@ -43,27 +43,30 @@ skip the Y/N confirmation):
 sfpp -so dev -sp "Sales Rep" -do prod -dp "Sales Rep" --deploy-on-success --sure
 ```
 
-**Two more things it does, in one flag each:**
+**Which mode do I need?**
 
-- **Compare two profiles** (`--diff`) — a pure, read-only comparison that
-  tells you what is only in one profile, only in the other, identical, and what
-  differs field-by-field. It changes nothing and never deploys:
+| I need to... | Use | Result |
+| --- | --- | --- |
+| deploy a profile/permission set without errors | plain prune (default) | a clean copy of the source — nothing merged, nothing turned off |
+| see the differences between two | `--diff` | read-only report, nothing changed |
+| make the destination identical to the source | `--align-from-source` | destination-only permissions OFF, source-only ON |
 
-  ```bash
-  sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --diff -od ./out
-  ```
+**Plain prune** only removes references that don't exist in the destination
+org, so the source deploys cleanly. **Align** goes further: it also turns OFF
+permissions that exist only in the destination and turns ON the source-only
+ones, so the destination becomes a copy of the source.
 
-- **Align two orgs** (`--align-from-source`) — make the destination profile a
-  copy of the source: it turns OFF every permission that exists only in the
-  destination, so org B matches org A. The pre-align destination is always
-  saved first, so the operation is reversible:
+**Compare two profiles** (`--diff`):
 
-  ```bash
-  sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --align-from-source -od ./out
-  ```
+```bash
+sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --diff -od ./out
+```
 
-  Use `--diff` when you only want to **see** the differences; use
-  `--align-from-source` when you want to **apply** them.
+**Align two orgs** (`--align-from-source`):
+
+```bash
+sfpp -so uat -sp "Sales Rep" -do test -dp "Sales Rep" --align-from-source -od ./out
+```
 
 **PermissionSets too.** Everything above works identically for PermissionSets:
 use `-sps` / `-dps` (or `--src-permissionset` / `--dest-permissionset`) instead

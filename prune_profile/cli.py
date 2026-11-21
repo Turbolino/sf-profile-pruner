@@ -1191,10 +1191,18 @@ def _main():
 
     ap = argparse.ArgumentParser(
         prog=APP_NAME,
-        description='Removes from a Salesforce Profile every reference to metadata that '
-                    'does not exist in the destination org. Dry-run only by default; use '
-                    '--deploy-on-success to deploy the cleaned profile at the end '
-                    '(add --sure to skip the Y/N confirmation).',
+        description=(
+            'Clean, compare or align Salesforce Profiles and PermissionSets '
+            '(always dry-run; never deploy unless you ask).\n'
+            'Pick the mode by what you need:\n'
+            '  deploy a profile/permission set without errors  ->  plain prune (default)\n'
+            '  see the differences between two                ->  --diff\n'
+            '  make the destination identical to the source    ->  --align-from-source\n'
+            '\n'
+            'Plain prune only removes references that do not exist in the '
+            'destination org; align also turns OFF destination-only permissions '
+            'and turns ON source-only ones.'
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EXAMPLES,
     )
@@ -1264,32 +1272,22 @@ def _main():
 
     g_act = ap.add_argument_group('behavior')
     g_act.add_argument('--align-from-source', action='store_true',
-                       help='align the destination profile to the source (works with a '
-                            'source file via 1, or a source org via 2): prune the source '
-                            'against the destination, then retrieve and prune the '
-                            'destination too, and turn OFF any permission that exists only '
-                            'in the destination (hidden tab/app, disabled '
-                            'field/object/class/page/flow), so the destination matches the '
-                            'source. Without it, destination-only permissions are left '
-                            'untouched. Runs automatically (no prompt): the pre-align '
-                            'destination profile is saved in the run folder. Re-running '
-                            'on the same output folder with the same -so/-do/-sp/-dp '
-                            'deploys the cached merge; use --fresh to restart from '
-                            'scratch.')
+                       help='make the destination identical to the source: turns OFF '
+                            'destination-only permissions and turns ON source-only ones '
+                            '(source is authoritative). Works with a source file (via 1) or '
+                            'a source org (via 2). Runs automatically (no prompt); '
+                            're-running on the same folder deploys the cached merge.')
     g_act.add_argument('--deploy-on-success', action='store_true',
-                       help='deploy the cleaned profile to --dest-org once pruning succeeds. '
-                            'Modifies the org: asks for Y/N confirmation (a No runs the '
-                            'dry-run only). Use as [--deploy-on-success [--sure]]: with '
-                            '--sure the deploy runs immediately without the Y/N prompt.')
+                       help='deploy the cleaned profile/permission set once pruning succeeds. '
+                            'Modifies the org: asks Y/N (a No runs dry-run only). Add --sure '
+                            'to skip the confirmation.')
     g_act.add_argument('--sure', action='store_true',
                        help='skip the Y/N confirmation of --deploy-on-success and deploy '
                             'without asking. Has no effect without --deploy-on-success.')
     g_act.add_argument('--diff', action='store_true',
-                       help='compare the source profile against the destination profile and '
-                            'write a diff report (diff/diff-report.txt): what is only in one, '
-                            'only in the other, and what differs for entries present in both. '
-                            'Pure read-only comparison: no prune, no dry-run, no deploy. '
-                            'Works with a source file (via 1) or a source org (via 2).')
+                       help='compare the source against the destination (read-only): writes '
+                            'diff/diff-report.txt + diff/diff-data.json/.xml. No prune, no '
+                            'dry-run, no deploy. Works with a source file (via 1) or org (via 2).')
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
     g_act.add_argument('--avoid-normalize-ro', action='store_true',
