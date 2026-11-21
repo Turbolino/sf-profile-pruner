@@ -65,6 +65,17 @@ MERGE_TABLE = {
 # never turned off by a Profile deploy.
 NON_ALIGNABLE = ('layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours')
 
+# Sections that exist on a Profile but have NO PermissionSet counterpart. In a
+# mixed (Profile <-> PermissionSet) run they are not carried across the type
+# boundary: a Profile source cannot move its layoutAssignments / loginFlows /
+# loginIpRanges / loginHours / userLicense into a PermissionSet, and a
+# PermissionSet source has nothing to align against the destination Profile's
+# own values there.
+PROFILE_EXCLUSIVE_SECTIONS = (
+    'layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours',
+    'userLicense',
+)
+
 # Field types whose `editable` flag is meaningless: Salesforce always treats
 # these as read-only, so an `editable=true` in the source profile is dead
 # metadata (the effective value is false). The alignment normalizes them to
@@ -210,23 +221,46 @@ def _mdtype(root):
     return name if name in ('Profile', 'PermissionSet') else 'Profile'
 
 
-def _tab_granted(value, mdtype):
-    """Whether a tab visibility value means "granted" (the tab is on/available)."""
-    if mdtype == 'PermissionSet':
-        return value in ('Visible', 'Available')
-    return value == 'DefaultOn'
+# Tab visibility has THREE semantic states, each with its own name per type:
+#
+#   level 2  "on / visible"          Profile DefaultOn  <->  PS Visible
+#   level 1  "off but available"     Profile DefaultOff <->  PS Available
+#   level 0  "unavailable / hidden"  Profile Hidden     <->  PS None
+#
+# The 1:1 level mapping is what keeps a Profile->PS->Profile round-trip
+# coherent: DefaultOff is "off but available", not "off", so it must map to
+# Available (never to None). Collapsing to a binary on/off would silently
+# degrade DefaultOff/Available into Hidden/None and destroy the "available"
+# state when the metadata is carried into the other type.
+_TAB_LEVELS = {
+    'Profile': {'DefaultOn': 2, 'DefaultOff': 1, 'Hidden': 0},
+    'PermissionSet': {'Visible': 2, 'Available': 1, 'None': 0},
+}
+_TAB_VALUE = {
+    'Profile': {2: 'DefaultOn', 1: 'DefaultOff', 0: 'Hidden'},
+    'PermissionSet': {2: 'Visible', 1: 'Available', 0: 'None'},
+}
+
+
+def _tab_level(value, mdtype):
+    """Semantic level (0/1/2) of a tab visibility value. Unknown values fall
+    back to level 0 (treated as off) so a malformed file never propagates a
+    wrong vocabulary value."""
+    return _TAB_LEVELS.get(mdtype, {}).get(value or '', 0)
+
+
+def _tab_value(level, mdtype):
+    """The native visibility value for `mdtype` at `level` (0/1/2)."""
+    return _TAB_VALUE.get(mdtype, _TAB_VALUE['Profile'])[level]
 
 
 def _convert_tab_visibility(value, from_mdtype, to_mdtype):
-    """Map a tab visibility value between Profile and PermissionSet vocabularies.
-
-    Profile DefaultOn -> PS Visible; DefaultOff -> PS Available; Hidden -> PS
-    None (and the reverse). A value already in the target vocabulary is kept."""
+    """Map a tab visibility value between Profile and PermissionSet vocabularies
+    by semantic level, so the destination always receives a native, coherent
+    value (DefaultOn<->Visible, DefaultOff<->Available, Hidden<->None)."""
     if from_mdtype == to_mdtype:
         return value
-    if to_mdtype == 'PermissionSet':
-        return {'DefaultOn': 'Visible', 'DefaultOff': 'Available', 'Hidden': 'None'}.get(value, value)
-    return {'Visible': 'DefaultOn', 'Available': 'DefaultOff', 'None': 'Hidden'}.get(value, value)
+    return _tab_value(_tab_level(value, from_mdtype), to_mdtype)
 
 
 def _convert_tab_element(el, from_mdtype, to_mdtype):
@@ -240,10 +274,11 @@ def _convert_tab_element(el, from_mdtype, to_mdtype):
 
 
 def _make_tab_off_element(tab, mdtype):
-    """Build an explicit OFF tab entry in the destination schema."""
+    """Build an explicit OFF tab entry in the destination schema (level 0:
+    Hidden for Profile, None for PermissionSet)."""
     ne = etree.Element(M + tab_section(mdtype))
     etree.SubElement(ne, M + 'tab').text = tab
-    etree.SubElement(ne, M + 'visibility').text = ('None' if mdtype == 'PermissionSet' else 'Hidden')
+    etree.SubElement(ne, M + 'visibility').text = _tab_value(0, mdtype)
     return ne
 
 
@@ -251,9 +286,10 @@ def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
     """Merge the tab section (tabVisibilities / tabSettings) into `out`.
 
     Source is authoritative and re-materialised in the destination schema; a
-    destination-only tab that is currently granted is turned OFF with the
-    destination's native off value. Returns nothing (appends to `out` and
-    `changes`)."""
+    destination-only tab that is not already off (level 0) is turned OFF. A
+    source-only tab at level 0 is skipped (absence already means "off"), while
+    a source-only tab at level 1 or 2 is carried over (a real grant / available
+    state to replicate). Returns nothing (appends to `out` and `changes`)."""
     src_els = src_groups.get(tab_section(src_mdtype), [])
     dst_els = dst_groups.get(tab_section(dst_mdtype), [])
     src_by_tab = {_txt(el, 'tab'): el for el in src_els}
@@ -261,31 +297,30 @@ def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
 
     merged = []
     for tab, s_el in src_by_tab.items():
-        if tab not in dst_by_tab and not _tab_granted(_txt(s_el, 'visibility'), src_mdtype):
-            continue  # already aligned: source OFF and absent from destination
+        if tab not in dst_by_tab and _tab_level(_txt(s_el, 'visibility'), src_mdtype) == 0:
+            continue  # source-only + off: already aligned with absence
         merged.append(_convert_tab_element(s_el, src_mdtype, dst_mdtype))
     for tab, d_el in dst_by_tab.items():
         if tab in src_by_tab:
             continue
-        if not _tab_granted(_txt(d_el, 'visibility'), dst_mdtype):
+        if _tab_level(_txt(d_el, 'visibility'), dst_mdtype) == 0:
             continue  # already off in the destination: no change to report
         merged.append(_make_tab_off_element(tab, dst_mdtype))
     for m_el in merged:
         out.append(m_el)
 
+    # Level-based diff: a change is recorded only when the semantic level moves.
     merged_by_tab = {_txt(e, 'tab'): e for e in merged}
     for tab in sorted(set(merged_by_tab) | set(dst_by_tab)):
         m_el = merged_by_tab.get(tab)
         d_el = dst_by_tab.get(tab)
         new = _txt(m_el, 'visibility') if m_el is not None else ''
         old = _txt(d_el, 'visibility') if d_el is not None else None
-        if old == '':
-            old = None
-        if new == '' or old == new:
+        new_level = _tab_level(new, dst_mdtype)
+        old_level = _tab_level(old or '', dst_mdtype)
+        if new_level == old_level:
             continue
-        new_on = _tab_granted(new, dst_mdtype)
-        old_on = bool(old) and _tab_granted(old, dst_mdtype)
-        kind = 'grant' if (new_on and not old_on) else ('revoke' if (old_on and not new_on) else 'revoke')
+        kind = 'grant' if new_level > old_level else 'revoke'
         changes.append({
             'kind': kind,
             'section': tab_section(dst_mdtype),
@@ -297,14 +332,17 @@ def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
 
 def _normalize_tab_section(groups, mdtype):
     """Rewrite a tab section into a canonical ``tabVisibilities`` section whose
-    ``visibility`` values are 'on'/'off' (for cross-type comparison only)."""
+    ``visibility`` values are a level-preserving 'on'/'available'/'off' (for
+    cross-type comparison only). The three-state model keeps
+    DefaultOff<->Available distinct from Hidden<->None, so a real semantic
+    difference is never flattened into "both off"."""
     entries = groups.pop(tab_section(mdtype), [])
     norm = []
     for el in entries:
         ne = etree.Element(M + 'tabVisibilities')
         etree.SubElement(ne, M + 'tab').text = _txt(el, 'tab')
-        etree.SubElement(ne, M + 'visibility').text = (
-            'on' if _tab_granted(_txt(el, 'visibility'), mdtype) else 'off')
+        level = _tab_level(_txt(el, 'visibility'), mdtype)
+        etree.SubElement(ne, M + 'visibility').text = {2: 'on', 1: 'available', 0: 'off'}[level]
         norm.append(ne)
     if norm:
         groups['tabVisibilities'] = norm

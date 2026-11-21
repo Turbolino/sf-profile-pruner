@@ -47,6 +47,7 @@ from .engine import prefetch_dangling, prefetch_standard_dangling, process_secti
 from .merge import (
     MERGE_TABLE,
     NON_ALIGNABLE,
+    PROFILE_EXCLUSIVE_SECTIONS,
     READ_ONLY_FIELD_TYPE_EXACT,
     READ_ONLY_FIELD_TYPE_PREFIXES,
     classify_layout_ops,
@@ -122,7 +123,7 @@ __all__ = [
     'DEFAULT_BATCH_SIZE', 'DEFAULT_IO_THREADS', 'run_parallel',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',
-    'MERGE_TABLE', 'NON_ALIGNABLE', 'READ_ONLY_FIELD_TYPE_EXACT',
+    'MERGE_TABLE', 'NON_ALIGNABLE', 'PROFILE_EXCLUSIVE_SECTIONS', 'READ_ONLY_FIELD_TYPE_EXACT',
     'READ_ONLY_FIELD_TYPE_PREFIXES', 'classify_layout_ops', 'field_permissions_names',
     'field_permissions_editable',
     'diff_profiles',

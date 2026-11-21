@@ -2377,6 +2377,55 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(len(tab['different']), 0)
         self.assertEqual(len(tab['only_source']), 1)  # TabB (off side has none)
 
+    def test_tab_mapping_is_three_level_and_round_trips(self):
+        """The mapping must be level-based and reversible: DefaultOn<->Visible,
+        DefaultOff<->Available, Hidden<->None (never collapsed into off)."""
+        from prune_profile.merge import _convert_tab_visibility
+        # Profile -> PermissionSet
+        self.assertEqual(_convert_tab_visibility('DefaultOn', 'Profile', 'PermissionSet'), 'Visible')
+        self.assertEqual(_convert_tab_visibility('DefaultOff', 'Profile', 'PermissionSet'), 'Available')
+        self.assertEqual(_convert_tab_visibility('Hidden', 'Profile', 'PermissionSet'), 'None')
+        # PermissionSet -> Profile (round-trip)
+        self.assertEqual(_convert_tab_visibility('Visible', 'PermissionSet', 'Profile'), 'DefaultOn')
+        self.assertEqual(_convert_tab_visibility('Available', 'PermissionSet', 'Profile'), 'DefaultOff')
+        self.assertEqual(_convert_tab_visibility('None', 'PermissionSet', 'Profile'), 'Hidden')
+
+    def test_merge_carries_source_only_defaultoff_as_available(self):
+        """A source-only tab at DefaultOff is 'off but available' (level 1), so
+        it must be carried as Available into the PermissionSet — not dropped as
+        if it were Hidden/None (level 0)."""
+        src = ('<Profile xmlns="%s">\n'
+               '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOff</visibility></tabVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s"></PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        tabs = {el.find('{%s}tab' % self.NS).text: el.find('{%s}visibility' % self.NS).text
+                for el in r.findall('{%s}tabSettings' % self.NS)}
+        self.assertEqual(tabs.get('TabA__c'), 'Available')  # carried, level 1
+
+    def test_diff_distinguishes_defaultoff_from_none(self):
+        """Cross-type diff must NOT flatten DefaultOff (available) and None
+        (unavailable) into 'both off': they are different semantic levels."""
+        src = ('<Profile xmlns="%s">\n'
+               '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOff</visibility></tabVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<tabSettings><tab>TabA__c</tab><visibility>None</visibility></tabSettings>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            sections = pp.diff_profiles(os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        tab = sections['tabVisibilities']
+        self.assertEqual(len(tab['different']), 1)
+        self.assertEqual(tab['different'][0]['diffs'],
+                         [('visibility', 'available', 'off')])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

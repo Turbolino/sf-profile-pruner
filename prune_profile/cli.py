@@ -54,7 +54,8 @@ from .constants import (
     meta_manifest,
     version_ge,
 )
-from .merge import (READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
+from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
+                    READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, diff_profiles,
                     field_permissions_editable, field_permissions_names,
                     merge_profiles, normalize_profile_read_only,
@@ -810,6 +811,14 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     logger.log('')
     logger.log('── DIFF ───────────────────────────────────────────────')
     logger.log('  purpose: compare the source against the destination')
+    if src_mdtype != dest_mdtype:
+        logger.log('')
+        logger.log('  ⚠ MIXED COMPARISON: %s vs %s' % (src_mdtype, dest_mdtype))
+        logger.log('    tab visibility is mapped between the two vocabularies')
+        logger.log('    (DefaultOn↔Visible, DefaultOff↔Available, Hidden↔None).')
+        logger.log('    Profile-only sections (%s) have no PermissionSet' %
+                   ', '.join(PROFILE_EXCLUSIVE_SECTIONS))
+        logger.log('    counterpart, so they cannot be compared symmetrically.')
 
     username, uerr = org_username(sf, dest_org)
     if not username:
@@ -865,6 +874,23 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     """Run --align-from-source: prune the source against the destination,
     retrieve + prune the destination, merge (source authoritative, destination-
     only entries turned off), and optionally deploy. Exits with the result code."""
+    # 0. mixed-type warning: what the cross-type mapping does and does not carry.
+    if src_mdtype != dest_mdtype:
+        logger.log('')
+        logger.log('  ⚠ MIXED-TYPE ALIGNMENT: %s → %s' % (src_mdtype, dest_mdtype))
+        logger.log('    tab visibility is mapped between the two vocabularies')
+        logger.log('    (DefaultOn↔Visible, DefaultOff↔Available, Hidden↔None);')
+        logger.log('    the merged file always uses the destination schema.')
+        if dest_mdtype == 'PermissionSet':
+            logger.log('    Profile-only sections are NOT carried into the PermissionSet:')
+            logger.log('    %s.' % ', '.join(PROFILE_EXCLUSIVE_SECTIONS))
+        else:
+            logger.log('    the source PermissionSet has no Profile-only sections')
+            logger.log('    (%s); the destination Profile keeps' %
+                       ', '.join(PROFILE_EXCLUSIVE_SECTIONS))
+            logger.log('    its own values there (destination-only entries are reported')
+            logger.log('    as manual operations).')
+
     # 1. prune the source against the destination (drop source references that
     #    do not exist in the destination org).
     src_out = os.path.join(out_dir, '1-source-pruned')

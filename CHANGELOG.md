@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     vocabularies (DefaultOn/DefaultOff/Hidden ↔ Visible/Available/None), and the
     merged file always uses the destination's schema. All other permission
     sections are structurally identical and merge/diff directly.
+  - Tab visibility mapping is level-based and reversible (three semantic
+    states, never collapsed to a binary on/off): `DefaultOn↔Visible`,
+    `DefaultOff↔Available` ("off but available"), `Hidden↔None`. A source-only
+    `DefaultOff` is carried into the PermissionSet as `Available`, and the
+    cross-type diff keeps `Available` distinct from `None`.
+  - Mixed-type runs print an explicit warning: the comparison/merge maps tab
+    visibility between the two vocabularies, and Profile-only sections
+    (`layoutAssignments`, `loginFlows`, `loginIpRanges`, `loginHours`,
+    `userLicense`) are not carried across the type boundary (a Profile source
+    cannot move them into a PermissionSet; a PermissionSet source leaves the
+    destination Profile's own values there).
 
 ## [2.18.0] - 2026-11-19
 
