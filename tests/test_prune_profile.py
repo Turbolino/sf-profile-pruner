@@ -2541,6 +2541,49 @@ class TestPermissionSet(unittest.TestCase):
         la = r.find('{%s}layoutAssignments' % self.NS)
         self.assertEqual(la.find('{%s}layout' % self.NS).text, 'Lead-Lead Layout')
 
+    def test_align_ps_to_profile_keeps_exclusive_sections_unchanged(self):
+        """Align PS->Profile must keep the destination Profile's exclusive
+        sections present and unchanged (not turned off / reported as manual),
+        while still turning OFF destination-only entries in shared sections."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<userLicense>Salesforce</userLicense>\n'
+               '<custom>false</custom>\n'
+               '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>\n'
+               '<loginFlows><flow>MyLoginFlow</flow></loginFlows>\n'
+               '<loginIpRanges><startAddress>1.1.1.1</startAddress><endAddress>1.1.1.1</endAddress></loginIpRanges>\n'
+               '<loginHours><mondayStart>08:00</mondayStart><mondayEnd>18:00</mondayEnd></loginHours>\n'
+               '<objectPermissions><object>Account</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}Profile' % self.NS)
+        present = {el.tag.split('}')[-1] for el in r}
+        # exclusive sections kept present
+        for exclusive in ('userLicense', 'custom', 'layoutAssignments',
+                          'loginFlows', 'loginIpRanges', 'loginHours'):
+            self.assertIn(exclusive, present)
+        # ...and unchanged
+        la = r.find('{%s}layoutAssignments' % self.NS)
+        self.assertEqual(la.find('{%s}layout' % self.NS).text, 'Lead-Lead Layout')
+        lf = r.find('{%s}loginFlows' % self.NS)
+        self.assertEqual(lf.find('{%s}flow' % self.NS).text, 'MyLoginFlow')
+        # shared section still aligned: Account (dest-only) turned OFF
+        obj_perm = {el.find('{%s}object' % self.NS).text: el
+                    for el in r.findall('{%s}objectPermissions' % self.NS)}
+        self.assertIn('Lead', obj_perm)     # source entry kept
+        self.assertIn('Account', obj_perm)  # dest-only -> explicit off
+        self.assertEqual(obj_perm['Account'].find('{%s}allowRead' % self.NS).text, 'false')
+        # no manual op for the exclusive sections
+        self.assertFalse(any(o['section'] in ('layoutAssignments', 'loginFlows')
+                             for o in manual_ops))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

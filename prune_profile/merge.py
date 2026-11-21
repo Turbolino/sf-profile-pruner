@@ -906,6 +906,17 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     if dst_mdtype == 'PermissionSet':
         sections = [s for s in sections if s not in PROFILE_EXCLUSIVE_SECTIONS]
 
+    # Cross-type PermissionSet -> Profile: the source PermissionSet carries no
+    # Profile-only sections, so the destination Profile's own values there are
+    # OUT OF SCOPE for the alignment (nothing to compare or turn off). Keep them
+    # verbatim — present and unchanged — instead of reporting them as manual
+    # removals. (Profile -> Profile keeps the normal align behavior.)
+    if src_mdtype != dst_mdtype and dst_mdtype == 'Profile':
+        for section in PROFILE_EXCLUSIVE_SECTIONS:
+            for el in dst_groups.get(section, []):
+                out.append(deepcopy(el))
+        sections = [s for s in sections if s not in PROFILE_EXCLUSIVE_SECTIONS]
+
     for section in sections:
         src_els = src_groups.get(section, [])
         dst_els = dst_groups.get(section, [])

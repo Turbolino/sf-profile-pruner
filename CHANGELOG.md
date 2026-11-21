@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Profile's own Profile-only sections — `layoutAssignments`, `loginFlows`,
     `loginIpRanges`, `loginHours`, `userLicense`, `custom` — are retrieved and
     kept verbatim so they remain present and unchanged).
+  - Cross-type align PS -> Profile keeps the destination Profile's exclusive
+    sections present and unchanged (they are out of scope for a PermissionSet
+    source): they are no longer turned off or reported as manual removals,
+    while destination-only entries in shared sections are still turned OFF.
 
 ## [2.18.0] - 2026-11-19
 
