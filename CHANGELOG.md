@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The cross-type merge filters Profile-only sections out of a PermissionSet
     output (they have no PS schema), so they are never injected into an invalid
     PermissionSet file.
+  - Cross-type plain prune (`puro`) now CONVERTS the source content into the
+    destination type (no revoke): a Profile source becomes a PermissionSet
+    (tabs remapped, Profile-only sections dropped, a `label` synthesised); a
+    PermissionSet source becomes a Profile (tabs remapped, and the destination
+    Profile's own Profile-only sections — `layoutAssignments`, `loginFlows`,
+    `loginIpRanges`, `loginHours`, `userLicense`, `custom` — are retrieved and
+    kept verbatim so they remain present and unchanged).
 
 ## [2.18.0] - 2026-11-19
 

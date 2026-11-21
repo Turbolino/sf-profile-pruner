@@ -2470,6 +2470,77 @@ class TestPermissionSet(unittest.TestCase):
         _warn_permissionset_deploy(logger2, 'Profile', quiet=True, deploy=True)
         self.assertEqual(lines2, [])
 
+    def test_convert_profile_to_permissionset(self):
+        """Cross-type puro: a Profile source converts to a PermissionSet with
+        tabs remapped, Profile-only sections dropped, and a label synthesised."""
+        src = ('<Profile xmlns="%s">\n'
+               '<userLicense>Salesforce</userLicense>\n'
+               '<custom>false</custom>\n'
+               '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+               '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOff</visibility></tabVisibilities>\n'
+               '<fieldPermissions><field>Acc.Skill__c</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+               '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>\n'
+               '<loginFlows><flow>MyLoginFlow</flow></loginFlows>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'),
+                                                  label='MyPS')
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % self.NS)
+        present = {el.tag.split('}')[-1] for el in r}
+        # shared + converted tab section present, Profile-only dropped
+        self.assertIn('tabSettings', present)
+        self.assertIn('fieldPermissions', present)
+        self.assertIn('label', present)
+        for exclusive in ('layoutAssignments', 'loginFlows', 'loginIpRanges',
+                          'loginHours', 'userLicense', 'custom'):
+            self.assertNotIn(exclusive, present)
+        tabs = {el.find('{%s}tab' % self.NS).text: el.find('{%s}visibility' % self.NS).text
+                for el in r.findall('{%s}tabSettings' % self.NS)}
+        self.assertEqual(tabs['TabA__c'], 'Visible')     # DefaultOn -> Visible
+        self.assertEqual(tabs['TabB__c'], 'Available')   # DefaultOff -> Available
+        self.assertEqual(r.find('{%s}label' % self.NS).text, 'MyPS')
+
+    def test_convert_permissionset_to_profile_keeps_exclusive(self):
+        """Cross-type puro: a PermissionSet source converts to a Profile, and
+        the destination Profile's own exclusive sections are kept verbatim."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<label>MyPS</label>\n'
+               '<tabSettings><tab>TabA__c</tab><visibility>Visible</visibility></tabSettings>\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<userLicense>Salesforce</userLicense>\n'
+               '<custom>false</custom>\n'
+               '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>\n'
+               '<loginIpRanges><startAddress>1.1.1.1</startAddress><endAddress>1.1.1.1</endAddress></loginIpRanges>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'),
+                                                  dst_path=os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}Profile' % self.NS)
+        present = {el.tag.split('}')[-1] for el in r}
+        # shared content present, tabs converted back to tabVisibilities
+        self.assertIn('tabVisibilities', present)
+        self.assertIn('objectPermissions', present)
+        # Profile-only sections kept from destination
+        self.assertIn('userLicense', present)
+        self.assertIn('custom', present)
+        self.assertIn('layoutAssignments', present)
+        self.assertIn('loginIpRanges', present)
+        # PS scalar label NOT copied into a Profile
+        self.assertNotIn('label', present)
+        tab = r.findall('{%s}tabVisibilities' % self.NS)[0]
+        self.assertEqual(tab.find('{%s}tab' % self.NS).text, 'TabA__c')
+        self.assertEqual(tab.find('{%s}visibility' % self.NS).text, 'DefaultOn')
+        # the kept exclusive section is present and unchanged
+        la = r.find('{%s}layoutAssignments' % self.NS)
+        self.assertEqual(la.find('{%s}layout' % self.NS).text, 'Lead-Lead Layout')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

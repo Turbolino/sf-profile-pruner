@@ -56,7 +56,7 @@ from .constants import (
 )
 from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
-                    classify_layout_ops, diff_profiles,
+                    classify_layout_ops, convert_metadata_type, diff_profiles,
                     field_permissions_editable, field_permissions_names,
                     merge_profiles, normalize_profile_read_only,
                     removed_non_alignable,
@@ -593,14 +593,18 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
 
 def _finalize_prune_output(result, merge_dir, src_out, original_copy,
                            dest_profile_name, dest_org, logger, quiet,
-                           mdtype='Profile'):
+                           mdtype='Profile', clean_path=None):
     """Assemble the ``4-merged/`` folder for a plain prune run: copy the clean
     profile, write ``what-is-changed.txt`` (removed dangling references +
     manual operations) and ``MANUAL-OPERATIONS.txt``. Returns the
-    what-is-changed path."""
+    what-is-changed path. ``clean_path`` overrides the clean source path (used
+    when a cross-type conversion produced the final deliverable)."""
+    clean_path = clean_path or result['common_profile_path']
     os.makedirs(merge_dir, exist_ok=True)
     final_profile = os.path.join(merge_dir, meta_filename(mdtype, dest_profile_name))
-    shutil.copyfile(result['common_profile_path'], final_profile)
+    shutil.copyfile(clean_path, final_profile)
+    # Manual ops reflect what the PRUNE removed from the source (not the
+    # cross-type conversion drops, which are inherent to the type boundary).
     manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
     removed_by_type = {}
     missing_log = os.path.join(src_out, 'missing_log.txt')
@@ -612,6 +616,49 @@ def _finalize_prune_output(result, merge_dir, src_out, original_copy,
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name,
                                  logger, quiet, mdtype=mdtype)
     return wic_path
+
+
+def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
+                               clean_source_path, dest_profile_name,
+                               dest_org, out_dir, logger):
+    """Cross-type plain prune: convert the clean source into the destination
+    metadata type and return the converted deliverable path.
+
+    Profile -> PermissionSet: portable content is re-materialised as a PS
+    (tabs mapped, Profile-only sections dropped, a `label` synthesised).
+    PermissionSet -> Profile: the PS content becomes a Profile; the destination
+    Profile's own Profile-only sections are retrieved and kept verbatim so they
+    remain present and unchanged."""
+    merge_dir = os.path.join(out_dir, '4-merged')
+    os.makedirs(merge_dir, exist_ok=True)
+
+    dst_exclusive_path = None
+    if dest_mdtype == 'Profile':
+        username, uerr = org_username(sf, dest_org)
+        if not username:
+            print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
+            sys.exit(2)
+        dst_profiles, derr = retrieve_profiles(username, [dest_profile_name],
+                                               clean=not args.full_profile,
+                                               mdtype='Profile')
+        if not dst_profiles:
+            print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
+            sys.exit(2)
+        dst_exclusive_path = os.path.join(merge_dir, '.dest-exclusive.profile-meta.xml')
+        with open(dst_exclusive_path, 'wb') as _f:
+            _f.write(dst_profiles[0][1])
+
+    xml, notes = convert_metadata_type(clean_source_path, dst_exclusive_path,
+                                       label=dest_profile_name)
+    out_path = os.path.join(merge_dir, meta_filename(dest_mdtype, dest_profile_name))
+    with open(out_path, 'wb') as _f:
+        _f.write(xml)
+    logger.log('  ▸ cross-type conversion: %s → %s' % (src_mdtype, dest_mdtype))
+    for note in notes:
+        logger.log('    - %s' % note)
+    if dst_exclusive_path and os.path.isfile(dst_exclusive_path):
+        os.remove(dst_exclusive_path)
+    return out_path
 
 
 def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger):
@@ -1583,11 +1630,20 @@ def _main():
         _normalize_prune_read_only(sf, args, src_org, dest_org,
                                    result['common_profile_path'], logger)
 
+    # Cross-type plain prune (Profile<->PermissionSet): convert the clean source
+    # into the destination metadata type so the 4-merged deliverable is
+    # deployable AS the destination type. Same-type runs keep the source as-is.
+    deliverable_path = result['common_profile_path']
+    if result['outcome'] == 'SUCCESS' and src_mdtype != dest_mdtype:
+        deliverable_path = _convert_prune_deliverable(
+            sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
+            dest_profile_name, dest_org, out_dir, logger)
+
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
         _finalize_prune_output(result, merge_dir, src_out, original_copy,
                                dest_profile_name, dest_org, logger, args.quiet,
-                               mdtype=dest_mdtype)
+                               mdtype=dest_mdtype, clean_path=deliverable_path)
         prev = read_report_summary(os.path.join(src_out, 'report.txt'))
         print('Profile "%s" is already clean (previous run: %s). Nothing to do.'
               % (src_profile_name, prev.get('outcome') or 'SUCCESS'))
@@ -1618,12 +1674,12 @@ def _main():
         if report_result['already_clean']:
             logger.log('Profile already clean; deploying %r to org %s...' % (dest_profile_name, dest_org))
 
-        prev_sig = _sig(report_result['common_profile_path'])
+        prev_sig = _sig(deliverable_path)
         round_no = 1
         while True:
             logger.log('Deploying the cleaned profile %r to org %s (round %d)...'
                        % (dest_profile_name, dest_org, round_no))
-            ok, detail = _deploy_profile(sf, dest_org, report_result['common_profile_path'],
+            ok, detail = _deploy_profile(sf, dest_org, deliverable_path,
                                          dest_profile_name, args.api_version,
                                          args.poll_interval, args.job_timeout,
                                          logger, out_dir, mdtype=dest_mdtype)
@@ -1658,7 +1714,12 @@ def _main():
                                        result['common_profile_path'], logger)
             if not result.get('already_clean'):
                 report_result = result  # a prune round that actually did work
-            new_sig = _sig(result['common_profile_path'])
+            deliverable_path = result['common_profile_path']
+            if src_mdtype != dest_mdtype:
+                deliverable_path = _convert_prune_deliverable(
+                    sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
+                    dest_profile_name, dest_org, out_dir, logger)
+            new_sig = _sig(deliverable_path)
             if new_sig == prev_sig:
                 result_state = 'DEPLOY_FAILED'
                 logger.log('Deploy still failing with an identical prune result; '
@@ -1691,7 +1752,8 @@ def _main():
     # ---------- finalize 4-merged/ (clean profile + WIC + manual ops) ----------
     wic_path = _finalize_prune_output(
         report_result, merge_dir, src_out, original_copy,
-        dest_profile_name, dest_org, logger, args.quiet, mdtype=dest_mdtype)
+        dest_profile_name, dest_org, logger, args.quiet, mdtype=dest_mdtype,
+        clean_path=deliverable_path)
     logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, wic_path))
 
     # Propagate a non-zero exit code when the prune did not succeed. The

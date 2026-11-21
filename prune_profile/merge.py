@@ -73,7 +73,7 @@ NON_ALIGNABLE = ('layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours
 # own values there.
 PROFILE_EXCLUSIVE_SECTIONS = (
     'layoutAssignments', 'loginFlows', 'loginIpRanges', 'loginHours',
-    'userLicense',
+    'userLicense', 'custom',
 )
 
 # Field types whose `editable` flag is meaningless: Salesforce always treats
@@ -1051,6 +1051,86 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     etree.indent(out, space='    ')
     xml = etree.tostring(out, xml_declaration=True, encoding='UTF-8')
     return xml, manual_ops, changes
+
+
+# PermissionSet-only scalar sections (no Profile counterpart). They are never
+# copied across the type boundary: a Profile has no label/license, a
+# PermissionSet has no userLicense/custom.
+_PS_SCALAR_SECTIONS = ('label', 'description', 'hasActivationRequired', 'license')
+
+
+def convert_metadata_type(src_path, dst_path=None, label=None):
+    """Convert a pruned source (Profile or PermissionSet) into the OTHER metadata
+    type, source-authoritative and WITHOUT turning off or removing anything in
+    the destination (this is the cross-type plain-prune "promote" step, not the
+    alignment merge):
+
+      * shared permission sections are copied verbatim (structurally identical);
+      * the tab section is re-materialised in the destination vocabulary
+        (tabVisibilities <-> tabSettings);
+      * Profile-only sections are dropped when the destination is a PermissionSet;
+      * when the destination is a Profile, its Profile-only sections are kept
+        verbatim from ``dst_path`` (so they remain present and unchanged).
+
+    Returns ``(xml_bytes, notes)`` where ``notes`` is a list of human-readable
+    strings describing what was converted / kept / dropped.
+    """
+    src_root = etree.parse(src_path).getroot()
+    src_mdtype = _mdtype(src_root)
+    dst_mdtype = 'PermissionSet' if src_mdtype == 'Profile' else 'Profile'
+    src_groups = _groups(src_root)
+
+    out = etree.Element(M + meta_root(dst_mdtype), nsmap={None: NS})
+    notes = []
+
+    # 1. tab section -> destination vocabulary (source entries only, no revoke).
+    src_tab = src_groups.get(tab_section(src_mdtype), [])
+    for el in src_tab:
+        out.append(_convert_tab_element(el, src_mdtype, dst_mdtype))
+    if src_tab:
+        notes.append('tab section remapped %s -> %s (%d entr(y/ies))'
+                     % (tab_section(src_mdtype), tab_section(dst_mdtype), len(src_tab)))
+
+    # 2. shared sections verbatim.
+    copied = 0
+    for section, els in src_groups.items():
+        if section == tab_section(src_mdtype):
+            continue
+        if section in PROFILE_EXCLUSIVE_SECTIONS:
+            continue
+        if section in _PS_SCALAR_SECTIONS:
+            continue
+        for el in els:
+            out.append(deepcopy(el))
+            copied += 1
+    if copied:
+        notes.append('%d shared-section entr(y/ies) copied verbatim' % copied)
+
+    # 3. destination-specific structure.
+    if dst_mdtype == 'PermissionSet':
+        dropped = [s for s in PROFILE_EXCLUSIVE_SECTIONS if src_groups.get(s)]
+        if dropped:
+            notes.append('Profile-only sections dropped: %s' % ', '.join(dropped))
+        lbl = label or ''
+        etree.SubElement(out, M + 'label').text = lbl
+        notes.append('label set to %r' % lbl)
+    else:
+        kept = []
+        if dst_path and os.path.isfile(dst_path):
+            dst_root = etree.parse(dst_path).getroot()
+            dst_groups = _groups(dst_root)
+            for section in PROFILE_EXCLUSIVE_SECTIONS:
+                for el in dst_groups.get(section, []):
+                    out.append(deepcopy(el))
+                    kept.append(section)
+        if kept:
+            notes.append('destination Profile-only sections kept as-is: %s'
+                         % ', '.join(sorted(set(kept))))
+        else:
+            notes.append('no destination Profile provided: Profile-only sections left empty')
+
+    etree.indent(out, space='    ')
+    return etree.tostring(out, xml_declaration=True, encoding='UTF-8'), notes
 
 
 def removed_non_alignable(original_path, clean_path):
