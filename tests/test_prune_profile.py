@@ -147,10 +147,10 @@ class TestAlignResumeSummary(unittest.TestCase):
                      'manual': 16, 'validation': 'clean'}
             lines = cli._align_resume_summary(d, state)
             text = '\n'.join(lines)
-            self.assertIn('PHASE 1/4 · PRUNE SOURCE: SUCCESS (0 reference(s) removed)', text)
-            self.assertIn('PHASE 2/4 · PRUNE DESTINATION: SUCCESS (116 reference(s) removed)', text)
-            self.assertIn('PHASE 3/4 · MERGE: 0 granted, 14 revoked, 2 layout changed, 16 manual', text)
-            self.assertIn('PHASE 4/4 · VALIDATE: clean', text)
+            self.assertIn('PHASE 1/4 / PRUNE SOURCE: SUCCESS (0 reference(s) removed)', text)
+            self.assertIn('PHASE 2/4 / PRUNE DESTINATION: SUCCESS (116 reference(s) removed)', text)
+            self.assertIn('PHASE 3/4 / MERGE: 0 granted, 14 revoked, 2 layout changed, 16 manual', text)
+            self.assertIn('PHASE 4/4 / VALIDATE: clean', text)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -193,6 +193,12 @@ class TestResolveError(unittest.TestCase):
     def test_tab_error(self):
         self.assertEqual(pp.resolve_error("You can't edit tab settings for JobProfile, as it's not a valid tab."),
                          ('CustomTab', 'JobProfile'))
+
+    def test_license_mandated_permission_error(self):
+        # license-mandated permission -> stop turning it off (drop the OFF entry)
+        self.assertEqual(
+            pp.resolve_error('You may not turn off permission Chatter Internal User for this License Type'),
+            ('UserPermission', 'ChatterInternalUser'))
 
     def test_field_error(self):
         self.assertEqual(pp.resolve_error('In field: field - no CustomField named Missing__c.Foo__c found'),
@@ -2654,6 +2660,42 @@ class TestPermissionSet(unittest.TestCase):
         self.assertNotIn('hasActivationRequired', present)
         self.assertNotIn('license', present)
         self.assertIn('objectPermissions', present)
+
+    def test_merge_ps_to_profile_keeps_default_app(self):
+        """Align PS->Profile must not turn off a destination app marked default
+        (Salesforce forbids removing the only default app)."""
+        src = ('<PermissionSet xmlns="%s"></PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<applicationVisibilities><application>AppDef</application><default>true</default><visible>true</visible></applicationVisibilities>\n'
+               '<applicationVisibilities><application>AppOther</application><default>false</default><visible>true</visible></applicationVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        avs = {el.find('{%s}application' % self.NS).text: el
+               for el in r.findall('{%s}applicationVisibilities' % self.NS)}
+        # default app kept verbatim (not turned off)
+        self.assertEqual(avs['AppDef'].find('{%s}visible' % self.NS).text, 'true')
+        self.assertEqual(avs['AppDef'].find('{%s}default' % self.NS).text, 'true')
+        # non-default dest-only app still turned off
+        self.assertEqual(avs['AppOther'].find('{%s}visible' % self.NS).text, 'false')
+
+    def test_convert_profile_to_ps_drops_recordtype_default(self):
+        """recordTypeVisibilities also carries a `default` child that is invalid
+        in a PermissionSet: cross-type conversion must drop it too."""
+        src = ('<Profile xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>Case.IT</recordType><default>true</default><visible>true</visible></recordTypeVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'), label='PS')
+        r = pp.etree.fromstring(xml)
+        rv = r.find('{%s}recordTypeVisibilities' % self.NS)
+        self.assertIsNotNone(rv)
+        self.assertIsNone(rv.find('{%s}default' % self.NS))
 
 
 if __name__ == '__main__':

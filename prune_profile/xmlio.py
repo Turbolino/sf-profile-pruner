@@ -30,6 +30,17 @@ def resolve_error(problem):
     if m2:
         return 'CustomTab', m2.group(1)
 
+    # A permission can be license-mandated for a given license type, so the
+    # deploy refuses to turn it off ("You may not turn off permission X for
+    # this License Type"). That is not a dangling reference: the right fix is to
+    # stop turning it off, i.e. drop the explicit OFF entry from the merged
+    # output (a Profile deploy omitting a userPermission leaves it untouched).
+    # The message carries the permission LABEL; the API name is the label
+    # without spaces.
+    m3 = re.search(r"You may not turn off permission\s+(.+?)\s+for this License Type", problem)
+    if m3:
+        return 'UserPermission', m3.group(1).replace(' ', '')
+
     return None
 
 

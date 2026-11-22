@@ -103,6 +103,7 @@ BLOCK_MAP = {
         ('layoutAssignments', 'recordType', 'exact'),
     ],
     'CustomPermission':   [('customPermissions', 'name', 'exact')],
+    'UserPermission':     [('userPermissions', 'name', 'exact')],
     'CustomMetadataType': [('customMetadataTypeAccesses', 'name', 'exact')],
     'StandardTab':        [('tabVisibilities', 'tab', 'exact'),
                            ('tabSettings', 'tab', 'exact')],

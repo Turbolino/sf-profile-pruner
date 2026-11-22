@@ -4,12 +4,12 @@
 `prune_stage` encapsulates the whole pruning pipeline (Metadata API pre-pass,
 standard-metadata pre-pass, parallel per-section dry-run loop, self-healing
 final gate and the report), so the CLI can run it more than once with different
-inputs — for example the alignment flow, which prunes the source against the
+inputs - for example the alignment flow, which prunes the source against the
 destination and then prunes the destination against itself.
 
 It is intentionally free of argument parsing and of the "deploy" step: it only
 produces the clean profile and the removed-metadata logs. The caller decides
-what to do with the result (deploy it, merge it, …).
+what to do with the result (deploy it, merge it, ...).
 """
 
 import os
@@ -167,7 +167,7 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     if total_resumed:
         logger.log('RESUME: %d metadata already removed.' % total_resumed)
         for typ, members in sorted(removed_by_type.items(), key=lambda kv: -len(kv[1])):
-            logger.log('  ▸ %s: %d' % (typ, len(members)))
+            logger.log('  - %s: %d' % (typ, len(members)))
     else:
         logger.log('FIRST RUN.')
 
@@ -364,14 +364,26 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
                 result_reason = 'final dry-run reported a failed deploy with no componentFailures'
                 break
             removals = []
+            dependency_only = bool(cf)
             for f in cf:
                 problem = str(f.get('problem', ''))
+                # Same cross-chunk dependency artifact as in the per-section pass:
+                # "Permission Read X depends on permission(s): Read Y" - both
+                # exist in the org, the full package carries them together, so
+                # this is not a dangling reference.
+                if 'depends on permission(s):' in problem:
+                    logger.log('Final gate: cross-chunk dependency skipped: %s' % problem)
+                    continue
+                dependency_only = False
                 rr = resolve_error(problem)
                 if rr is None:
                     logger.log('Final gate: unmappable problem, skipped: %s' % problem)
                     continue
                 removals.append((rr[0], rr[1]))
             if not removals:
+                if dependency_only:
+                    final_detail = 'clean (cross-chunk dependencies only)'
+                    break
                 probs = '; '.join(str(f.get('problem', '')) for f in cf[:5])
                 result_state = 'ABORTED'
                 result_reason = 'final dry-run reported %d failure(s), none mappable: %s' % (len(cf), probs)

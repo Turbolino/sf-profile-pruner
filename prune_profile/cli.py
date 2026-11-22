@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Profile Pruner — command-line entry point.
+"""Profile Pruner - command-line entry point.
 
 Removes from a Salesforce Profile every reference to metadata that does NOT
 exist in the destination org. Pruning combines a Metadata API + Tooling API
@@ -77,7 +77,7 @@ def _rel(base, path):
     """Render `path` relative to `base` for the user-facing console output.
 
     The output directory itself is always shown absolute; every other path
-    (profile, project, report, …) is shown relative to it so the console stays
+    (profile, project, report, ...) is shown relative to it so the console stays
     short and readable."""
     try:
         return os.path.relpath(path, base)
@@ -203,7 +203,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             entities.append(ent)
 
     # --- layer 1: DataType (batched FieldDefinition query) ---
-    logger.log('  ▸ fetching field types for %d object(s) to normalize '
+    logger.log('  - fetching field types for %d object(s) to normalize '
                'read-only fields...' % len(entities))
     progress = {'last': -1}
 
@@ -211,12 +211,12 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         pct = (done * 100) // total if total else 100
         if pct != progress['last']:
             progress['last'] = pct
-            logger.log('  ▸ field types: %d/%d object(s) (%d%%)' % (done, total, pct))
+            logger.log('  - field types: %d/%d object(s) (%d%%)' % (done, total, pct))
 
     types, terr = field_data_types(sf, dest_org, entities, on_progress=_on_progress,
                                    io_threads=io_threads)
     if types is None:
-        logger.log('  ⚠ could not fetch field types (%s); editable flags left as-is.' % terr)
+        logger.log('  WARNING: could not fetch field types (%s); editable flags left as-is.' % terr)
         return set()
     read_only = set()
     for n in names:
@@ -224,7 +224,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         if dt.startswith(READ_ONLY_FIELD_TYPE_PREFIXES) or dt in READ_ONLY_FIELD_TYPE_EXACT:
             read_only.add(n)
     if read_only:
-        logger.log('  ✓ %d field(s) read-only by type (formula/roll-up/auto-number/address); '
+        logger.log('  OK: %d field(s) read-only by type (formula/roll-up/auto-number/address); '
                    'editable normalized to false.' % len(read_only))
 
     # --- layer 2: describe-based detection of system read-only fields ---
@@ -232,11 +232,11 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     #   * align (dst_clean_path present): the two profiles exist, so candidates
     #     are the (few) fields whose editable flag differs between them.
     #   * plain prune (no destination profile): candidates are the standard
-    #     fields the source marks editable=true. Custom fields are excluded — a
+    #     fields the source marks editable=true. Custom fields are excluded - a
     #     custom field is read-only only when formula / roll-up summary / auto
     #     number (already caught by layer 1) or FLS-locked (which must NOT be
-    #     normalized) — so only standard system fields (Status, IsClosed,
-    #     ChatKey, AccountId, …) are worth describing.
+    #     normalized) - so only standard system fields (Status, IsClosed,
+    #     ChatKey, AccountId, ...) are worth describing.
     src_edit = field_permissions_editable(src_clean_path)
     if dst_clean_path is not None:
         dst_edit = field_permissions_editable(dst_clean_path)
@@ -258,7 +258,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             cand_entities.append(ent)
 
     # Describe only STANDARD objects present in the destination org. System
-    # read-only fields (Status, IsClosed, ChatKey, AccountId, …) live on
+    # read-only fields (Status, IsClosed, ChatKey, AccountId, ...) live on
     # standard objects; custom objects are never interesting for this pass and
     # may not even be describable (NOT_FOUND), so scoping to standard entities
     # removes the noise and the wasted round-trips.
@@ -268,7 +268,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     if existing is not None:
         dest_entities = {e for e in cand_entities if e in existing}
     elif eerr:
-        logger.log('  ⚠ could not list standard destination entities (%s); describing all candidates.' % eerr)
+        logger.log('  WARNING: could not list standard destination entities (%s); describing all candidates.' % eerr)
     cand_entities = [e for e in cand_entities if e in dest_entities]
     if not cand_entities:
         return read_only
@@ -279,7 +279,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
     candidates = [n for n in candidates if n.split('.', 1)[0] in dest_entities]
     if not candidates:
         return read_only
-    logger.log('  ▸ describing %d object(s) to detect system read-only field(s)...'
+    logger.log('  - describing %d object(s) to detect system read-only field(s)...'
                % len(cand_entities))
 
     def _describe_org(org, entities):
@@ -294,7 +294,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
         not_found = 0
         for i, entity in enumerate(entities):
             if errors[i]:
-                logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
+                logger.log('  WARNING: describe %s on %s failed (%s); those fields left as-is.'
                            % (entity, org, errors[i]))
                 continue
             res, err = results[i]
@@ -305,7 +305,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
                 if err and ('NOT_FOUND' in str(err) or 'does not exist' in str(err)):
                     not_found += 1
                 else:
-                    logger.log('  ⚠ describe %s on %s failed (%s); those fields left as-is.'
+                    logger.log('  WARNING: describe %s on %s failed (%s); those fields left as-is.'
                                % (entity, org, err))
                 continue
             fields = res.get('fields') or []
@@ -342,7 +342,7 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             suspected.append(n)
     if not suspected:
         if not_found_total:
-            logger.log('  ▸ %d object(s) not describable in the org(s) — their fields left '
+            logger.log('  - %d object(s) not describable in the org(s) - their fields left '
                        'as-is (not normalized).' % not_found_total)
         return read_only
 
@@ -376,10 +376,10 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
             read_only.add(n)
             added.append(n)
     if added:
-        logger.log('  ✓ %d system read-only field(s) (updateable=false on both orgs) '
+        logger.log('  OK: %d system read-only field(s) (updateable=false on both orgs) '
                    'normalized: %s' % (len(added), ', '.join(sorted(added))))
     if not_found_total:
-        logger.log('  ▸ %d object(s) not describable in the org(s) — their fields left '
+        logger.log('  - %d object(s) not describable in the org(s) - their fields left '
                    'as-is (not normalized).' % not_found_total)
     return read_only
 
@@ -403,7 +403,7 @@ def _warn_if_not_admin(sf, org, logger):
         return
     profile = (records[0].get('Profile') or {}).get('Name') or ''
     if profile and profile != 'System Administrator':
-        logger.log('  ⚠ ALERT (non-blocking): the current user in %s has profile %r, '
+        logger.log('  WARNING: ALERT (non-blocking): the current user in %s has profile %r, '
                    'not "System Administrator"; the results may depend on the '
                    'current profile permissions.' % (org, profile))
 
@@ -416,14 +416,14 @@ def _warn_permissionset_deploy(logger, dest_mdtype, quiet, deploy=False):
     present in the deployed file is REVOKED in the target org. This matters
     whenever the tool hands back a PermissionSet whose content is a subset of
     what the org currently grants (plain prune removes dangling references;
-    align turns destination-only permissions off — deliberate in the align case,
+    align turns destination-only permissions off - deliberate in the align case,
     but still worth stating explicitly). Never raises and never stops the run.
     """
     if dest_mdtype != 'PermissionSet':
         return
     verb = 'deploying' if deploy else 'producing'
     logger.log('')
-    logger.log('  ⚠ PERMISSIONSET SEMANTICS: %s a PermissionSet, unlike a Profile,' % verb)
+    logger.log('  WARNING: PERMISSIONSET SEMANTICS: %s a PermissionSet, unlike a Profile,' % verb)
     logger.log('    is AUTHORITATIVE: every permission NOT present in the file is')
     logger.log('    REVOKED in the target org (a Profile deploy only MERGES and')
     logger.log('    leaves omitted entries untouched).')
@@ -432,7 +432,7 @@ def _warn_permissionset_deploy(logger, dest_mdtype, quiet, deploy=False):
                ' (that is the alignment goal).')
     if not quiet:
         print('')
-        print('WARNING: PermissionSet is authoritative — permissions not present in')
+        print('WARNING: PermissionSet is authoritative - permissions not present in')
         print('         the deployed file are REVOKED in the target org (unlike a')
         print('         Profile, where an omitted entry is simply ignored).')
         print('', flush=True)
@@ -623,7 +623,7 @@ def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
                                dest_org, out_dir, logger):
     """Cross-type plain prune: convert the clean source into the destination
     metadata type and return the converted deliverable path (written to a
-    temporary work area — `_finalize_prune_output` copies it into 4-merged).
+    temporary work area - `_finalize_prune_output` copies it into 4-merged).
 
     Profile -> PermissionSet: portable content is re-materialised as a PS
     (tabs mapped, Profile-only sections dropped, a `label` synthesised).
@@ -656,7 +656,7 @@ def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
     out_path = os.path.join(work_dir, 'converted-%s' % meta_filename(dest_mdtype, dest_profile_name))
     with open(out_path, 'wb') as _f:
         _f.write(xml)
-    logger.log('  ▸ cross-type conversion: %s → %s' % (src_mdtype, dest_mdtype))
+    logger.log('  - cross-type conversion: %s -> %s' % (src_mdtype, dest_mdtype))
     for note in notes:
         logger.log('    - %s' % note)
     if dst_exclusive_path and os.path.isfile(dst_exclusive_path):
@@ -668,11 +668,11 @@ def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger)
     """Normalize system read-only field ``editable`` flags in a pruned (plain,
     non-merged) profile unless ``--avoid-normalize-ro`` is set. Detects read-only
     fields by DataType (formula / roll-up summary / auto number / compound
-    address & location) plus — when a source org is available — the
+    address & location) plus - when a source org is available - the
     ``sobject describe`` system-read-only pass, then forces ``editable=false``
     in place. Returns the number of fields normalized."""
     if args.avoid_normalize_ro:
-        logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
+        logger.log('  - read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
         return 0
     read_only = _read_only_field_set(sf, src_org, dest_org, common_path, None, logger,
                                      io_threads=args.io_threads_number)
@@ -680,7 +680,7 @@ def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger)
         return 0
     n = normalize_profile_read_only(common_path, read_only)
     if n:
-        logger.log('  ✓ normalized %d read-only field(s) editable=false in the clean profile.' % n)
+        logger.log('  OK: normalized %d read-only field(s) editable=false in the clean profile.' % n)
     return n
 
 
@@ -689,7 +689,7 @@ def _align_read_only_fields(args, sf, src_org, dest_org, src_clean, dst_clean, l
     ``--avoid-normalize-ro`` (empty set when the flag is present, so the merge
     leaves every ``editable`` flag exactly as retrieved)."""
     if args.avoid_normalize_ro:
-        logger.log('  ▸ read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
+        logger.log('  - read-only normalization disabled (--avoid-normalize-ro): editable flags kept as-is.')
         return set()
     return _read_only_field_set(sf, src_org, dest_org, src_clean, dst_clean, logger,
                                 io_threads=args.io_threads_number)
@@ -778,24 +778,24 @@ def _align_resume_summary(out_dir, state):
 
     def _phase1():
         if src.get('outcome') is None and src.get('removed') is None:
-            return '  PHASE 1/4 · PRUNE SOURCE: not recorded in %s' % _rel(out_dir, src_report)
-        return '  PHASE 1/4 · PRUNE SOURCE: %s (%d reference(s) removed)' % (
+            return '  PHASE 1/4 / PRUNE SOURCE: not recorded in %s' % _rel(out_dir, src_report)
+        return '  PHASE 1/4 / PRUNE SOURCE: %s (%d reference(s) removed)' % (
             src.get('outcome') or '?', src.get('removed') or 0)
 
     def _phase2():
         if dst.get('outcome') is None and dst.get('removed') is None:
-            return '  PHASE 2/4 · PRUNE DESTINATION: not recorded in %s' % _rel(out_dir, dst_report)
-        return '  PHASE 2/4 · PRUNE DESTINATION: %s (%d reference(s) removed)' % (
+            return '  PHASE 2/4 / PRUNE DESTINATION: not recorded in %s' % _rel(out_dir, dst_report)
+        return '  PHASE 2/4 / PRUNE DESTINATION: %s (%d reference(s) removed)' % (
             dst.get('outcome') or '?', dst.get('removed') or 0)
 
     return [
         'Completed phases (from the previous run):',
         _phase1(),
         _phase2(),
-        '  PHASE 3/4 · MERGE: %d granted, %d revoked, %d layout changed, %d manual' % (
+        '  PHASE 3/4 / MERGE: %d granted, %d revoked, %d layout changed, %d manual' % (
             state.get('granted', 0), state.get('revoked', 0),
             state.get('layout_changed', 0), state.get('manual', 0)),
-        '  PHASE 4/4 · VALIDATE: %s' % (state.get('validation') or '?'),
+        '  PHASE 4/4 / VALIDATE: %s' % (state.get('validation') or '?'),
     ]
 
 
@@ -889,13 +889,13 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
     the two section by section (pure comparison; no prune, dry-run or deploy).
     Writes ``diff/diff-report.txt`` and prints a summary table. Exits with 0."""
     logger.log('')
-    logger.log('── DIFF ───────────────────────────────────────────────')
+    logger.log('-- DIFF -----------------------------------------------')
     logger.log('  purpose: compare the source against the destination')
     if src_mdtype != dest_mdtype:
         logger.log('')
-        logger.log('  ⚠ MIXED COMPARISON: %s vs %s' % (src_mdtype, dest_mdtype))
+        logger.log('  WARNING: MIXED COMPARISON: %s vs %s' % (src_mdtype, dest_mdtype))
         logger.log('    tab visibility is mapped between the two vocabularies')
-        logger.log('    (DefaultOn↔Visible, DefaultOff↔Available, Hidden↔None).')
+        logger.log('    (DefaultOn<->Visible, DefaultOff<->Available, Hidden<->None).')
         logger.log('    Profile-only sections (%s) have no PermissionSet' %
                    ', '.join(PROFILE_EXCLUSIVE_SECTIONS))
         logger.log('    counterpart, so they cannot be compared symmetrically.')
@@ -905,7 +905,7 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
         print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
         sys.exit(2)
     clean = not args.full_profile
-    logger.log('  ▸ retrieving destination %s %r from %s (%s)...'
+    logger.log('  - retrieving destination %s %r from %s (%s)...'
                % (dest_mdtype, dest_profile_name, dest_org, 'full' if args.full_profile else 'clean'))
     dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean,
                                             mdtype=dest_mdtype)
@@ -928,10 +928,10 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
         _f.write(report_text + '\n')
     json_path = write_diff_json(sections, src_label, dst_label, diff_dir)
     xml_path = write_diff_xml(sections, src_label, dst_label, diff_dir)
-    logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
-    logger.log('  ✓ diff report written: %s' % _rel(out_dir, report_path))
-    logger.log('  ✓ diff data (JSON):     %s' % _rel(out_dir, json_path))
-    logger.log('  ✓ diff data (XML):      %s' % _rel(out_dir, xml_path))
+    logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
+    logger.log('  OK: diff report written: %s' % _rel(out_dir, report_path))
+    logger.log('  OK: diff data (JSON):     %s' % _rel(out_dir, json_path))
+    logger.log('  OK: diff data (XML):      %s' % _rel(out_dir, xml_path))
 
     # Screen output: only the summary counts + the paths of the three files.
     # The full per-entry detail lives in the files (diff-report.txt has the
@@ -957,9 +957,9 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     # 0. mixed-type warning: what the cross-type mapping does and does not carry.
     if src_mdtype != dest_mdtype:
         logger.log('')
-        logger.log('  ⚠ MIXED-TYPE ALIGNMENT: %s → %s' % (src_mdtype, dest_mdtype))
+        logger.log('  WARNING: MIXED-TYPE ALIGNMENT: %s -> %s' % (src_mdtype, dest_mdtype))
         logger.log('    tab visibility is mapped between the two vocabularies')
-        logger.log('    (DefaultOn↔Visible, DefaultOff↔Available, Hidden↔None);')
+        logger.log('    (DefaultOn<->Visible, DefaultOff<->Available, Hidden<->None);')
         logger.log('    the merged file always uses the destination schema.')
         if dest_mdtype == 'PermissionSet':
             logger.log('    Profile-only sections are NOT carried into the PermissionSet:')
@@ -975,10 +975,10 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     #    do not exist in the destination org).
     src_out = os.path.join(out_dir, '1-source-pruned')
     logger.log('')
-    logger.log('── PHASE 1/4 · PRUNE SOURCE ───────────────────────────')
+    logger.log('-- PHASE 1/4 / PRUNE SOURCE ---------------------------')
     logger.log('  purpose: drop every reference in %r that does not exist in %s'
                % (src_profile_name, dest_org))
-    logger.log('  ▸ pruning the source profile against %s...' % dest_org)
+    logger.log('  - pruning the source profile against %s...' % dest_org)
     src_res = prune_stage(
         sf=sf, org=dest_org, source_profile_path=source_profile_path,
         profile_name=src_profile_name, out_dir=src_out,
@@ -991,11 +991,11 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         print('ERROR: source prune failed: %s' % (src_res.get('reason') or 'unknown error'))
         sys.exit(2)
     src_clean = src_res['common_profile_path']
-    logger.log('  ✓ source pruned (%d reference(s) removed)' % src_res['total_removed'])
+    logger.log('  OK: source pruned (%d reference(s) removed)' % src_res['total_removed'])
 
     # 2. retrieve the destination profile (same clean/full choice as the source).
     logger.log('')
-    logger.log('── PHASE 2/4 · RETRIEVE + PRUNE DESTINATION ───────────')
+    logger.log('-- PHASE 2/4 / RETRIEVE + PRUNE DESTINATION -----------')
     logger.log('  purpose: get a copy of the destination profile and strip its own dangling')
     logger.log('           references, so the merge starts from two valid profiles')
     username, uerr = org_username(sf, dest_org)
@@ -1004,7 +1004,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         sys.exit(2)
     dest_dir = os.path.join(out_dir, '2-destination-retrieved')
     os.makedirs(dest_dir, exist_ok=True)
-    logger.log('  ▸ retrieving the destination %s %r from %s...'
+    logger.log('  - retrieving the destination %s %r from %s...'
                % (dest_mdtype, dest_profile_name, dest_org))
     clean = not args.full_profile
     dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean,
@@ -1015,11 +1015,11 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     dest_raw = os.path.join(dest_dir, meta_filename(dest_mdtype, dest_profile_name))
     with open(dest_raw, 'wb') as _f:
         _f.write(dest_profiles[0][1])
-    logger.log('  ✓ destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
+    logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
 
     # 3. prune the destination against itself (drop its own dangling references).
     dst_out = os.path.join(out_dir, '3-destination-pruned')
-    logger.log('  ▸ pruning the destination profile against itself...')
+    logger.log('  - pruning the destination profile against itself...')
     dst_res = prune_stage(
         sf=sf, org=dest_org, source_profile_path=dest_raw,
         profile_name=dest_profile_name, out_dir=dst_out,
@@ -1032,15 +1032,15 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         print('ERROR: destination prune failed: %s' % (dst_res.get('reason') or 'unknown error'))
         sys.exit(2)
     dst_clean = dst_res['common_profile_path']
-    logger.log('  ✓ destination pruned (%d reference(s) removed)' % dst_res['total_removed'])
+    logger.log('  OK: destination pruned (%d reference(s) removed)' % dst_res['total_removed'])
 
     # 4. merge: source authoritative; destination-only entries turned off.
     logger.log('')
-    logger.log('── PHASE 3/4 · MERGE (source authoritative) ───────────')
+    logger.log('-- PHASE 3/4 / MERGE (source authoritative) -----------')
     logger.log('  purpose: keep every source entry verbatim and turn OFF every destination-only entry')
-    logger.log('  ▸ merging source → destination...')
+    logger.log('  - merging source -> destination...')
     if not src_org:
-        logger.log('  ⚠ NOTE (-pp file source): the source has no org to describe, so read-only '
+        logger.log('  WARNING: NOTE (-pp file source): the source has no org to describe, so read-only '
                    'detection checks only the destination. A field editable in the source but '
                    'read-only-looking in the destination could be misclassified as read-only; '
                    'use -so/-sp to verify both sides.')
@@ -1059,14 +1059,14 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     #    merged profile and recomputing the diff, so MANUAL-OPERATIONS.txt and
     #    what-is-changed.txt always describe the FINAL (deployable) profile.
     logger.log('')
-    logger.log('── PHASE 4/4 · VALIDATE + DEPLOY ──────────────────────')
+    logger.log('-- PHASE 4/4 / VALIDATE + DEPLOY ----------------------')
     logger.log('  purpose: confirm the merged profile is deployable before writing reports (and deploying)')
-    logger.log('  ▸ validating the merged profile with a dry-run...')
+    logger.log('  - validating the merged profile with a dry-run...')
     validation, _cf = _validate_profile_dry_run(
         sf, dest_org, merged_path, dest_profile_name, args.api_version,
         args.poll_interval, args.job_timeout, logger, out_dir, mdtype=dest_mdtype)
     if validation != 'clean':
-        logger.log('  ⚠ dry-run not clean (%s); self-healing the merged profile...' % validation)
+        logger.log('  WARNING: dry-run not clean (%s); self-healing the merged profile...' % validation)
         heal_out = os.path.join(out_dir, '.work', 'align-heal')
         heal_res = prune_stage(
             sf=sf, org=dest_org, source_profile_path=merged_path,
@@ -1090,12 +1090,12 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         validation, _cf = _validate_profile_dry_run(
             sf, dest_org, merged_path, dest_profile_name, args.api_version,
             args.poll_interval, args.job_timeout, logger, out_dir, mdtype=dest_mdtype)
-    logger.log('  ✓ merged dry-run: %s' % validation)
+    logger.log('  OK: merged dry-run: %s' % validation)
 
     n_granted = sum(1 for c in changes if c['kind'] == 'grant')
     n_revoked = sum(1 for c in changes if c['kind'] == 'revoke')
     n_layout = sum(1 for c in changes if c['kind'] == 'layout_change')
-    logger.log('  ✓ merge result: %d granted (ON), %d revoked (OFF), %d layout changed, '
+    logger.log('  OK: merge result: %d granted (ON), %d revoked (OFF), %d layout changed, '
                '%d manual' % (n_granted, n_revoked, n_layout, len(manual_ops)))
 
     # 6. classify layoutAssignments manual ops (redundant vs needs check) using
@@ -1108,18 +1108,18 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                 obj = name.split('-', 1)[0] if '-' in name else name
                 layout_count[obj] = layout_count.get(obj, 0) + 1
         elif lerr:
-            logger.log('  ⚠ could not list Layout metadata (%s); '
+            logger.log('  WARNING: could not list Layout metadata (%s); '
                        'layoutAssignments marked for manual check.' % lerr)
         classify_layout_ops(manual_ops, changes, layout_count)
 
     # 7. reports (only now, on the final validated merged profile).
-    logger.log('  ▸ writing reports...')
+    logger.log('  - writing reports...')
     manual_ops_path = _write_and_report_manual_ops(
         manual_ops, merge_dir, dest_profile_name, logger, args.quiet,
         mdtype=dest_mdtype)
     change_path = write_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'), changes, dest_org)
-    logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, change_path))
+    logger.log('  OK: what-is-changed written: %s' % _rel(out_dir, change_path))
 
     # 7b. persist the run identity + validated merge, so a later invocation on
     #     this folder can deploy the cache instead of redoing the pipeline.
@@ -1129,7 +1129,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
             out_dir, args, src_profile_name, dest_profile_name, dest_org,
             merged_path, validation, n_granted, n_revoked, n_layout, len(manual_ops),
             src_mdtype=src_mdtype, dest_mdtype=dest_mdtype)
-        logger.log('  ✓ run state saved: %s' % _rel(out_dir, state_path))
+        logger.log('  OK: run state saved: %s' % _rel(out_dir, state_path))
 
     # 8. optional deploy of the merged profile (only after a clean validation).
     deploy_detail = ''
@@ -1137,7 +1137,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     if validation != 'clean':
         outcome = 'VALIDATION_FAILED'
     elif do_deploy:
-        logger.log('  ▸ deploying the merged profile to %s...' % dest_org)
+        logger.log('  - deploying the merged profile to %s...' % dest_org)
         ok, deploy_detail = _deploy_profile(sf, dest_org, merged_path, dest_profile_name,
                                             args.api_version, args.poll_interval,
                                             args.job_timeout, logger, out_dir,
@@ -1506,12 +1506,12 @@ def _main():
 
     logger = Logger(args.quiet, run_log)
 
-    logger.log('── SETUP ───────────────────────────────────────────────')
+    logger.log('-- SETUP -----------------------------------------------')
     logger.log('  purpose: locate the CLI, resolve the API version and confirm the org context')
-    logger.log('  ▸ locating the Salesforce CLI (sf)...')
+    logger.log('  - locating the Salesforce CLI (sf)...')
     sf = find_sf(args.sf)
     logger.file_log('sf          : %s' % sf)
-    logger.log('  ✓ Salesforce CLI ready')
+    logger.log('  OK: Salesforce CLI ready')
 
     # Informational, non-blocking upgrade notice (stderr so it never disturbs
     # the stdout progress/board; skipped silently on any network failure).
@@ -1548,7 +1548,7 @@ def _main():
     # ---------- API version: explicit or detected from the destination org ----------
     api_source = 'explicit'
     if args.api_version is None:
-        logger.log('  ▸ detecting the latest API version from org %s...' % dest_org)
+        logger.log('  - detecting the latest API version from org %s...' % dest_org)
         args.api_version, averr = org_api_version(sf, dest_org)
         if args.api_version is None:
             print('ERROR: could not detect the latest API version from org %r:' % dest_org)
@@ -1556,7 +1556,7 @@ def _main():
             print('       Pass --api-version <X.Y> explicitly to continue.')
             sys.exit(2)
         api_source = 'auto (latest for org)'
-    logger.log('  ✓ API v%s (%s)' % (args.api_version, api_source))
+    logger.log('  OK: API v%s (%s)' % (args.api_version, api_source))
 
     # ---------- retrieve the source profile (via 2) ----------
     if mode == 'org':
@@ -1565,7 +1565,7 @@ def _main():
             print('ERROR: could not resolve the org username for %r: %s' % (src_org, uerr))
             sys.exit(2)
         clean = not args.full_profile
-        logger.log('  ▸ retrieving %s %r from org %s (%s)...' %
+        logger.log('  - retrieving %s %r from org %s (%s)...' %
                    (src_mdtype, src_profile_name, src_org, 'full' if args.full_profile else 'clean'))
         profiles, rerr = retrieve_profiles(username, [src_profile_name], clean=clean,
                                            mdtype=src_mdtype)
@@ -1576,15 +1576,15 @@ def _main():
         with open(original_copy, 'wb') as _f:
             _f.write(xml)
         profile_path = original_copy
-        logger.log('  ✓ retrieved %s (%d bytes)' % (full_name, len(xml)))
+        logger.log('  OK: retrieved %s (%d bytes)' % (full_name, len(xml)))
         if rerr:
-            logger.log('  ⚠ %s' % rerr)
+            logger.log('  WARNING: %s' % rerr)
 
     if mode == 'org':
-        logger.log('  context: source %r @ %s  →  destination %r @ %s' %
+        logger.log('  context: source %r @ %s  ->  destination %r @ %s' %
                    (src_profile_name, src_org, dest_profile_name, dest_org))
     else:
-        logger.log('  context: source file %r  →  destination %r @ %s' %
+        logger.log('  context: source file %r  ->  destination %r @ %s' %
                    (src_profile_name, dest_profile_name, dest_org))
 
     # ---------- diff (--diff): pure profile-to-profile comparison ----------
@@ -1755,7 +1755,7 @@ def _main():
         report_result, merge_dir, src_out, original_copy,
         dest_profile_name, dest_org, logger, args.quiet, mdtype=dest_mdtype,
         clean_path=deliverable_path)
-    logger.log('  ✓ what-is-changed written: %s' % _rel(out_dir, wic_path))
+    logger.log('  OK: what-is-changed written: %s' % _rel(out_dir, wic_path))
 
     # Propagate a non-zero exit code when the prune did not succeed. The
     # alignment flow already does this; without it a run ending in ABORTED

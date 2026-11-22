@@ -926,10 +926,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 
         if section in MERGE_TABLE:
             key_child, off_fields = MERGE_TABLE[section]
-            # A PermissionSet's applicationVisibilities has no `default` child,
-            # so both the off-value map and the copied entries drop it.
-            if section == 'applicationVisibilities' and dst_mdtype == 'PermissionSet':
-                off_fields = {'visible': 'false'}
+            # Profile entries carry a `default` child that the PermissionSet
+            # schema does not allow: drop it from both the copied entries and
+            # the off-value map.
+            if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
+                off_fields = {k: v for k, v in off_fields.items() if k != 'default'}
             src_by_key = {_entry_key(el, [key_child]): el for el in src_els}
             dst_by_key = {_entry_key(el, [key_child]): el for el in dst_els}
 
@@ -938,7 +939,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             merged_section = []
             for el in src_els:
                 m_el = deepcopy(el)
-                if (section == 'applicationVisibilities' and dst_mdtype == 'PermissionSet'):
+                if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
                     d = m_el.find(M + 'default')
                     if d is not None:
                         m_el.remove(d)
@@ -963,6 +964,17 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 # Skip destination-only entries that are already fully off:
                 # turning them off again is a no-op, not a change to report.
                 if all(_txt(el, f) in ('', off_val) for f, off_val in off_fields.items()):
+                    continue
+                # A PermissionSet source has no notion of the Profile's default
+                # app; Salesforce forbids removing the only default app. Keep a
+                # destination app marked default verbatim instead of turning it
+                # off (and report it so the user knows it was left alone).
+                if (section == 'applicationVisibilities'
+                        and src_mdtype == 'PermissionSet'
+                        and dst_mdtype == 'Profile'
+                        and _txt(el, 'default') == 'true'):
+                    m_el = deepcopy(el)
+                    merged_section.append(m_el)
                     continue
                 merged_section.append(_make_off_element(section, key_child, off_fields, el))
             for m_el in merged_section:
@@ -1081,6 +1093,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 # NOT listed here.
 _PS_SCALAR_SECTIONS = ('label', 'hasActivationRequired', 'license')
 
+# Sections whose entries carry a `default` child in a Profile but NOT in a
+# PermissionSet (the PS schema forbids it). When the output is a PermissionSet,
+# the child is dropped and `default` is excluded from the off-value map.
+_PS_DROP_DEFAULT_SECTIONS = ('applicationVisibilities', 'recordTypeVisibilities')
+
 
 def convert_metadata_type(src_path, dst_path=None, label=None):
     """Convert a pruned source (Profile or PermissionSet) into the OTHER metadata
@@ -1125,9 +1142,9 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
             continue
         for el in els:
             m_el = deepcopy(el)
-            # Profile's applicationVisibilities has a `default` child that the
-            # PermissionSet schema does not allow.
-            if section == 'applicationVisibilities' and dst_mdtype == 'PermissionSet':
+            # Profile's applicationVisibilities / recordTypeVisibilities carry a
+            # `default` child that the PermissionSet schema does not allow.
+            if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
                 d = m_el.find(M + 'default')
                 if d is not None:
                     m_el.remove(d)
