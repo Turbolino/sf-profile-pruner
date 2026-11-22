@@ -87,6 +87,7 @@ from .sfcli import (
     org_username,
     poll_deploy,
     report_deploy,
+    soql_query,
     start_deploy,
     tooling_query,
 )
@@ -144,7 +145,7 @@ __all__ = [
     'deploy', 'describe_object', 'dry_run', 'field_data_types', 'find_node', 'find_sf',
     'find_sf_node_modules',
     'list_metadata', 'org_api_version', 'org_username',
-    'poll_deploy', 'report_deploy', 'start_deploy',
+    'poll_deploy', 'report_deploy', 'soql_query', 'start_deploy',
     'tooling_query',
     'apply_removals_batch', 'build_subprofile', 'candidates_for_block',
     'dangling_members', 'detect_metadata_type', 'extract_common_members', 'humanize_status',

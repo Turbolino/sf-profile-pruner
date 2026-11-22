@@ -67,7 +67,8 @@ from .parallel import run_parallel
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
-                    set_deploy_start_interval, standard_entities, tooling_query)
+                    set_deploy_start_interval, soql_query, standard_entities,
+                    tooling_query)
 from .stage import prune_stage
 from .xmlio import (detect_metadata_type, load_log_entries, read_report_summary,
                     write_package_xml, write_sfdx_project)
@@ -436,6 +437,21 @@ def _warn_permissionset_deploy(logger, dest_mdtype, quiet, deploy=False):
         print('         the deployed file are REVOKED in the target org (unlike a')
         print('         Profile, where an omitted entry is simply ignored).')
         print('', flush=True)
+
+
+def _metadata_exists(sf, org, mdtype, name):
+    """Read-only check: True when `name` already exists in `org` as a Profile
+    or PermissionSet (plain SOQL, since Profile is not reachable via Tooling).
+    Returns False on a query error (fail-open) so a transient failure never
+    blocks an otherwise legitimate run."""
+    object_api = 'PermissionSet' if mdtype == 'PermissionSet' else 'Profile'
+    records, err = soql_query(
+        sf, org,
+        "SELECT Id FROM %s WHERE Name = '%s' LIMIT 1"
+        % (object_api, name.replace("'", "\\'")))
+    if records is None:
+        return False
+    return bool(records)
 
 
 def _repair_mangled_argv(argv):
@@ -1604,6 +1620,30 @@ def _main():
     # ---------- run the prune stage ----------
     # Coherent with the alignment flow: the prune output lives in
     # 1-source-pruned/ and the final deliverable + reports in 4-merged/.
+    #
+    # Rename guard (plain prune, same type only): deploying a renamed source
+    # ONTO an existing destination is ambiguous — a Profile deploy would MERGE
+    # (leaving dest-only permissions), a PermissionSet deploy is authoritative
+    # (revoking dest-only permissions). Neither is a clean "rename", so it is
+    # rejected; renaming is allowed only onto a name that does not yet exist.
+    # Cross-type conversions are exempt: filling an existing PS/Profile is the
+    # intended behaviour there.
+    if (src_mdtype == dest_mdtype
+            and dest_profile_name != src_profile_name
+            and _metadata_exists(sf, dest_org, dest_mdtype, dest_profile_name)):
+        print('ERROR: destination %s %r already exists in org %s.'
+              % (dest_mdtype, dest_profile_name, dest_org))
+        print('       Renaming onto an existing %s is not allowed:' % dest_mdtype)
+        if dest_mdtype == 'PermissionSet':
+            print('       a PermissionSet deploy is authoritative and would REVOKE')
+            print('       the existing permissions of %r.' % dest_profile_name)
+        else:
+            print('       a Profile deploy is a merge and would leave the existing')
+            print('       permissions of %r partially intact.' % dest_profile_name)
+        print('       To rename, choose a destination name that does not yet exist;')
+        print('       to reconcile two existing components, use --align-from-source.')
+        sys.exit(2)
+
     src_out = os.path.join(out_dir, '1-source-pruned')
     merge_dir = os.path.join(out_dir, '4-merged')
     result = prune_stage(

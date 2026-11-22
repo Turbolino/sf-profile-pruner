@@ -317,6 +317,23 @@ def tooling_query(sf, org, soql, cwd=None, control=None):
     return records, None
 
 
+def soql_query(sf, org, soql, cwd=None, control=None):
+    """Run a standard (non-Tooling) SOQL query and return its records.
+    Returns (list_of_record_dicts_or_None, error).
+
+    Used for setup objects that are not reachable through the Tooling API but
+    are queryable with plain SOQL (e.g. Profile, PermissionSet)."""
+    cmd = [sf, 'data', 'query', '--query', soql, '--target-org', org, '--json']
+    res, err = _run_sf(cmd, sf, 'data query', cwd=cwd, control=control)
+    if err:
+        return None, err
+    result = res.get('result', {})
+    records = result.get('records')
+    if not isinstance(records, list):
+        return None, 'unexpected query result: %s' % json.dumps(res)[:200]
+    return records, None
+
+
 def standard_entities(sf, org, entities, cwd=None, control=None, batch=200,
                       io_threads=8):
     """Return the subset of ``entities`` that are STANDARD objects present in

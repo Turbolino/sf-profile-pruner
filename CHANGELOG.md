@@ -67,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     destination's `default` on `applicationVisibilities` / `recordTypeVisibilities`
     (a PS has no default concept); a destination entry marked default is kept
     instead of turned off.
+  - Plain prune rename guard: same-type `-dp`/`-dps` renaming onto a destination
+    that already exists in the target org is now a blocking error (exit 2). A
+    Profile rename would MERGE (leaving dest-only permissions) and a
+    PermissionSet rename is authoritative (revoking dest-only permissions), so
+    neither is a clean rename. Renaming is allowed only onto a name that does
+    not yet exist; cross-type conversion and `--align-from-source` are exempt.
 
 ## [2.18.0] - 2026-11-19
 

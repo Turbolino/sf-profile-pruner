@@ -189,6 +189,28 @@ class TestRunParallel(unittest.TestCase):
         self.assertEqual(errors, [None])
 
 
+class TestMetadataExists(unittest.TestCase):
+    def test_metadata_exists_queries_by_type_and_name(self):
+        from prune_profile import cli as _cli
+        with mock.patch.object(_cli, 'soql_query') as q:
+            q.return_value = ([{'Id': '0PS...'}], None)
+            self.assertTrue(_cli._metadata_exists('sf', 'org', 'PermissionSet', 'MyPS'))
+            self.assertIn('FROM PermissionSet', q.call_args[0][2])
+            self.assertIn("Name = 'MyPS'", q.call_args[0][2])
+
+    def test_metadata_exists_profile_uses_profile_object(self):
+        from prune_profile import cli as _cli
+        with mock.patch.object(_cli, 'soql_query') as q:
+            q.return_value = ([], None)
+            self.assertFalse(_cli._metadata_exists('sf', 'org', 'Profile', 'Admin'))
+            self.assertIn('FROM Profile', q.call_args[0][2])
+
+    def test_metadata_exists_fails_open_on_query_error(self):
+        from prune_profile import cli as _cli
+        with mock.patch.object(_cli, 'soql_query', return_value=(None, 'boom')):
+            self.assertFalse(_cli._metadata_exists('sf', 'org', 'Profile', 'Admin'))
+
+
 class TestResolveError(unittest.TestCase):
     def test_tab_error(self):
         self.assertEqual(pp.resolve_error("You can't edit tab settings for JobProfile, as it's not a valid tab."),
