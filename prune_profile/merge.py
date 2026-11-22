@@ -919,6 +919,13 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
         # PermissionSet-only scalars (label / hasActivationRequired / license)
         # have no Profile counterpart and must not leak into the Profile output.
         sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
+        # userPermissions are license-bound on a Profile: preserve the
+        # destination's own values (a license-mandated permission cannot be
+        # turned off), instead of turning dest-only entries off.
+        for section in _PS_TO_PROFILE_PRESERVE_SECTIONS:
+            for el in dst_groups.get(section, []):
+                out.append(deepcopy(el))
+        sections = [s for s in sections if s not in _PS_TO_PROFILE_PRESERVE_SECTIONS]
 
     for section in sections:
         src_els = src_groups.get(section, [])
@@ -943,6 +950,16 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                     d = m_el.find(M + 'default')
                     if d is not None:
                         m_el.remove(d)
+                # PS -> Profile: a PermissionSet has no `default` concept, so the
+                # destination's default is preserved (source is authoritative
+                # for the other fields, e.g. `visible`).
+                if (section in _PS_DROP_DEFAULT_SECTIONS
+                        and src_mdtype == 'PermissionSet'
+                        and dst_mdtype == 'Profile'):
+                    key = _entry_key(m_el, [key_child])
+                    d_el = dst_by_key.get(key)
+                    dst_default = _txt(d_el, 'default') if d_el is not None else ''
+                    _set_child_text(m_el, 'default', dst_default or 'false')
                 if (section == 'fieldPermissions' and read_only_fields
                         and _txt(m_el, key_child) in read_only_fields):
                     # Normalize read-only fields: `editable=true` is dead
@@ -966,10 +983,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 if all(_txt(el, f) in ('', off_val) for f, off_val in off_fields.items()):
                     continue
                 # A PermissionSet source has no notion of the Profile's default
-                # app; Salesforce forbids removing the only default app. Keep a
-                # destination app marked default verbatim instead of turning it
-                # off (and report it so the user knows it was left alone).
-                if (section == 'applicationVisibilities'
+                # app / default record type; Salesforce forbids removing the only
+                # default ("No default record type specified", "can't remove the
+                # only default app"). Keep a destination entry marked default
+                # verbatim instead of turning it off.
+                if (section in _PS_DROP_DEFAULT_SECTIONS
                         and src_mdtype == 'PermissionSet'
                         and dst_mdtype == 'Profile'
                         and _txt(el, 'default') == 'true'):
@@ -1097,6 +1115,12 @@ _PS_SCALAR_SECTIONS = ('label', 'hasActivationRequired', 'license')
 # PermissionSet (the PS schema forbids it). When the output is a PermissionSet,
 # the child is dropped and `default` is excluded from the off-value map.
 _PS_DROP_DEFAULT_SECTIONS = ('applicationVisibilities', 'recordTypeVisibilities')
+
+# Sections that exist on BOTH types but are license-bound on a Profile: a
+# PermissionSet has no license concept, so aligning PS -> Profile must NOT turn
+# the destination's own values off (a license-mandated permission cannot be
+# turned off). The destination values are preserved verbatim.
+_PS_TO_PROFILE_PRESERVE_SECTIONS = ('userPermissions',)
 
 
 def convert_metadata_type(src_path, dst_path=None, label=None):

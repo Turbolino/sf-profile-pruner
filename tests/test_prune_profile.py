@@ -2697,6 +2697,57 @@ class TestPermissionSet(unittest.TestCase):
         self.assertIsNotNone(rv)
         self.assertIsNone(rv.find('{%s}default' % self.NS))
 
+    def test_merge_ps_to_profile_preserves_user_permissions(self):
+        """Align PS->Profile must NOT turn off the destination Profile's
+        userPermissions (they are license-bound; a PS has no license)."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<userPermissions><name>ApiEnabled</name><enabled>true</enabled></userPermissions>\n'
+               '<userPermissions><name>ViewHelpLink</name><enabled>true</enabled></userPermissions>\n'
+               '<objectPermissions><object>Account</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        ups = {el.find('{%s}name' % self.NS).text: el.find('{%s}enabled' % self.NS).text
+               for el in r.findall('{%s}userPermissions' % self.NS)}
+        # userPermissions preserved verbatim (still enabled=true, not turned off)
+        self.assertEqual(ups.get('ApiEnabled'), 'true')
+        self.assertEqual(ups.get('ViewHelpLink'), 'true')
+        # objectPermissions still aligned: Account (dest-only) turned off
+        ops = {el.find('{%s}object' % self.NS).text: el
+               for el in r.findall('{%s}objectPermissions' % self.NS)}
+        self.assertEqual(ops['Account'].find('{%s}allowRead' % self.NS).text, 'false')
+
+    def test_merge_ps_to_profile_preserves_recordtype_default(self):
+        """Align PS->Profile: the source PS has no `default` concept, so the
+        destination's record-type default must be preserved (else Salesforce
+        fails with "No default record type specified")."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>Account.IT</recordType><visible>true</visible></recordTypeVisibilities>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>Account.IT</recordType><default>true</default><visible>true</visible></recordTypeVisibilities>\n'
+               '<recordTypeVisibilities><recordType>Account.Business</recordType><default>false</default><visible>true</visible></recordTypeVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        rvs = {el.find('{%s}recordType' % self.NS).text: el
+               for el in r.findall('{%s}recordTypeVisibilities' % self.NS)}
+        # IT kept with its destination default preserved
+        self.assertEqual(rvs['Account.IT'].find('{%s}default' % self.NS).text, 'true')
+        # Business is dest-only + default=false -> turned off
+        self.assertEqual(rvs['Account.Business'].find('{%s}visible' % self.NS).text, 'false')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
