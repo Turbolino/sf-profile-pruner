@@ -75,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     self-heal re-merge to keep the dependency-driven objectPermissions ON
     (``keep_object_permissions``) instead of re-turning them off; source-only
     userPermissions are now granted (not silently dropped) in PS -> Profile.
+  - Standard-object pruning via EntityDefinition removed: EntityDefinition does
+    not enumerate external-data / Data Cloud / AI standard objects
+    (ExternalDataConnector, ExternalDataTranObject, ActivationTargetDef, …),
+    so "absent from EntityDefinition" wrongly removed ~91 VALID standard
+    objects from a PermissionSet and broke the final dry-run. Standard-object
+    dangling detection now relies on the authoritative per-section dry-run +
+    final gate; standard tabs (TabDefinition) and fields (FieldDefinition) are
+    unaffected.
   - Plain prune rename guard: same-type `-dp`/`-dps` renaming onto a destination
     that already exists in the target org is now a blocking error (exit 2). A
     Profile rename would MERGE (leaving dest-only permissions) and a

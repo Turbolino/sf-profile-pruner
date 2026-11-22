@@ -1167,8 +1167,10 @@ class TestPrefetchStandards(unittest.TestCase):
 
         self.assertEqual(by_type['StandardTab'],
                          [('standard-DataMaskJobSession', 'TabDefinition')])
-        self.assertEqual(by_type['StandardObject'],
-                         [('GhostObject', 'EntityDefinition')])
+        # Standard OBJECTS are no longer removed via EntityDefinition (it does
+        # not enumerate external-data / Data Cloud objects), so GhostObject is
+        # left to the authoritative dry-run, not removed here.
+        self.assertNotIn('StandardObject', by_type)
         self.assertEqual(by_type['StandardField'],
                          [('Account.GhostField__c', 'FieldDefinition')])
         # custom metadata types (__mdt) must NOT be classified as standard

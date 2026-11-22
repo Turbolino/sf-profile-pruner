@@ -152,42 +152,18 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
         v = _txt(el, 'object')
         if v and is_standard_api_name(v):
             std_objs.add(v)
+    # NOTE: standard OBJECTS are NOT removed via EntityDefinition here.
+    # EntityDefinition does not enumerate a whole family of valid standard
+    # objects (external data sources — ExternalDataConnector /
+    # ExternalDataTranObject —, Data Cloud objects, AI grounding, identity
+    # resolution, …). Treating "absent from EntityDefinition" as "dangling"
+    # removed ~91 VALID standard objects from a single PermissionSet, breaking
+    # the final dry-run with dependency errors ("Read ExternalDataTranObject
+    # depends on Read ExternalDataConnector"). The per-section dry-run + final
+    # gate remain authoritative: they catch a genuinely missing standard object
+    # via resolve_error ("no StandardObject named X found").
     if std_objs:
-        _report('listing %d standard object(s) via EntityDefinition...' % len(std_objs))
-        objects = sorted(std_objs)
-        batches = [objects[i:i + 100] for i in range(0, len(objects), 100)]
-
-        def _one(batch):
-            in_clause = ', '.join("'%s'" % o for o in batch)
-            recs, err = tooling_query(
-                sf, org,
-                'SELECT QualifiedApiName FROM EntityDefinition '
-                'WHERE QualifiedApiName IN (%s)' % in_clause)
-            if recs is None:
-                return err, set()
-            return None, {r.get('QualifiedApiName', '') for r in recs
-                          if r.get('QualifiedApiName')}
-
-        results, errors = run_parallel(batches, _one, max_workers=io_threads)
-        existing = set()
-        failed = False
-        for i in range(len(batches)):
-            if errors[i]:
-                _report('EntityDefinition skipped: %s' % errors[i])
-                failed = True
-                break
-            err, batch_existing = results[i]
-            if err:
-                _report('EntityDefinition skipped: %s' % err)
-                failed = True
-                break
-            existing |= batch_existing
-        if not failed:
-            dangling = sorted(std_objs - existing)
-            for o in dangling:
-                removals.append(('StandardObject', o, 'EntityDefinition'))
-            _report('EntityDefinition: %d valid, %d dangling' %
-                    (len(std_objs & existing), len(dangling)))
+        _report('%d standard object(s) present (not pruned via EntityDefinition, which is incomplete for external/Data Cloud objects)' % len(std_objs))
 
     # ---------- standard fields (fieldPermissions: Object.Field) ----------
     # FieldDefinition does not support queryMore(), so a full scan is out, and
