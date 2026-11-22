@@ -73,6 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     PermissionSet rename is authoritative (revoking dest-only permissions), so
     neither is a clean rename. Renaming is allowed only onto a name that does
     not yet exist; cross-type conversion and `--align-from-source` are exempt.
+  - Missing-component policy: a missing SOURCE is a blocking error (clear
+    "source ... not found" message); a missing DESTINATION is a non-blocking
+    warning and the run proceeds (plain prune / diff / align treat it as empty
+    and create it on deploy; PS->Profile conversion leaves the Profile-only
+    sections empty instead of failing).
 
 ## [2.18.0] - 2026-11-19
 

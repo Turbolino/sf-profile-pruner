@@ -33,6 +33,8 @@ import shutil
 import sys
 import time
 
+from lxml import etree
+
 from .board import Logger
 from .constants import (
     APP_NAME,
@@ -42,16 +44,19 @@ from .constants import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_IO_THREADS,
     DISCLAIMER,
+    M,
     MAX_CHUNK_SIZE,
     MAX_IO_THREADS,
     METADATA_TYPES,
     MIN_CHUNK_SIZE,
+    NS,
     STORY,
     __version__,
     is_standard_api_name,
     meta_filename,
     meta_folder,
     meta_manifest,
+    meta_root,
     version_ge,
 )
 from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
@@ -454,6 +459,27 @@ def _metadata_exists(sf, org, mdtype, name):
     return bool(records)
 
 
+def _empty_metadata_xml(mdtype, name=''):
+    """Minimal, valid source XML for a missing Profile / PermissionSet (used
+    when a destination does not exist but the run proceeds anyway)."""
+    root = etree.Element(M + meta_root(mdtype), nsmap={None: NS})
+    if mdtype == 'PermissionSet':
+        lbl = etree.SubElement(root, M + 'label')
+        lbl.text = name or 'Pruner'
+    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+def _warn_destination_missing(logger, quiet, mdtype, name, org, action):
+    """Non-blocking warning: the destination does not exist in `org`."""
+    msg = 'destination %s %r does not exist in %s (%s)' % (mdtype, name, org, action)
+    logger.log('')
+    logger.log('  WARNING: %s' % msg)
+    if not quiet:
+        print('')
+        print('WARNING: %s' % msg)
+        print('', flush=True)
+
+
 def _repair_mangled_argv(argv):
     """Reconstruct argv after PowerShell/Windows mangled a quoted argument.
 
@@ -659,11 +685,13 @@ def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
                                                clean=not args.full_profile,
                                                mdtype='Profile')
         if not dst_profiles:
-            print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
-            sys.exit(2)
-        dst_exclusive_path = os.path.join(work_dir, '.dest-exclusive.profile-meta.xml')
-        with open(dst_exclusive_path, 'wb') as _f:
-            _f.write(dst_profiles[0][1])
+            _warn_destination_missing(
+                logger, args.quiet, 'Profile', dest_profile_name, dest_org,
+                'its Profile-only sections cannot be preserved (left empty)')
+        else:
+            dst_exclusive_path = os.path.join(work_dir, '.dest-exclusive.profile-meta.xml')
+            with open(dst_exclusive_path, 'wb') as _f:
+                _f.write(dst_profiles[0][1])
 
     xml, notes = convert_metadata_type(clean_source_path, dst_exclusive_path,
                                        label=dest_profile_name)
@@ -925,15 +953,20 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
                % (dest_mdtype, dest_profile_name, dest_org, 'full' if args.full_profile else 'clean'))
     dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean,
                                             mdtype=dest_mdtype)
-    if not dest_profiles:
-        print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
-        sys.exit(2)
+    dest_missing = not dest_profiles
+    if dest_missing:
+        _warn_destination_missing(
+            logger, args.quiet, dest_mdtype, dest_profile_name, dest_org,
+            'the comparison will treat it as empty')
 
     diff_dir = os.path.join(out_dir, 'diff')
     os.makedirs(diff_dir, exist_ok=True)
     dest_path = os.path.join(diff_dir, meta_filename(dest_mdtype, dest_profile_name))
     with open(dest_path, 'wb') as _f:
-        _f.write(dest_profiles[0][1])
+        if dest_missing:
+            _f.write(_empty_metadata_xml(dest_mdtype, dest_profile_name))
+        else:
+            _f.write(dest_profiles[0][1])
 
     src_label = '%s %s "%s"' % (src_mdtype, src_org or 'file', src_profile_name)
     dst_label = '%s %s "%s"' % (dest_mdtype, dest_org, dest_profile_name)
@@ -944,7 +977,10 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
         _f.write(report_text + '\n')
     json_path = write_diff_json(sections, src_label, dst_label, diff_dir)
     xml_path = write_diff_xml(sections, src_label, dst_label, diff_dir)
-    logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
+    if dest_missing:
+        logger.log('  OK: destination treated as empty (%s missing)' % dest_mdtype)
+    else:
+        logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
     logger.log('  OK: diff report written: %s' % _rel(out_dir, report_path))
     logger.log('  OK: diff data (JSON):     %s' % _rel(out_dir, json_path))
     logger.log('  OK: diff data (XML):      %s' % _rel(out_dir, xml_path))
@@ -1025,13 +1061,21 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     clean = not args.full_profile
     dest_profiles, derr = retrieve_profiles(username, [dest_profile_name], clean=clean,
                                             mdtype=dest_mdtype)
-    if not dest_profiles:
-        print('ERROR: destination retrieve failed: %s' % (derr or 'no profile returned'))
-        sys.exit(2)
+    dest_missing = not dest_profiles
+    if dest_missing:
+        _warn_destination_missing(
+            logger, args.quiet, dest_mdtype, dest_profile_name, dest_org,
+            'alignment will create it from the source')
     dest_raw = os.path.join(dest_dir, meta_filename(dest_mdtype, dest_profile_name))
     with open(dest_raw, 'wb') as _f:
-        _f.write(dest_profiles[0][1])
-    logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
+        if dest_missing:
+            _f.write(_empty_metadata_xml(dest_mdtype, dest_profile_name))
+        else:
+            _f.write(dest_profiles[0][1])
+    if dest_missing:
+        logger.log('  OK: destination treated as empty (%s missing)' % dest_mdtype)
+    else:
+        logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
 
     # 3. prune the destination against itself (drop its own dangling references).
     dst_out = os.path.join(out_dir, '3-destination-pruned')
@@ -1447,7 +1491,8 @@ def _main():
               (src_mdtype, src_name, args.src_org, 'full' if args.full_profile else 'clean'))
         profiles, rerr = retrieve_profiles(username, [src_name], clean=clean, mdtype=src_mdtype)
         if not profiles:
-            print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
+            print('ERROR: source %s %r not found in org %s: %s'
+                  % (src_mdtype, src_name, args.src_org, rerr or 'no profile returned'))
             sys.exit(2)
         full_name, xml = profiles[0]
         out_path = os.path.join(out_dir, meta_filename(src_mdtype, full_name))
@@ -1586,7 +1631,8 @@ def _main():
         profiles, rerr = retrieve_profiles(username, [src_profile_name], clean=clean,
                                            mdtype=src_mdtype)
         if not profiles:
-            print('ERROR: retrieve failed: %s' % (rerr or 'no profile returned'))
+            print('ERROR: source %s %r not found in org %s: %s'
+                  % (src_mdtype, src_profile_name, src_org, rerr or 'no profile returned'))
             sys.exit(2)
         full_name, xml = profiles[0]
         with open(original_copy, 'wb') as _f:
@@ -1628,21 +1674,25 @@ def _main():
     # rejected; renaming is allowed only onto a name that does not yet exist.
     # Cross-type conversions are exempt: filling an existing PS/Profile is the
     # intended behaviour there.
-    if (src_mdtype == dest_mdtype
-            and dest_profile_name != src_profile_name
-            and _metadata_exists(sf, dest_org, dest_mdtype, dest_profile_name)):
-        print('ERROR: destination %s %r already exists in org %s.'
-              % (dest_mdtype, dest_profile_name, dest_org))
-        print('       Renaming onto an existing %s is not allowed:' % dest_mdtype)
-        if dest_mdtype == 'PermissionSet':
-            print('       a PermissionSet deploy is authoritative and would REVOKE')
-            print('       the existing permissions of %r.' % dest_profile_name)
-        else:
-            print('       a Profile deploy is a merge and would leave the existing')
-            print('       permissions of %r partially intact.' % dest_profile_name)
-        print('       To rename, choose a destination name that does not yet exist;')
-        print('       to reconcile two existing components, use --align-from-source.')
-        sys.exit(2)
+    if src_mdtype == dest_mdtype:
+        dest_exists = _metadata_exists(sf, dest_org, dest_mdtype, dest_profile_name)
+        if dest_profile_name != src_profile_name and dest_exists:
+            print('ERROR: destination %s %r already exists in org %s.'
+                  % (dest_mdtype, dest_profile_name, dest_org))
+            print('       Renaming onto an existing %s is not allowed:' % dest_mdtype)
+            if dest_mdtype == 'PermissionSet':
+                print('       a PermissionSet deploy is authoritative and would REVOKE')
+                print('       the existing permissions of %r.' % dest_profile_name)
+            else:
+                print('       a Profile deploy is a merge and would leave the existing')
+                print('       permissions of %r partially intact.' % dest_profile_name)
+            print('       To rename, choose a destination name that does not yet exist;')
+            print('       to reconcile two existing components, use --align-from-source.')
+            sys.exit(2)
+        if not dest_exists:
+            _warn_destination_missing(
+                logger, args.quiet, dest_mdtype, dest_profile_name, dest_org,
+                'it will be created on deploy')
 
     src_out = os.path.join(out_dir, '1-source-pruned')
     merge_dir = os.path.join(out_dir, '4-merged')

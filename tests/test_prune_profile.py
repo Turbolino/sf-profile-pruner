@@ -210,6 +210,20 @@ class TestMetadataExists(unittest.TestCase):
         with mock.patch.object(_cli, 'soql_query', return_value=(None, 'boom')):
             self.assertFalse(_cli._metadata_exists('sf', 'org', 'Profile', 'Admin'))
 
+    def test_empty_metadata_xml_permissionset_has_label(self):
+        from prune_profile import cli as _cli
+        xml = _cli._empty_metadata_xml('PermissionSet', 'MyPS')
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}PermissionSet' % pp.NS)
+        self.assertEqual(r.find('{%s}label' % pp.NS).text, 'MyPS')
+
+    def test_empty_metadata_xml_profile_no_label(self):
+        from prune_profile import cli as _cli
+        xml = _cli._empty_metadata_xml('Profile')
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.tag, '{%s}Profile' % pp.NS)
+        self.assertIsNone(r.find('{%s}label' % pp.NS))
+
 
 class TestResolveError(unittest.TestCase):
     def test_tab_error(self):
