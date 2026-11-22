@@ -2594,6 +2594,67 @@ class TestPermissionSet(unittest.TestCase):
         self.assertFalse(any(o['section'] in ('layoutAssignments', 'loginFlows')
                              for o in manual_ops))
 
+    def test_convert_profile_to_ps_drops_app_default(self):
+        """Profile applicationVisibilities has a `default` child the PS schema
+        does not allow: cross-type conversion must drop it."""
+        src = ('<Profile xmlns="%s">\n'
+               '<applicationVisibilities><application>AppX</application><default>true</default><visible>true</visible></applicationVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'), label='PS')
+        r = pp.etree.fromstring(xml)
+        av = r.find('{%s}applicationVisibilities' % self.NS)
+        self.assertIsNotNone(av)
+        self.assertIsNone(av.find('{%s}default' % self.NS))
+        self.assertEqual(av.find('{%s}visible' % self.NS).text, 'true')
+
+    def test_merge_profile_to_ps_drops_app_default_and_off(self):
+        """Align Profile->PS: applicationVisibilities must not carry `default`
+        (invalid in a PS) and the off value must not emit a `default` child."""
+        src = ('<Profile xmlns="%s">\n'
+               '<applicationVisibilities><application>AppA</application><default>true</default><visible>true</visible></applicationVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<applicationVisibilities><application>AppA</application><visible>true</visible></applicationVisibilities>\n'
+               '<applicationVisibilities><application>AppB</application><visible>true</visible></applicationVisibilities>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        avs = {el.find('{%s}application' % self.NS).text: el
+               for el in r.findall('{%s}applicationVisibilities' % self.NS)}
+        self.assertIn('AppA', avs)
+        self.assertIn('AppB', avs)  # dest-only -> turned off
+        for el in avs.values():
+            self.assertIsNone(el.find('{%s}default' % self.NS))
+        self.assertEqual(avs['AppB'].find('{%s}visible' % self.NS).text, 'false')
+
+    def test_merge_ps_to_profile_drops_ps_scalars(self):
+        """Align PS->Profile: PermissionSet-only scalars (label /
+        hasActivationRequired / license) must not leak into the Profile output."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<label>PS</label>\n'
+               '<hasActivationRequired>true</hasActivationRequired>\n'
+               '<license>Salesforce</license>\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s"></Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        present = {el.tag.split('}')[-1] for el in r}
+        self.assertNotIn('label', present)
+        self.assertNotIn('hasActivationRequired', present)
+        self.assertNotIn('license', present)
+        self.assertIn('objectPermissions', present)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

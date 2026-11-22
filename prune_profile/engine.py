@@ -320,9 +320,21 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
 
         board.set(tid, 'removing', block, '%d errors' % len(failures),
                   initial, initial - len(elements))
+        # Salesforce objectPermissions can express cross-object dependencies
+        # ("Permission Read X depends on permission(s): Read Y"). When a
+        # section is split into chunks, Y may live in a different chunk, so the
+        # deploy of this chunk fails even though both X and Y exist in the org.
+        # That is a chunking artifact, NOT a dangling reference: skip it, and if
+        # every failure is of this kind the section is actually clean.
+        dependency_only = bool(failures)
         removals = []
         for f in failures:
             problem = str(f.get('problem', ''))
+            if 'depends on permission(s):' in problem:
+                logger.log('[T%d][%s] dependency (cross-chunk), skipped: %s'
+                           % (tid, block, problem))
+                continue
+            dependency_only = False
             rr = resolve_error(problem)
             if rr is None:
                 logger.log('[T%d][%s] unmappable, skipped: %s' % (tid, block, problem))
@@ -330,6 +342,8 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
             removals.append((rr[0], rr[1], problem))
 
         if not removals:
+            if dependency_only:
+                return True, 'clean (cross-chunk dependencies only)'
             return False, 'no mappable error among %d failure(s)' % len(failures)
 
         new_elements = list(elements)

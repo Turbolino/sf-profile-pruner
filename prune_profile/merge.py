@@ -916,6 +916,9 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             for el in dst_groups.get(section, []):
                 out.append(deepcopy(el))
         sections = [s for s in sections if s not in PROFILE_EXCLUSIVE_SECTIONS]
+        # PermissionSet-only scalars (label / hasActivationRequired / license)
+        # have no Profile counterpart and must not leak into the Profile output.
+        sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
 
     for section in sections:
         src_els = src_groups.get(section, [])
@@ -923,6 +926,10 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 
         if section in MERGE_TABLE:
             key_child, off_fields = MERGE_TABLE[section]
+            # A PermissionSet's applicationVisibilities has no `default` child,
+            # so both the off-value map and the copied entries drop it.
+            if section == 'applicationVisibilities' and dst_mdtype == 'PermissionSet':
+                off_fields = {'visible': 'false'}
             src_by_key = {_entry_key(el, [key_child]): el for el in src_els}
             dst_by_key = {_entry_key(el, [key_child]): el for el in dst_els}
 
@@ -931,6 +938,10 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             merged_section = []
             for el in src_els:
                 m_el = deepcopy(el)
+                if (section == 'applicationVisibilities' and dst_mdtype == 'PermissionSet'):
+                    d = m_el.find(M + 'default')
+                    if d is not None:
+                        m_el.remove(d)
                 if (section == 'fieldPermissions' and read_only_fields
                         and _txt(m_el, key_child) in read_only_fields):
                     # Normalize read-only fields: `editable=true` is dead
@@ -1066,8 +1077,9 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 
 # PermissionSet-only scalar sections (no Profile counterpart). They are never
 # copied across the type boundary: a Profile has no label/license, a
-# PermissionSet has no userLicense/custom.
-_PS_SCALAR_SECTIONS = ('label', 'description', 'hasActivationRequired', 'license')
+# PermissionSet has no userLicense/custom. `description` IS shared, so it is
+# NOT listed here.
+_PS_SCALAR_SECTIONS = ('label', 'hasActivationRequired', 'license')
 
 
 def convert_metadata_type(src_path, dst_path=None, label=None):
@@ -1112,7 +1124,14 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
         if section in _PS_SCALAR_SECTIONS:
             continue
         for el in els:
-            out.append(deepcopy(el))
+            m_el = deepcopy(el)
+            # Profile's applicationVisibilities has a `default` child that the
+            # PermissionSet schema does not allow.
+            if section == 'applicationVisibilities' and dst_mdtype == 'PermissionSet':
+                d = m_el.find(M + 'default')
+                if d is not None:
+                    m_el.remove(d)
+            out.append(m_el)
             copied += 1
     if copied:
         notes.append('%d shared-section entr(y/ies) copied verbatim' % copied)

@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sections present and unchanged (they are out of scope for a PermissionSet
     source): they are no longer turned off or reported as manual removals,
     while destination-only entries in shared sections are still turned OFF.
+  - Cross-type structural mapping: Profile `applicationVisibilities` drops its
+    `default` child when the output is a PermissionSet (not valid in the PS
+    schema); PermissionSet-only scalars (`label`, `hasActivationRequired`,
+    `license`) are never copied into a Profile.
+  - `depends on permission(s):` failures are now recognised as a chunking
+    artifact (the prerequisite lives in another chunk), not a dangling
+    reference: they are skipped, and a section whose failures are all of this
+    kind is treated as clean.
 
 ## [2.18.0] - 2026-11-19
 
