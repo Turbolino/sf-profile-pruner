@@ -61,12 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     artifact (the prerequisite lives in another chunk), not a dangling
     reference: they are skipped, and a section whose failures are all of this
     kind is treated as clean.
-  - Cross-type align PS -> Profile preserves the destination's license-bound
-    `userPermissions` verbatim (a PermissionSet has no license, and a
-    license-mandated permission cannot be turned off), and preserves the
-    destination's `default` on `applicationVisibilities` / `recordTypeVisibilities`
-    (a PS has no default concept); a destination entry marked default is kept
-    instead of turned off.
+  - Cross-type align PS -> Profile preserves the destination's `default` on
+    `applicationVisibilities` / `recordTypeVisibilities` (a PS has no default
+    concept); a destination entry marked default is kept instead of turned off.
+  - userPermissions are now aligned (not preserved wholesale) in cross-type
+    align: they are a shared section that exists on both types. License-mandated
+    userPermissions that Salesforce refuses to turn off are handled by the
+    self-heal, which now remembers them (`keep_user_permissions`) and keeps them
+    verbatim instead of re-turning them off (avoids the previous loop).
   - Plain prune rename guard: same-type `-dp`/`-dps` renaming onto a destination
     that already exists in the target org is now a blocking error (exit 2). A
     Profile rename would MERGE (leaving dest-only permissions) and a

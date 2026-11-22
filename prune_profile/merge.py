@@ -849,7 +849,7 @@ def _removed_block(section, entries, dest_env, verdict_note=None):
 
 
 def merge_profiles(source_path, dest_path, dest_env='destination org',
-                   read_only_fields=None):
+                   read_only_fields=None, keep_user_permissions=None):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
@@ -862,6 +862,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     auto number). Their ``editable`` flag is forced to ``false`` so the merged
     profile and the what-is-changed report reflect the effective permission
     instead of a meaningless ``true``.
+
+    ``keep_user_permissions`` (optional) is a set of ``userPermissions`` names
+    that must be preserved verbatim from the destination instead of turned off:
+    Salesforce rejects turning off some license-mandated userPermissions ("You
+    may not turn off permission ..."). Used by the alignment self-heal to keep
+    those from being re-turned-off after the heal removed the explicit OFF.
 
     Returns ``(merged_xml_bytes, manual_ops, changes)`` where ``changes`` is the
     full list of differences the deploy will apply, each ``kind`` being
@@ -876,6 +882,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     dst_groups = _groups(dst_root)
 
     read_only_fields = read_only_fields or set()
+    keep_user_permissions = keep_user_permissions or set()
 
     # The merged file is deployed to the DESTINATION org, so it must use the
     # destination's metadata type (Profile or PermissionSet).
@@ -919,13 +926,6 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
         # PermissionSet-only scalars (label / hasActivationRequired / license)
         # have no Profile counterpart and must not leak into the Profile output.
         sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
-        # userPermissions are license-bound on a Profile: preserve the
-        # destination's own values (a license-mandated permission cannot be
-        # turned off), instead of turning dest-only entries off.
-        for section in _PS_TO_PROFILE_PRESERVE_SECTIONS:
-            for el in dst_groups.get(section, []):
-                out.append(deepcopy(el))
-        sections = [s for s in sections if s not in _PS_TO_PROFILE_PRESERVE_SECTIONS]
 
     for section in sections:
         src_els = src_groups.get(section, [])
@@ -993,6 +993,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                         and _txt(el, 'default') == 'true'):
                     m_el = deepcopy(el)
                     merged_section.append(m_el)
+                    continue
+                # License-mandated userPermissions cannot be turned off; keep
+                # them verbatim from the destination instead of emitting an OFF.
+                if (section == 'userPermissions' and key[0] in keep_user_permissions):
+                    merged_section.append(deepcopy(el))
                     continue
                 merged_section.append(_make_off_element(section, key_child, off_fields, el))
             for m_el in merged_section:
@@ -1115,12 +1120,6 @@ _PS_SCALAR_SECTIONS = ('label', 'hasActivationRequired', 'license')
 # PermissionSet (the PS schema forbids it). When the output is a PermissionSet,
 # the child is dropped and `default` is excluded from the off-value map.
 _PS_DROP_DEFAULT_SECTIONS = ('applicationVisibilities', 'recordTypeVisibilities')
-
-# Sections that exist on BOTH types but are license-bound on a Profile: a
-# PermissionSet has no license concept, so aligning PS -> Profile must NOT turn
-# the destination's own values off (a license-mandated permission cannot be
-# turned off). The destination values are preserved verbatim.
-_PS_TO_PROFILE_PRESERVE_SECTIONS = ('userPermissions',)
 
 
 def convert_metadata_type(src_path, dst_path=None, label=None):

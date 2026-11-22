@@ -1141,10 +1141,20 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                   % (heal_res.get('reason') or 'unknown error'))
             sys.exit(2)
         shutil.copyfile(heal_res['common_profile_path'], merged_path)
+        # The heal removed license-mandated userPermissions ("You may not turn
+        # off ...") to stop the OFF attempt; remember them so the re-merge keeps
+        # them verbatim instead of turning them off again (which would loop).
+        keep_user_permissions = set()
+        heal_log = os.path.join(heal_out, 'missing_log.txt')
+        for typ, member in load_log_entries(heal_log):
+            if typ == 'UserPermission':
+                keep_user_permissions.add(member)
         shutil.rmtree(heal_out, ignore_errors=True)
         # Recompute the diff against the healed (final) merged profile.
         merged_xml, manual_ops, changes = merge_profiles(
-            merged_path, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
+            merged_path, dst_clean, dest_env=dest_org,
+            read_only_fields=read_only_fields,
+            keep_user_permissions=keep_user_permissions)
         with open(merged_path, 'wb') as _f:
             _f.write(merged_xml)
         validation, _cf = _validate_profile_dry_run(

@@ -2733,9 +2733,11 @@ class TestPermissionSet(unittest.TestCase):
         self.assertIsNotNone(rv)
         self.assertIsNone(rv.find('{%s}default' % self.NS))
 
-    def test_merge_ps_to_profile_preserves_user_permissions(self):
-        """Align PS->Profile must NOT turn off the destination Profile's
-        userPermissions (they are license-bound; a PS has no license)."""
+    def test_merge_ps_to_profile_aligns_user_permissions(self):
+        """Align PS->Profile: userPermissions are a shared section (they exist
+        on both types), so they must be ALIGNED to the source (dest-only turned
+        off), not preserved verbatim. A license-mandated off is resolved later
+        by the self-heal via resolve_error + UserPermission removal."""
         src = ('<PermissionSet xmlns="%s">\n'
                '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
                '</PermissionSet>\n' % self.NS)
@@ -2752,9 +2754,9 @@ class TestPermissionSet(unittest.TestCase):
         r = pp.etree.fromstring(xml)
         ups = {el.find('{%s}name' % self.NS).text: el.find('{%s}enabled' % self.NS).text
                for el in r.findall('{%s}userPermissions' % self.NS)}
-        # userPermissions preserved verbatim (still enabled=true, not turned off)
-        self.assertEqual(ups.get('ApiEnabled'), 'true')
-        self.assertEqual(ups.get('ViewHelpLink'), 'true')
+        # userPermissions are dest-only and the source has none -> turned OFF
+        self.assertEqual(ups.get('ApiEnabled'), 'false')
+        self.assertEqual(ups.get('ViewHelpLink'), 'false')
         # objectPermissions still aligned: Account (dest-only) turned off
         ops = {el.find('{%s}object' % self.NS).text: el
                for el in r.findall('{%s}objectPermissions' % self.NS)}
@@ -2783,6 +2785,26 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(rvs['Account.IT'].find('{%s}default' % self.NS).text, 'true')
         # Business is dest-only + default=false -> turned off
         self.assertEqual(rvs['Account.Business'].find('{%s}visible' % self.NS).text, 'false')
+
+    def test_merge_keep_user_permissions(self):
+        """keep_user_permissions preserves the named userPermissions verbatim
+        instead of turning them off (license-mandated)."""
+        src = ('<Profile xmlns="%s"></Profile>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<userPermissions><name>ApiEnabled</name><enabled>true</enabled></userPermissions>\n'
+               '<userPermissions><name>ViewHelpLink</name><enabled>true</enabled></userPermissions>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'),
+                keep_user_permissions={'ViewHelpLink'})
+        r = pp.etree.fromstring(xml)
+        ups = {el.find('{%s}name' % self.NS).text: el.find('{%s}enabled' % self.NS).text
+               for el in r.findall('{%s}userPermissions' % self.NS)}
+        self.assertEqual(ups.get('ApiEnabled'), 'false')      # turned off
+        self.assertEqual(ups.get('ViewHelpLink'), 'true')     # kept verbatim
 
 
 if __name__ == '__main__':
