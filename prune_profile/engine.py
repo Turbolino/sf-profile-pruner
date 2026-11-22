@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 
 from .constants import LISTABLE, LIST_METADATA_NAME, M, MIN_API, is_standard_api_name, version_ge, \
     meta_filename, meta_folder, meta_manifest
@@ -267,6 +268,52 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
     return removals
 
 
+# A deploy dependency error looks like
+#   "Permission Override Forecasts depends on permission(s): Read Opportunity".
+# It appears in TWO situations:
+#   1. per-section source prune with chunking: the prerequisite lives in another
+#      chunk, so the sub-package deploy fails even though the full profile has
+#      both -> skip (chunking artifact).
+#   2. a merged profile where a preserved (license-bound) userPermission depends
+#      on an objectPermission the merge turned off -> genuine: keep the dependent
+#      objectPermission ON by removing its OFF entry.
+_DEPENDENCY_RE = re.compile(
+    r'depends on permission\(s\):\s*(Read|Create|Edit|Delete|View All|Modify All)\s+(\S+)')
+_DEPENDENCY_FLAGS = {
+    'Read': 'allowRead', 'Create': 'allowCreate', 'Edit': 'allowEdit',
+    'Delete': 'allowDelete', 'View All': 'viewAllRecords',
+    'Modify All': 'modifyAllRecords',
+}
+
+
+def _txt_child(el, child):
+    ce = el.find(M + child)
+    return (ce.text or '').strip() if ce is not None else ''
+
+
+def _dependency_target(problem):
+    """(action, object) for a dependency error, or (None, None)."""
+    m = _DEPENDENCY_RE.search(problem)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
+def _dependency_granted_in_state(state, obj, action):
+    """True when `obj`'s relevant permission is granted (not OFF) somewhere in
+    the current profile — i.e. the dependency is satisfied elsewhere and this is
+    only a chunking artifact."""
+    flag = _DEPENDENCY_FLAGS.get(action)
+    if not flag:
+        return True  # unknown action -> assume cross-chunk, do not remove
+    with state.lock:
+        els = list(state.groups.get('objectPermissions', []))
+    for el in els:
+        if _txt_child(el, 'object') == obj:
+            return _txt_child(el, flag) not in ('', 'false')
+    return False
+
+
 def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
                     job_timeout, profile_name, api_version, worker_proj, logger,
                     max_iter, control, mdtype='Profile'):
@@ -324,15 +371,26 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
         # ("Permission Read X depends on permission(s): Read Y"). When a
         # section is split into chunks, Y may live in a different chunk, so the
         # deploy of this chunk fails even though both X and Y exist in the org.
-        # That is a chunking artifact, NOT a dangling reference: skip it, and if
-        # every failure is of this kind the section is actually clean.
+        # That is a chunking artifact, NOT a dangling reference: skip it. When
+        # Y is NOT granted anywhere (a preserved userPermission depends on an
+        # objectPermission the merge turned off), keep Y ON by removing its OFF
+        # entry.
         dependency_only = bool(failures)
         removals = []
         for f in failures:
             problem = str(f.get('problem', ''))
             if 'depends on permission(s):' in problem:
-                logger.log('[T%d][%s] dependency (cross-chunk), skipped: %s'
-                           % (tid, block, problem))
+                action, obj = _dependency_target(problem)
+                if obj and not _dependency_granted_in_state(state, obj, action):
+                    # genuine: keep the dependent objectPermission ON.
+                    typ = 'CustomObject' if not is_standard_api_name(obj) else 'StandardObject'
+                    removals.append((typ, obj, problem))
+                    dependency_only = False
+                    logger.log('[T%d][%s] dependency (keep %s ON), removing OFF: %s'
+                               % (tid, block, obj, problem))
+                else:
+                    logger.log('[T%d][%s] dependency (cross-chunk), skipped: %s'
+                               % (tid, block, problem))
                 continue
             dependency_only = False
             rr = resolve_error(problem)

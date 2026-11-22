@@ -926,6 +926,13 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
         # PermissionSet-only scalars (label / hasActivationRequired / license)
         # have no Profile counterpart and must not leak into the Profile output.
         sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
+        # userPermissions are license-bound on a Profile (a PS has no license):
+        # preserve the destination's own values verbatim instead of turning
+        # dest-only entries off.
+        for section in _PS_TO_PROFILE_PRESERVE_SECTIONS:
+            for el in dst_groups.get(section, []):
+                out.append(deepcopy(el))
+        sections = [s for s in sections if s not in _PS_TO_PROFILE_PRESERVE_SECTIONS]
 
     for section in sections:
         src_els = src_groups.get(section, [])
@@ -1120,6 +1127,14 @@ _PS_SCALAR_SECTIONS = ('label', 'hasActivationRequired', 'license')
 # PermissionSet (the PS schema forbids it). When the output is a PermissionSet,
 # the child is dropped and `default` is excluded from the off-value map.
 _PS_DROP_DEFAULT_SECTIONS = ('applicationVisibilities', 'recordTypeVisibilities')
+
+# Sections that exist on BOTH types but are license-bound on a Profile. A
+# PermissionSet has no userLicense, so aligning a PS -> Profile must NOT turn
+# the destination's userPermissions off (many are license-mandated and Salesforce
+# refuses; their API names also do not map 1:1 to the labels reported in deploy
+# errors). They are preserved verbatim; the destination's license-mandated
+# grants win over the source's absence.
+_PS_TO_PROFILE_PRESERVE_SECTIONS = ('userPermissions',)
 
 
 def convert_metadata_type(src_path, dst_path=None, label=None):

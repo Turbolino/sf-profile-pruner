@@ -2733,11 +2733,10 @@ class TestPermissionSet(unittest.TestCase):
         self.assertIsNotNone(rv)
         self.assertIsNone(rv.find('{%s}default' % self.NS))
 
-    def test_merge_ps_to_profile_aligns_user_permissions(self):
-        """Align PS->Profile: userPermissions are a shared section (they exist
-        on both types), so they must be ALIGNED to the source (dest-only turned
-        off), not preserved verbatim. A license-mandated off is resolved later
-        by the self-heal via resolve_error + UserPermission removal."""
+    def test_merge_ps_to_profile_preserves_user_permissions(self):
+        """Align PS->Profile: userPermissions are license-bound (a PS has no
+        license), so the destination's own values are preserved verbatim rather
+        than turned off."""
         src = ('<PermissionSet xmlns="%s">\n'
                '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
                '</PermissionSet>\n' % self.NS)
@@ -2754,9 +2753,9 @@ class TestPermissionSet(unittest.TestCase):
         r = pp.etree.fromstring(xml)
         ups = {el.find('{%s}name' % self.NS).text: el.find('{%s}enabled' % self.NS).text
                for el in r.findall('{%s}userPermissions' % self.NS)}
-        # userPermissions are dest-only and the source has none -> turned OFF
-        self.assertEqual(ups.get('ApiEnabled'), 'false')
-        self.assertEqual(ups.get('ViewHelpLink'), 'false')
+        # userPermissions preserved verbatim (still enabled=true, not turned off)
+        self.assertEqual(ups.get('ApiEnabled'), 'true')
+        self.assertEqual(ups.get('ViewHelpLink'), 'true')
         # objectPermissions still aligned: Account (dest-only) turned off
         ops = {el.find('{%s}object' % self.NS).text: el
                for el in r.findall('{%s}objectPermissions' % self.NS)}
@@ -2805,6 +2804,16 @@ class TestPermissionSet(unittest.TestCase):
                for el in r.findall('{%s}userPermissions' % self.NS)}
         self.assertEqual(ups.get('ApiEnabled'), 'false')      # turned off
         self.assertEqual(ups.get('ViewHelpLink'), 'true')     # kept verbatim
+
+    def test_dependency_target_parsing(self):
+        from prune_profile.engine import _dependency_target
+        self.assertEqual(
+            _dependency_target('Permission Override Forecasts depends on permission(s): Read Opportunity'),
+            ('Read', 'Opportunity'))
+        self.assertEqual(
+            _dependency_target('Permission X depends on permission(s): View All Account'),
+            ('View All', 'Account'))
+        self.assertEqual(_dependency_target('something else entirely'), (None, None))
 
 
 if __name__ == '__main__':

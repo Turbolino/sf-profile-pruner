@@ -22,8 +22,9 @@ from collections import OrderedDict, deque
 from lxml import etree
 
 from .board import Control, PrefetchStatus, Progress, StatusBoard
-from .constants import BLOCK_MAP
-from .engine import prefetch_dangling, prefetch_standard_dangling, worker
+from .constants import BLOCK_MAP, is_standard_api_name
+from .engine import (_dependency_target, _dependency_granted_in_state,
+                     prefetch_dangling, prefetch_standard_dangling, worker)
 from .constants import meta_filename, meta_folder, meta_manifest
 from .sfcli import dry_run
 from .state import SharedState
@@ -367,12 +368,20 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
             dependency_only = bool(cf)
             for f in cf:
                 problem = str(f.get('problem', ''))
-                # Same cross-chunk dependency artifact as in the per-section pass:
-                # "Permission Read X depends on permission(s): Read Y" - both
-                # exist in the org, the full package carries them together, so
-                # this is not a dangling reference.
+                # In the FULL-package gate a dependency error is never a
+                # chunking artifact (everything is in the package): it means a
+                # preserved (license-bound) userPermission depends on an
+                # objectPermission the merge turned off. Keep it ON.
                 if 'depends on permission(s):' in problem:
-                    logger.log('Final gate: cross-chunk dependency skipped: %s' % problem)
+                    action, obj = _dependency_target(problem)
+                    if obj and not _dependency_granted_in_state(state, obj, action):
+                        typ = ('CustomObject' if not is_standard_api_name(obj)
+                               else 'StandardObject')
+                        removals.append((typ, obj))
+                        dependency_only = False
+                        logger.log('Final gate: keep %s ON (dependency): %s' % (obj, problem))
+                    else:
+                        logger.log('Final gate: dependency skipped (already granted): %s' % problem)
                     continue
                 dependency_only = False
                 rr = resolve_error(problem)
