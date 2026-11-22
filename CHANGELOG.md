@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     "Permission X depends on permission(s): Y" by keeping Y ON (removing its
     OFF entry), while still skipping genuine cross-chunk dependency artifacts
     in the source prune.
+  - Fixed the dependency parser for multi-permission messages ("Edit Lead,
+    Read Lead" now resolves the object "Lead" instead of "Lead,"); fixed the
+    self-heal re-merge to keep the dependency-driven objectPermissions ON
+    (``keep_object_permissions``) instead of re-turning them off; source-only
+    userPermissions are now granted (not silently dropped) in PS -> Profile.
   - Plain prune rename guard: same-type `-dp`/`-dps` renaming onto a destination
     that already exists in the target org is now a blocking error (exit 2). A
     Profile rename would MERGE (leaving dest-only permissions) and a

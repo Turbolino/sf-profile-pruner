@@ -373,8 +373,8 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
                 # preserved (license-bound) userPermission depends on an
                 # objectPermission the merge turned off. Keep it ON.
                 if 'depends on permission(s):' in problem:
-                    action, obj = _dependency_target(problem)
-                    if obj and not _dependency_granted_in_state(state, obj, action):
+                    obj = _dependency_target(problem)
+                    if obj and not _dependency_granted_in_state(state, obj):
                         typ = ('CustomObject' if not is_standard_api_name(obj)
                                else 'StandardObject')
                         removals.append((typ, obj))

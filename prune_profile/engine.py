@@ -269,7 +269,9 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
 
 
 # A deploy dependency error looks like
-#   "Permission Override Forecasts depends on permission(s): Read Opportunity".
+#   "Permission Override Forecasts depends on permission(s): Read Opportunity"
+# or, with several required permissions on the same object,
+#   "Permission Convert Leads depends on permission(s): Edit Lead, Read Lead".
 # It appears in TWO situations:
 #   1. per-section source prune with chunking: the prerequisite lives in another
 #      chunk, so the sub-package deploy fails even though the full profile has
@@ -277,13 +279,11 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
 #   2. a merged profile where a preserved (license-bound) userPermission depends
 #      on an objectPermission the merge turned off -> genuine: keep the dependent
 #      objectPermission ON by removing its OFF entry.
-_DEPENDENCY_RE = re.compile(
-    r'depends on permission\(s\):\s*(Read|Create|Edit|Delete|View All|Modify All)\s+(\S+)')
-_DEPENDENCY_FLAGS = {
-    'Read': 'allowRead', 'Create': 'allowCreate', 'Edit': 'allowEdit',
-    'Delete': 'allowDelete', 'View All': 'viewAllRecords',
-    'Modify All': 'modifyAllRecords',
-}
+_DEPENDENCY_RE = re.compile(r'depends on permission\(s\):\s*(.+)')
+_OBJECT_PERMISSION_FLAGS = (
+    'allowRead', 'allowCreate', 'allowEdit', 'allowDelete',
+    'viewAllRecords', 'modifyAllRecords',
+)
 
 
 def _txt_child(el, child):
@@ -292,25 +292,32 @@ def _txt_child(el, child):
 
 
 def _dependency_target(problem):
-    """(action, object) for a dependency error, or (None, None)."""
+    """The object API name a dependency error refers to, or None.
+
+    Handles both a single permission ("Read Opportunity") and a comma-separated
+    list on the same object ("Edit Lead, Read Lead"): the object is the last
+    token of any item, with trailing punctuation stripped."""
     m = _DEPENDENCY_RE.search(problem)
     if not m:
-        return None, None
-    return m.group(1), m.group(2)
+        return None
+    rest = m.group(1).strip()
+    obj = None
+    for item in rest.split(','):
+        parts = item.strip().split()
+        if parts:
+            obj = parts[-1].rstrip('.;,')
+    return obj
 
 
-def _dependency_granted_in_state(state, obj, action):
-    """True when `obj`'s relevant permission is granted (not OFF) somewhere in
-    the current profile — i.e. the dependency is satisfied elsewhere and this is
-    only a chunking artifact."""
-    flag = _DEPENDENCY_FLAGS.get(action)
-    if not flag:
-        return True  # unknown action -> assume cross-chunk, do not remove
+def _dependency_granted_in_state(state, obj):
+    """True when `obj` has at least one object permission granted (not fully
+    OFF) in the current profile — i.e. the dependency is satisfied elsewhere and
+    this is only a chunking artifact."""
     with state.lock:
         els = list(state.groups.get('objectPermissions', []))
     for el in els:
         if _txt_child(el, 'object') == obj:
-            return _txt_child(el, flag) not in ('', 'false')
+            return any(_txt_child(el, f) == 'true' for f in _OBJECT_PERMISSION_FLAGS)
     return False
 
 
@@ -380,8 +387,8 @@ def process_section(tid, block, chunk_id, state, board, sf, org, poll_interval,
         for f in failures:
             problem = str(f.get('problem', ''))
             if 'depends on permission(s):' in problem:
-                action, obj = _dependency_target(problem)
-                if obj and not _dependency_granted_in_state(state, obj, action):
+                obj = _dependency_target(problem)
+                if obj and not _dependency_granted_in_state(state, obj):
                     # genuine: keep the dependent objectPermission ON.
                     typ = 'CustomObject' if not is_standard_api_name(obj) else 'StandardObject'
                     removals.append((typ, obj, problem))

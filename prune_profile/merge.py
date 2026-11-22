@@ -849,7 +849,8 @@ def _removed_block(section, entries, dest_env, verdict_note=None):
 
 
 def merge_profiles(source_path, dest_path, dest_env='destination org',
-                   read_only_fields=None, keep_user_permissions=None):
+                   read_only_fields=None, keep_user_permissions=None,
+                   keep_object_permissions=None):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
@@ -869,6 +870,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     may not turn off permission ..."). Used by the alignment self-heal to keep
     those from being re-turned-off after the heal removed the explicit OFF.
 
+    ``keep_object_permissions`` (optional) is a set of object API names whose
+    ``objectPermissions`` must be preserved verbatim from the destination
+    instead of turned off: a preserved (license-bound) userPermission may depend
+    on an objectPermission the merge would otherwise turn off ("Permission X
+    depends on permission(s): ..."). Used by the self-heal to keep those ON.
+
     Returns ``(merged_xml_bytes, manual_ops, changes)`` where ``changes`` is the
     full list of differences the deploy will apply, each ``kind`` being
     ``grant`` (turned ON in the destination), ``revoke`` (turned OFF),
@@ -883,6 +890,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
 
     read_only_fields = read_only_fields or set()
     keep_user_permissions = keep_user_permissions or set()
+    keep_object_permissions = keep_object_permissions or set()
 
     # The merged file is deployed to the DESTINATION org, so it must use the
     # destination's metadata type (Profile or PermissionSet).
@@ -926,13 +934,6 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
         # PermissionSet-only scalars (label / hasActivationRequired / license)
         # have no Profile counterpart and must not leak into the Profile output.
         sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
-        # userPermissions are license-bound on a Profile (a PS has no license):
-        # preserve the destination's own values verbatim instead of turning
-        # dest-only entries off.
-        for section in _PS_TO_PROFILE_PRESERVE_SECTIONS:
-            for el in dst_groups.get(section, []):
-                out.append(deepcopy(el))
-        sections = [s for s in sections if s not in _PS_TO_PROFILE_PRESERVE_SECTIONS]
 
     for section in sections:
         src_els = src_groups.get(section, [])
@@ -945,6 +946,14 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             # the off-value map.
             if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
                 off_fields = {k: v for k, v in off_fields.items() if k != 'default'}
+            # userPermissions are license-bound on a Profile and a PermissionSet
+            # has no license: in a PS -> Profile align, dest-only userPermissions
+            # cannot be turned off, so they are preserved verbatim. Source-only /
+            # shared entries still align normally.
+            preserve_dest_only = (
+                section == 'userPermissions'
+                and src_mdtype == 'PermissionSet'
+                and dst_mdtype == 'Profile')
             src_by_key = {_entry_key(el, [key_child]): el for el in src_els}
             dst_by_key = {_entry_key(el, [key_child]): el for el in dst_els}
 
@@ -989,6 +998,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 # turning them off again is a no-op, not a change to report.
                 if all(_txt(el, f) in ('', off_val) for f, off_val in off_fields.items()):
                     continue
+                # In PS -> Profile, userPermissions are license-bound and cannot
+                # be turned off: preserve a dest-only userPermission verbatim.
+                if preserve_dest_only:
+                    merged_section.append(deepcopy(el))
+                    continue
                 # A PermissionSet source has no notion of the Profile's default
                 # app / default record type; Salesforce forbids removing the only
                 # default ("No default record type specified", "can't remove the
@@ -1004,6 +1018,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 # License-mandated userPermissions cannot be turned off; keep
                 # them verbatim from the destination instead of emitting an OFF.
                 if (section == 'userPermissions' and key[0] in keep_user_permissions):
+                    merged_section.append(deepcopy(el))
+                    continue
+                # A preserved userPermission may depend on this objectPermission
+                # ("Permission X depends on permission(s): ... Object"): keep it
+                # verbatim from the destination instead of turning it off.
+                if (section == 'objectPermissions' and key[0] in keep_object_permissions):
                     merged_section.append(deepcopy(el))
                     continue
                 merged_section.append(_make_off_element(section, key_child, off_fields, el))
@@ -1127,14 +1147,6 @@ _PS_SCALAR_SECTIONS = ('label', 'hasActivationRequired', 'license')
 # PermissionSet (the PS schema forbids it). When the output is a PermissionSet,
 # the child is dropped and `default` is excluded from the off-value map.
 _PS_DROP_DEFAULT_SECTIONS = ('applicationVisibilities', 'recordTypeVisibilities')
-
-# Sections that exist on BOTH types but are license-bound on a Profile. A
-# PermissionSet has no userLicense, so aligning a PS -> Profile must NOT turn
-# the destination's userPermissions off (many are license-mandated and Salesforce
-# refuses; their API names also do not map 1:1 to the labels reported in deploy
-# errors). They are preserved verbatim; the destination's license-mandated
-# grants win over the source's absence.
-_PS_TO_PROFILE_PRESERVE_SECTIONS = ('userPermissions',)
 
 
 def convert_metadata_type(src_path, dst_path=None, label=None):

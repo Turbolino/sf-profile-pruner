@@ -2761,6 +2761,27 @@ class TestPermissionSet(unittest.TestCase):
                for el in r.findall('{%s}objectPermissions' % self.NS)}
         self.assertEqual(ops['Account'].find('{%s}allowRead' % self.NS).text, 'false')
 
+    def test_merge_ps_to_profile_grants_source_only_user_permission(self):
+        """Align PS->Profile: a source-only userPermission is still GRANTED
+        (brought in ON), while dest-only userPermissions are preserved (kept ON,
+        not turned off) because they are license-bound."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<userPermissions><name>RunReports</name><enabled>true</enabled></userPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<userPermissions><name>ApiEnabled</name><enabled>true</enabled></userPermissions>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        ups = {el.find('{%s}name' % self.NS).text: el.find('{%s}enabled' % self.NS).text
+               for el in r.findall('{%s}userPermissions' % self.NS)}
+        self.assertEqual(ups.get('RunReports'), 'true')   # source-only granted
+        self.assertEqual(ups.get('ApiEnabled'), 'true')   # dest-only preserved
+
     def test_merge_ps_to_profile_preserves_recordtype_default(self):
         """Align PS->Profile: the source PS has no `default` concept, so the
         destination's record-type default must be preserved (else Salesforce
@@ -2805,15 +2826,38 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(ups.get('ApiEnabled'), 'false')      # turned off
         self.assertEqual(ups.get('ViewHelpLink'), 'true')     # kept verbatim
 
+    def test_merge_keep_object_permissions(self):
+        """keep_object_permissions preserves the named objectPermissions verbatim
+        instead of turning them off (dependency on a preserved userPermission)."""
+        src = ('<Profile xmlns="%s"></Profile>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead><allowEdit>true</allowEdit></objectPermissions>\n'
+               '<objectPermissions><object>Account</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'),
+                keep_object_permissions={'Lead'})
+        r = pp.etree.fromstring(xml)
+        ops = {el.find('{%s}object' % self.NS).text: el
+               for el in r.findall('{%s}objectPermissions' % self.NS)}
+        self.assertEqual(ops['Lead'].find('{%s}allowRead' % self.NS).text, 'true')
+        self.assertEqual(ops['Account'].find('{%s}allowRead' % self.NS).text, 'false')
+
     def test_dependency_target_parsing(self):
         from prune_profile.engine import _dependency_target
         self.assertEqual(
             _dependency_target('Permission Override Forecasts depends on permission(s): Read Opportunity'),
-            ('Read', 'Opportunity'))
+            'Opportunity')
+        self.assertEqual(
+            _dependency_target('Permission Convert Leads depends on permission(s): Edit Lead, Read Lead'),
+            'Lead')
         self.assertEqual(
             _dependency_target('Permission X depends on permission(s): View All Account'),
-            ('View All', 'Account'))
-        self.assertEqual(_dependency_target('something else entirely'), (None, None))
+            'Account')
+        self.assertIsNone(_dependency_target('something else entirely'))
 
 
 if __name__ == '__main__':
