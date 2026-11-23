@@ -1229,6 +1229,32 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
     if dst_mdtype == 'Profile' and dst_path and os.path.isfile(dst_path):
         dst_groups = _groups(etree.parse(dst_path).getroot())
 
+    # When the destination Profile does NOT exist, a PermissionSet source cannot
+    # supply a default record type / default app (the PS schema has no `default`
+    # child). A Profile is invalid without them ("No default record type
+    # specified for recordTypeVisibility: Account"), so synthesize a
+    # deterministic default: the first record type per object, and the first
+    # application, in source order.
+    default_keys = {}
+    if dst_mdtype == 'Profile' and dst_groups is None:
+        for section in _PS_DROP_DEFAULT_SECTIONS:
+            key_child = MERGE_TABLE[section][0]
+            keys = set()
+            if section == 'recordTypeVisibilities':
+                seen_objs = set()
+                for el in src_groups.get(section, []):
+                    key = _txt(el, key_child)
+                    obj = key.split('.', 1)[0] if '.' in key else key
+                    if obj in seen_objs:
+                        continue
+                    seen_objs.add(obj)
+                    keys.add(key)
+            else:  # applicationVisibilities: a single default app
+                els = src_groups.get(section, [])
+                if els:
+                    keys.add(_txt(els[0], key_child))
+            default_keys[section] = keys
+
     out = etree.Element(M + meta_root(dst_mdtype), nsmap={None: NS})
     notes = []
 
@@ -1260,8 +1286,9 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
                         m_el.remove(d)
                 else:
                     # PS -> Profile: the source has no `default`; preserve the
-                    # destination's default (fallback 'false') so the resulting
-                    # Profile keeps a valid default record type / app.
+                    # destination's default (or synthesize a deterministic one
+                    # when there is no destination) so the resulting Profile
+                    # keeps a valid default record type / app.
                     key_child = MERGE_TABLE[section][0]
                     key = _txt(m_el, key_child)
                     dst_default = 'false'
@@ -1270,6 +1297,8 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
                             if _txt(d_el, key_child) == key:
                                 dst_default = _txt(d_el, 'default') or 'false'
                                 break
+                    elif key in default_keys.get(section, ()):
+                        dst_default = 'true'
                     _set_child_text(m_el, 'default', dst_default)
             out.append(m_el)
             copied += 1
@@ -1307,6 +1336,11 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
                          % ', '.join(sorted(set(kept))))
         else:
             notes.append('no destination Profile provided: Profile-only sections left empty')
+            if default_keys:
+                n_rt = len(default_keys.get('recordTypeVisibilities', ()))
+                n_app = len(default_keys.get('applicationVisibilities', ()))
+                notes.append('synthesized default record type(s): %d, default app(s): %d '
+                             '(first per object/app in source order)' % (n_rt, n_app))
 
     etree.indent(out, space='    ')
     return tostring_xml(out), notes

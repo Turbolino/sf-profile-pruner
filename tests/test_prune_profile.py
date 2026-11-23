@@ -2861,6 +2861,34 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(avs['AppA'].find('{%s}default' % self.NS).text, 'false')
         self.assertEqual(avs['AppB'].find('{%s}default' % self.NS).text, 'true')
 
+    def test_convert_ps_to_profile_synthesizes_default_when_no_dest(self):
+        """PS -> Profile conversion with NO destination Profile must still emit a
+        valid Profile: exactly one default record type per object and one default
+        app (first in source order)."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<applicationVisibilities><application>AppA</application><visible>true</visible></applicationVisibilities>\n'
+               '<applicationVisibilities><application>AppB</application><visible>true</visible></applicationVisibilities>\n'
+               '<recordTypeVisibilities><recordType>Account.Business</recordType><visible>true</visible></recordTypeVisibilities>\n'
+               '<recordTypeVisibilities><recordType>Account.IT</recordType><visible>true</visible></recordTypeVisibilities>\n'
+               '<recordTypeVisibilities><recordType>Lead.LeadRT</recordType><visible>true</visible></recordTypeVisibilities>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'))
+        r = pp.etree.fromstring(xml)
+        rvs = {el.find('{%s}recordType' % self.NS).text:
+               el.find('{%s}default' % self.NS).text
+               for el in r.findall('{%s}recordTypeVisibilities' % self.NS)}
+        # one default per object: Account.Business (first) and Lead.LeadRT
+        self.assertEqual(rvs['Account.Business'], 'true')
+        self.assertEqual(rvs['Account.IT'], 'false')
+        self.assertEqual(rvs['Lead.LeadRT'], 'true')
+        avs = {el.find('{%s}application' % self.NS).text:
+               el.find('{%s}default' % self.NS).text
+               for el in r.findall('{%s}applicationVisibilities' % self.NS)}
+        self.assertEqual(avs['AppA'], 'true')   # first app = default
+        self.assertEqual(avs['AppB'], 'false')
+
     def test_merge_ps_to_profile_preserves_user_permissions(self):
         """Align PS->Profile: userPermissions are license-bound (a PS has no
         license), so the destination's own values are preserved verbatim rather
