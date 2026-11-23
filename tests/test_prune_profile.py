@@ -3021,6 +3021,39 @@ class TestPermissionSet(unittest.TestCase):
         r2 = pp.etree.fromstring(xml2)
         self.assertEqual(r2.find('{%s}label' % self.NS).text, 'Direttore Object Permission')
 
+    def test_finalize_prune_classifies_layout_ops(self):
+        """The plain-prune finalizer must classify layoutAssignments removals
+        (REDUNDANT vs NEEDS CHECK) exactly like the alignment flow, instead of
+        leaving them unclassified under a flat "OTHER" group."""
+        from prune_profile import cli as cli
+        orig = ('<Profile xmlns="%s">\n'
+                '<layoutAssignments><layout>Account-L1</layout>'
+                '<recordType>Account.Business</recordType></layoutAssignments>\n'
+                '</Profile>\n' % self.NS)
+        clean = '<Profile xmlns="%s"></Profile>\n' % self.NS
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'orig.profile-meta.xml', orig)
+            self._write(d, 'clean.profile-meta.xml', clean)
+            src_out = os.path.join(d, '1-source-pruned')
+            os.makedirs(src_out, exist_ok=True)
+            open(os.path.join(src_out, 'missing_log.txt'), 'w').close()
+            logger = mock.MagicMock()
+            with mock.patch.object(
+                    cli, 'list_metadata',
+                    return_value=(['Account-L1', 'Account-L2'], None)) as lm, \
+                 mock.patch.object(
+                    cli, 'classify_layout_ops',
+                    wraps=cli.classify_layout_ops) as cl:
+                cli._finalize_prune_output(
+                    'sf', {'common_profile_path': os.path.join(d, 'clean.profile-meta.xml')},
+                    os.path.join(d, '4-merged'), src_out,
+                    os.path.join(d, 'orig.profile-meta.xml'),
+                    'Probe', 'devorg', logger, quiet=True)
+                lm.assert_called_once_with('sf', 'devorg', 'Layout')
+                cl.assert_called_once()
+                ops = cl.call_args[0][0]
+                self.assertIn('NEEDS CHECK', {o.get('verdict') for o in ops})
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

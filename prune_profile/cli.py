@@ -395,8 +395,11 @@ def _warn_if_not_admin(sf, org, logger):
     Administrator. Prune/diff/align results can depend on the current profile's
     permissions (the tool connects as the logged-in user), so we surface this
     instead of failing. Never raises and never stops the run."""
+    logger.log('  - checking the connecting user profile in %s (admin check)...' % org)
     username, uerr = org_username(sf, org)
     if not username:
+        logger.log('  WARNING: could not resolve the org username for %r '
+                   '(admin check skipped): %s' % (org, uerr or 'unknown error'))
         return
     try:
         records, _err = tooling_query(
@@ -404,14 +407,18 @@ def _warn_if_not_admin(sf, org, logger):
             "SELECT Id, Profile.Name FROM User WHERE Username = '%s' LIMIT 1"
             % username.replace("'", "\\'"))
     except Exception:
+        logger.log('  WARNING: admin check failed for %s (non-blocking).' % org)
         return
     if not records:
+        logger.log('  WARNING: no user record found in %s (admin check skipped).' % org)
         return
     profile = (records[0].get('Profile') or {}).get('Name') or ''
     if profile and profile != 'System Administrator':
         logger.log('  WARNING: ALERT (non-blocking): the current user in %s has profile %r, '
                    'not "System Administrator"; the results may depend on the '
                    'current profile permissions.' % (org, profile))
+    else:
+        logger.log('  OK: connecting user in %s is %s' % (org, profile or 'unknown'))
 
 
 def _warn_permissionset_deploy(logger, dest_mdtype, quiet, deploy=False):
@@ -688,14 +695,18 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
     return path
 
 
-def _finalize_prune_output(result, merge_dir, src_out, original_copy,
+def _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
                            dest_profile_name, dest_org, logger, quiet,
                            mdtype='Profile', clean_path=None):
     """Assemble the ``4-merged/`` folder for a plain prune run: copy the clean
     profile, write ``what-is-changed.txt`` (removed dangling references +
     manual operations) and ``MANUAL-OPERATIONS.txt``. Returns the
     what-is-changed path. ``clean_path`` overrides the clean source path (used
-    when a cross-type conversion produced the final deliverable)."""
+    when a cross-type conversion produced the final deliverable).
+
+    ``layoutAssignments`` manual operations are classified REDUNDANT (ignorable)
+    vs NEEDS CHECK here too (via ``classify_layout_ops``), so a plain prune
+    reports the same ignorable/check split as the alignment flow."""
     clean_path = clean_path or result['common_profile_path']
     os.makedirs(merge_dir, exist_ok=True)
     final_profile = os.path.join(merge_dir, meta_filename(mdtype, dest_profile_name))
@@ -703,6 +714,19 @@ def _finalize_prune_output(result, merge_dir, src_out, original_copy,
     # Manual ops reflect what the PRUNE removed from the source (not the
     # cross-type conversion drops, which are inherent to the type boundary).
     manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
+    # Classify layoutAssignments removals (single-layout = redundant/ignorable,
+    # multi-layout = needs check) so both reports and the console split them.
+    if any(op.get('section') == 'layoutAssignments' for op in manual_ops):
+        layout_names, lerr = list_metadata(sf, dest_org, 'Layout')
+        layout_count = {}
+        if layout_names:
+            for name in layout_names:
+                obj = name.split('-', 1)[0] if '-' in name else name
+                layout_count[obj] = layout_count.get(obj, 0) + 1
+        elif lerr:
+            logger.log('  WARNING: could not list Layout metadata (%s); '
+                       'layoutAssignments marked for manual check.' % lerr)
+        classify_layout_ops(manual_ops, [], layout_count)
     removed_by_type = {}
     missing_log = os.path.join(src_out, 'missing_log.txt')
     for typ, member in load_log_entries(missing_log):
@@ -1771,8 +1795,12 @@ def _main():
 
     # Informational, non-blocking upgrade notice (stderr so it never disturbs
     # the stdout progress/board; skipped silently on any network failure).
-    for line in _check_for_update():
+    logger.log('  - checking for a newer sf-profile-pruner version...')
+    update_lines = _check_for_update()
+    for line in update_lines:
         print(line, file=sys.stderr)
+    if not update_lines:
+        logger.log('  OK: sf-profile-pruner is up to date (or the check was skipped)')
 
     # Non-blocking profile check: warn when the connecting user is not a System
     # Administrator, because prune/diff/align results can depend on the current
@@ -1939,7 +1967,7 @@ def _main():
 
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
-        _finalize_prune_output(result, merge_dir, src_out, original_copy,
+        _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
                                dest_profile_name, dest_org, logger, args.quiet,
                                mdtype=dest_mdtype, clean_path=deliverable_path)
         prev = read_report_summary(os.path.join(src_out, 'report.txt'))
@@ -2049,7 +2077,7 @@ def _main():
 
     # ---------- finalize 4-merged/ (clean profile + WIC + manual ops) ----------
     wic_path = _finalize_prune_output(
-        report_result, merge_dir, src_out, original_copy,
+        sf, report_result, merge_dir, src_out, original_copy,
         dest_profile_name, dest_org, logger, args.quiet, mdtype=dest_mdtype,
         clean_path=deliverable_path)
     logger.log('  OK: what-is-changed written: %s' % _rel(out_dir, wic_path))

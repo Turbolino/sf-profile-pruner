@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.1] - 2026-11-23
+
+### Fixed
+
+- Plain prune now classifies `layoutAssignments` manual operations into
+  `REDUNDANT (ignorable)` vs `NEEDS CHECK` (using the destination org's Layout
+  count), the same way the alignment flow does. Previously a plain prune left
+  them unclassified under a single flat "OTHER MANUAL OPERATIONS" group, so it
+  was impossible to tell which ones could be ignored.
+
+### Changed
+
+- The SETUP phase now logs its silent steps: the PyPI update check and the
+  per-org admin check each print an in-progress line and an `OK:`/`WARNING:`
+  result, so the pause between "Salesforce CLI ready" and "detecting the latest
+  API version" is no longer a mystery.
+
 ## [2.21.0] - 2026-11-23
 
 ### Added
