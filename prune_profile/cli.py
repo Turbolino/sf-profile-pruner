@@ -469,6 +469,30 @@ def _empty_metadata_xml(mdtype, name=''):
     return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
 
 
+def _validate_ps_api_name(name):
+    """Validate a user-supplied PermissionSet API name (no file extension).
+
+    Salesforce rules for a PermissionSet DeveloperName: it starts with a letter,
+    contains only letters, digits and single underscores (``__`` is reserved for
+    namespaces and a trailing underscore is forbidden), and is at most 80
+    characters. Returns ``(ok, reason)`` where ``reason`` is empty when valid.
+    """
+    if not name:
+        return False, 'empty name'
+    if '.' in name:
+        return False, ('give the API name without the file extension '
+                       '(e.g. "MyPS", not "MyPS.permissionset-meta.xml")')
+    if not re.match(r'^[A-Za-z][A-Za-z0-9_]{0,79}$', name):
+        return False, ('must start with a letter and contain only letters, digits '
+                       'and single underscores (max 80 characters)')
+    if '__' in name:
+        return False, 'double underscore ("__") is reserved for namespaces'
+    if name.endswith('_'):
+        return False, 'must not end with an underscore'
+    return True, ''
+
+
+
 def _warn_destination_missing(logger, quiet, mdtype, name, org, action):
     """Non-blocking warning: the destination does not exist in `org`."""
     msg = 'destination %s %r does not exist in %s (%s)' % (mdtype, name, org, action)
@@ -478,6 +502,37 @@ def _warn_destination_missing(logger, quiet, mdtype, name, org, action):
         print('')
         print('WARNING: %s' % msg)
         print('', flush=True)
+
+
+def _warn_license_mismatch(logger, quiet, src_license, dst_license, dest_name):
+    """Non-blocking warning for a PS -> PS align whose licenses differ.
+
+    A PermissionSet license is immutable once the set exists (Salesforce rejects
+    an update with "License can't be updated"), so aligning onto the existing
+    destination will fail the dry-run/deploy. The correct path is to create a
+    NEW PermissionSet under a fresh name via --new-ps-name.
+    """
+    msg = ('PermissionSet license mismatch: source declares %r but the '
+           'destination %r declares %r.' % (src_license, dest_name, dst_license))
+    logger.log('')
+    logger.log('  WARNING: %s' % msg)
+    logger.log('    A PermissionSet license cannot be updated once it exists: aligning')
+    logger.log('    onto %r will fail the dry-run/deploy with "License can\'t be updated".'
+               % dest_name)
+    logger.log('    To change the license, create a NEW PermissionSet instead: re-run with')
+    logger.log('    --new-ps-name "NEW_NAME" (a name that does not exist in the '
+               'destination org).')
+    if not quiet:
+        print('')
+        print('WARNING: %s' % msg)
+        print('         A PermissionSet license cannot be updated once it exists, so')
+        print('         aligning onto %r will fail with "License can\'t be updated".'
+              % dest_name)
+        print('         To change the license, create a NEW PermissionSet instead:')
+        print('         re-run with --new-ps-name "NEW_NAME" (a name that does not')
+        print('         exist in the destination org).')
+        print('', flush=True)
+
 
 
 def _repair_mangled_argv(argv):
@@ -1123,29 +1178,67 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
 
     # 2b. PS -> PS license guard: a PermissionSet's license binds which
-    # userPermissions are valid/mandated for it. Source-authoritative align
-    # would OVERWRITE the destination's license; when the two licenses differ,
-    # that is a destructive, easy-to-miss change (it can revoke/grant
-    # license-bound permissions and fail the deploy). Block by default; the
-    # user must acknowledge with --force-license-mismatch.
-    if (src_mdtype == 'PermissionSet' and dest_mdtype == 'PermissionSet'
-            and not dest_missing):
+    # userPermissions are valid/mandated for it AND is immutable once the set
+    # exists (Salesforce rejects a change with "License can't be updated").
+    # Source-authoritative align would overwrite the destination license and
+    # then fail the deploy. Block by default; --force-license-mismatch warns
+    # (non-blocking) and either creates a NEW PermissionSet (--new-ps-name) or
+    # proceeds to a dry-run that will fail with "License can't be updated".
+    if src_mdtype == 'PermissionSet' and dest_mdtype == 'PermissionSet':
         src_license = metadata_license(source_profile_path)
-        dst_license = metadata_license(dest_raw)
-        if license_mismatch(src_license, dst_license) and not args.force_license_mismatch:
-            print('ERROR: PermissionSet license mismatch: source declares %r but the '
-                  'destination %r declares %r.'
-                  % (src_license, dest_profile_name, dst_license))
-            print('       A PermissionSet license cannot be updated once it exists, and '
-                  'it binds which userPermissions are valid for the set: aligning '
-                  'source-authoritatively would overwrite the destination license and '
-                  'the deploy would fail with "License can\'t be updated".')
-            print('       If you still want to proceed (e.g. to inspect the merged output), '
-                  're-run with --force-license-mismatch.')
-            sys.exit(2)
-        if license_mismatch(src_license, dst_license) and args.force_license_mismatch:
-            logger.log('  NOTE: --force-license-mismatch: overwriting the destination '
-                       'license %r -> %r.' % (dst_license, src_license))
+        if dest_missing:
+            if args.new_ps_name:
+                print('ERROR: --new-ps-name was given but the destination '
+                      'PermissionSet does not exist yet; -dps already creates it '
+                      'under that name.')
+                sys.exit(2)
+        else:
+            dst_license = metadata_license(dest_raw)
+            if license_mismatch(src_license, dst_license):
+                if not args.force_license_mismatch:
+                    print('ERROR: PermissionSet license mismatch: source declares %r but '
+                          'the destination %r declares %r.'
+                          % (src_license, dest_profile_name, dst_license))
+                    print('       A PermissionSet license cannot be updated once it exists, '
+                          'and it binds which userPermissions are valid for the set: '
+                          'aligning source-authoritatively would overwrite the destination '
+                          'license and the deploy would fail with "License can\'t be '
+                          'updated".')
+                    print('       To change the license, create a NEW PermissionSet: re-run '
+                          'with --force-license-mismatch --new-ps-name "NEW_NAME".')
+                    sys.exit(2)
+                _warn_license_mismatch(logger, args.quiet, src_license, dst_license,
+                                       dest_profile_name)
+                if args.new_ps_name:
+                    new_name = args.new_ps_name.strip()
+                    ok, why = _validate_ps_api_name(new_name)
+                    if not ok:
+                        print('ERROR: invalid --new-ps-name %r: %s.' % (new_name, why))
+                        sys.exit(2)
+                    if _metadata_exists(sf, dest_org, dest_mdtype, new_name):
+                        print('ERROR: --new-ps-name %r already exists in org %s.'
+                              % (new_name, dest_org))
+                        print('       The new PermissionSet name must not already exist in the '
+                              'destination org.')
+                        sys.exit(2)
+                    logger.log('  OK: creating a NEW PermissionSet %r (license %r) instead of '
+                               'overwriting %r (license %r).'
+                               % (new_name, src_license, dest_profile_name, dst_license))
+                    dest_profile_name = new_name
+                    dest_missing = True
+                    dest_raw = os.path.join(dest_dir,
+                                            meta_filename(dest_mdtype, dest_profile_name))
+                    with open(dest_raw, 'wb') as _f:
+                        _f.write(_empty_metadata_xml(dest_mdtype, dest_profile_name))
+            elif args.new_ps_name:
+                print('ERROR: --new-ps-name was given but the source and destination '
+                      'PermissionSet licenses already match (%r); no new PermissionSet '
+                      'is needed.' % src_license)
+                sys.exit(2)
+    elif args.new_ps_name:
+        print('ERROR: --new-ps-name is only valid for a PermissionSet -> PermissionSet '
+              'alignment.')
+        sys.exit(2)
 
     # 3. prune the destination against itself (drop its own dangling references).
     dst_out = os.path.join(out_dir, '3-destination-pruned')
@@ -1177,7 +1270,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     read_only_fields = _align_read_only_fields(
         args, sf, src_org, dest_org, src_clean, dst_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
-        src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields)
+        src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields,
+        preserve_dest_label=dest_missing)
     merge_dir = os.path.join(out_dir, '4-merged')
     os.makedirs(merge_dir, exist_ok=True)
     merged_path = os.path.join(merge_dir, meta_filename(dest_mdtype, dest_profile_name))
@@ -1230,7 +1324,8 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
             merged_path, dst_clean, dest_env=dest_org,
             read_only_fields=read_only_fields,
             keep_user_permissions=keep_user_permissions,
-            keep_object_permissions=keep_object_permissions)
+            keep_object_permissions=keep_object_permissions,
+            preserve_dest_label=dest_missing)
         with open(merged_path, 'wb') as _f:
             _f.write(merged_xml)
         validation, _cf = _validate_profile_dry_run(
@@ -1433,6 +1528,13 @@ def _main():
                             'updated once it exists (a deploy would fail with "License '
                             'can\'t be updated"); this flag lets you generate the merged '
                             'output for inspection anyway.')
+    g_act.add_argument('--new-ps-name', default=None, metavar='NAME',
+                       help='when --align-from-source --force-license-mismatch detects '
+                            'DIFFERENT PermissionSet licenses, create the destination as a '
+                            'NEW PermissionSet under this API name (no file extension) '
+                            'instead of overwriting the existing one. The name must be a '
+                            'valid Salesforce API name and must NOT already exist in the '
+                            'destination org.')
     g_act.add_argument('--deploy-on-success', action='store_true',
                        help='deploy the cleaned profile/permission set once pruning succeeds. '
                             'Modifies the org: asks Y/N (a No runs dry-run only). Add --sure '

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.0] - 2026-11-23
+
+### Added
+
+- `--new-ps-name NAME` for a PermissionSet -> PermissionSet align whose licenses
+  differ: instead of overwriting the existing destination (whose license is
+  immutable), create a NEW PermissionSet under `NAME`. The name must be a valid
+  Salesforce API name (no file extension, e.g. `MyPS` not
+  `MyPS.permissionset-meta.xml`) and must NOT already exist in the destination
+  org (both checked, blocking on failure).
+- When `--force-license-mismatch` detects differing licenses, it now emits a
+  NON-blocking warning explaining that the license cannot be changed and that a
+  new PermissionSet is required (`--new-ps-name "NEW_NAME"`); without the new
+  name the run proceeds to a dry-run that fails with "License can't be updated".
+
+### Fixed
+
+- Creating a NEW PermissionSet (destination missing, or `--new-ps-name`) no
+  longer copies the source's `label`: the fresh set keeps its own unique label
+  (derived from the new API name), fixing "The label you entered is in use" when
+  the source's label already exists in the destination org.
+
 ## [2.20.0] - 2026-11-23
 
 ### Added

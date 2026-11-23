@@ -871,7 +871,7 @@ def _removed_block(section, entries, dest_env, verdict_note=None):
 
 def merge_profiles(source_path, dest_path, dest_env='destination org',
                    read_only_fields=None, keep_user_permissions=None,
-                   keep_object_permissions=None):
+                   keep_object_permissions=None, preserve_dest_label=False):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
@@ -896,6 +896,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     instead of turned off: a preserved (license-bound) userPermission may depend
     on an objectPermission the merge would otherwise turn off ("Permission X
     depends on permission(s): ..."). Used by the self-heal to keep those ON.
+
+    ``preserve_dest_label`` (optional) keeps the destination PermissionSet's
+    ``label`` instead of the source's. Used when the destination is a NEW
+    PermissionSet being created (its label is synthesised from the unique new
+    name), so the source's label - which may already be in use - does not
+    collide with the org's unique-label constraint.
 
     Returns ``(merged_xml_bytes, manual_ops, changes)`` where ``changes`` is the
     full list of differences the deploy will apply, each ``kind`` being
@@ -1146,7 +1152,14 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             # Unknown or scalar section (custom, userLicense, ...): source is
             # authoritative; keep the destination value only when source has
             # none (identity scalars are not permissions to turn off).
-            if src_els:
+            if (section == 'label' and preserve_dest_label
+                    and dst_mdtype == 'PermissionSet' and dst_els):
+                # A NEW PermissionSet keeps its own (unique, name-derived)
+                # label: copying the source's label here would collide with
+                # the org's unique-label constraint on creation.
+                for el in dst_els:
+                    out.append(deepcopy(el))
+            elif src_els:
                 for el in src_els:
                     out.append(deepcopy(el))
             else:

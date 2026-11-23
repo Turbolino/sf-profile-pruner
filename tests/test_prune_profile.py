@@ -2974,6 +2974,53 @@ class TestPermissionSet(unittest.TestCase):
         self.assertFalse(pp.license_mismatch(None, 'Salesforce'))
         self.assertFalse(pp.license_mismatch('Salesforce', None))
 
+    def test_validate_ps_api_name(self):
+        """--new-ps-name: Salesforce PermissionSet API-name rules (no extension,
+        start letter, alnum + single underscore, no double/trailing underscore,
+        max 80)."""
+        from prune_profile.cli import _validate_ps_api_name as v
+        self.assertEqual(v('MyPS')[0], True)
+        self.assertEqual(v('My_PS_2')[0], True)
+        self.assertEqual(v('A' * 80)[0], True)
+        self.assertEqual(v('MyPS.permissionset-meta.xml')[0], False)  # extension
+        self.assertEqual(v('1PS')[0], False)        # starts with digit
+        self.assertEqual(v('_PS')[0], False)        # starts with underscore
+        self.assertEqual(v('My__PS')[0], False)     # double underscore
+        self.assertEqual(v('MyPS_')[0], False)      # trailing underscore
+        self.assertEqual(v('My-PS')[0], False)      # hyphen
+        self.assertEqual(v('My.PS')[0], False)      # dot
+        self.assertEqual(v('')[0], False)           # empty
+        self.assertEqual(v('A' * 81)[0], False)     # too long
+
+    def test_merge_preserve_dest_label(self):
+        """A NEW PermissionSet (dest missing) keeps its own unique label instead
+        of the source's label, which may already be in use in the org."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<label>Direttore Object Permission</label>\n'
+               '<license>Salesforce</license>\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<label>ZZZ_New_PS</label>\n'
+               '<license>Salesforce</license>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, _, _ = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'),
+                preserve_dest_label=True)
+        r = pp.etree.fromstring(xml)
+        self.assertEqual(r.find('{%s}label' % self.NS).text, 'ZZZ_New_PS')
+        # without the flag the source label still wins
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml2, _, _ = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r2 = pp.etree.fromstring(xml2)
+        self.assertEqual(r2.find('{%s}label' % self.NS).text, 'Direttore Object Permission')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
