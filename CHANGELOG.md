@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.0] - 2026-11-23
+
+### Added
+
+- License guard for PermissionSet -> PermissionSet alignment: a PermissionSet's
+  `license` binds which `userPermissions` are valid or mandatory for it AND is
+  immutable once the set exists (Salesforce rejects a deploy that changes it
+  with "License can't be updated"). A source-authoritative align would therefore
+  silently try to overwrite the destination's license and then fail the deploy.
+  When the source and destination declare DIFFERENT non-empty licenses, the
+  alignment is now BLOCKED by default with a clear error (exit code 2); re-run
+  with `--force-license-mismatch` to generate the merged output anyway (for
+  inspection — the deploy itself will still be refused by the platform). An
+  absent source license (a PermissionSet file without the element) never
+  triggers the guard (the destination keeps its own license), and a missing
+  destination is also exempt (the set is created fresh).
+
 ## [2.19.0] - 2026-11-20
 
 ### Added

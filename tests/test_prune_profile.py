@@ -2948,6 +2948,32 @@ class TestPermissionSet(unittest.TestCase):
             'Account')
         self.assertIsNone(_dependency_target('something else entirely'))
 
+    def test_metadata_license(self):
+        """metadata_license returns the PS license scalar, '' for a Profile or a PS
+        without the element."""
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', self._ps('<label>X</label><license>Salesforce</license>'))
+            self.assertEqual(pp.metadata_license(os.path.join(d, 'src.xml')), 'Salesforce')
+            self._write(d, 'nolabel.xml', self._ps('<label>X</label>'))
+            self.assertEqual(pp.metadata_license(os.path.join(d, 'nolabel.xml')), '')
+            self._write(d, 'prof.xml',
+                        '<?xml version="1.0"?><Profile xmlns="%s"></Profile>' % self.NS)
+            self.assertEqual(pp.metadata_license(os.path.join(d, 'prof.xml')), '')
+
+    def test_license_mismatch(self):
+        """license_mismatch is true only when both licenses are present and differ
+        (case-insensitive); empty on either side is not a mismatch."""
+        self.assertTrue(pp.license_mismatch('Salesforce', 'SalesforceIntegration'))
+        self.assertTrue(pp.license_mismatch('salesforce', 'SalesforceIntegration'))
+        self.assertFalse(pp.license_mismatch('Salesforce', 'Salesforce'))
+        self.assertFalse(pp.license_mismatch('Salesforce', 'salesforce'))
+        self.assertFalse(pp.license_mismatch('Salesforce', ' salesforce '))
+        self.assertFalse(pp.license_mismatch('', 'Salesforce'))
+        self.assertFalse(pp.license_mismatch('Salesforce', ''))
+        self.assertFalse(pp.license_mismatch('', ''))
+        self.assertFalse(pp.license_mismatch(None, 'Salesforce'))
+        self.assertFalse(pp.license_mismatch('Salesforce', None))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

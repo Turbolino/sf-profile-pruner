@@ -221,6 +221,27 @@ def _mdtype(root):
     return name if name in ('Profile', 'PermissionSet') else 'Profile'
 
 
+def metadata_license(path):
+    """Return the ``license`` scalar of a PermissionSet file (``''`` when absent).
+
+    A Profile has no ``license`` element, so this also returns ``''`` for a
+    Profile path. Used to guard a PS -> PS alignment from silently overwriting
+    the destination's license with a different one.
+    """
+    root = etree.parse(path).getroot()
+    return _txt(root, 'license')
+
+
+def license_mismatch(src_license, dst_license):
+    """True when a source and destination PermissionSet declare DIFFERENT,
+    non-empty licenses (case-insensitive). Empty on either side is not a
+    mismatch: an absent source license keeps the destination's own, and a
+    missing destination has no license to overwrite.
+    """
+    return bool(src_license and dst_license
+                and src_license.strip().lower() != dst_license.strip().lower())
+
+
 # Tab visibility has THREE semantic states, each with its own name per type:
 #
 #   level 2  "on / visible"          Profile DefaultOn  <->  PS Visible

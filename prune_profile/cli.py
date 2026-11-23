@@ -63,8 +63,8 @@ from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
                     classify_layout_ops, convert_metadata_type, diff_profiles,
                     field_permissions_editable, field_permissions_names,
-                    merge_profiles, normalize_profile_read_only,
-                    removed_non_alignable,
+                    license_mismatch, merge_profiles, metadata_license,
+                    normalize_profile_read_only, removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
@@ -1122,6 +1122,31 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     else:
         logger.log('  OK: destination retrieved (%d bytes)' % len(dest_profiles[0][1]))
 
+    # 2b. PS -> PS license guard: a PermissionSet's license binds which
+    # userPermissions are valid/mandated for it. Source-authoritative align
+    # would OVERWRITE the destination's license; when the two licenses differ,
+    # that is a destructive, easy-to-miss change (it can revoke/grant
+    # license-bound permissions and fail the deploy). Block by default; the
+    # user must acknowledge with --force-license-mismatch.
+    if (src_mdtype == 'PermissionSet' and dest_mdtype == 'PermissionSet'
+            and not dest_missing):
+        src_license = metadata_license(source_profile_path)
+        dst_license = metadata_license(dest_raw)
+        if license_mismatch(src_license, dst_license) and not args.force_license_mismatch:
+            print('ERROR: PermissionSet license mismatch: source declares %r but the '
+                  'destination %r declares %r.'
+                  % (src_license, dest_profile_name, dst_license))
+            print('       A PermissionSet license cannot be updated once it exists, and '
+                  'it binds which userPermissions are valid for the set: aligning '
+                  'source-authoritatively would overwrite the destination license and '
+                  'the deploy would fail with "License can\'t be updated".')
+            print('       If you still want to proceed (e.g. to inspect the merged output), '
+                  're-run with --force-license-mismatch.')
+            sys.exit(2)
+        if license_mismatch(src_license, dst_license) and args.force_license_mismatch:
+            logger.log('  NOTE: --force-license-mismatch: overwriting the destination '
+                       'license %r -> %r.' % (dst_license, src_license))
+
     # 3. prune the destination against itself (drop its own dangling references).
     dst_out = os.path.join(out_dir, '3-destination-pruned')
     logger.log('  - pruning the destination profile against itself...')
@@ -1401,6 +1426,13 @@ def _main():
                             '(source is authoritative). Works with a source file (via 1) or '
                             'a source org (via 2). Runs automatically (no prompt); '
                             're-running on the same folder deploys the cached merge.')
+    g_act.add_argument('--force-license-mismatch', action='store_true',
+                       help='allow --align-from-source to proceed when a PermissionSet\'s '
+                            'source and destination declare DIFFERENT licenses. The guard '
+                            'blocks by default because a PermissionSet license cannot be '
+                            'updated once it exists (a deploy would fail with "License '
+                            'can\'t be updated"); this flag lets you generate the merged '
+                            'output for inspection anyway.')
     g_act.add_argument('--deploy-on-success', action='store_true',
                        help='deploy the cleaned profile/permission set once pruning succeeds. '
                             'Modifies the org: asks Y/N (a No runs dry-run only). Add --sure '
