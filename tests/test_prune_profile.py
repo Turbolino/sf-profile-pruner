@@ -225,6 +225,49 @@ class TestMetadataExists(unittest.TestCase):
         self.assertIsNone(r.find('{%s}label' % pp.NS))
 
 
+class TestValidateAndHealDeliverable(unittest.TestCase):
+    def _args(self):
+        return types.SimpleNamespace(
+            api_version='68.0', poll_interval=3.0, job_timeout=0,
+            thread_number=16, batch_size=200, max_iter=5000,
+            quiet=True, io_threads_number=8)
+
+    def test_clean_deliverable_returns_same_path(self):
+        from prune_profile import cli as _cli
+        args = self._args()
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'x.permissionset-meta.xml')
+            write_text(src, '<PermissionSet xmlns="%s"><label>x</label></PermissionSet>' % pp.NS)
+            with mock.patch.object(_cli, '_validate_profile_dry_run',
+                                   return_value=('clean', [])) as v,\
+                    mock.patch.object(_cli, 'prune_stage') as ps:
+                out = _cli._validate_and_heal_deliverable(
+                    'sf', args, src, 'X', 'PermissionSet', 'org', d, pp.Logger(True))
+            self.assertEqual(out, src)
+            ps.assert_not_called()
+
+    def test_dirty_deliverable_self_heals(self):
+        from prune_profile import cli as _cli
+        args = self._args()
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'x.permissionset-meta.xml')
+            write_text(src, '<PermissionSet xmlns="%s"><label>x</label></PermissionSet>' % pp.NS)
+            healed_common = os.path.join(d, '.work', 'deliverable-heal', 'COMMON', 'X.permissionset-meta.xml')
+            os.makedirs(os.path.dirname(healed_common), exist_ok=True)
+            write_text(healed_common, '<PermissionSet xmlns="%s"><label>X</label></PermissionSet>' % pp.NS)
+            heal_res = {'outcome': 'SUCCESS', 'common_profile_path': healed_common, 'total_removed': 2}
+            with mock.patch.object(_cli, '_validate_profile_dry_run',
+                                   return_value=('FAILED (1 failure(s)): x', [{'problem': 'x'}])) as v,\
+                    mock.patch.object(_cli, 'prune_stage', return_value=heal_res) as ps:
+                out = _cli._validate_and_heal_deliverable(
+                    'sf', args, src, 'X', 'PermissionSet', 'org', d, pp.Logger(True))
+            self.assertNotEqual(out, src)
+            self.assertTrue(ps.called)
+            # final path is under .work, named with the destination type suffix
+            self.assertIn('deliverable-final-X.permissionset-meta.xml', out)
+            self.assertTrue(os.path.isfile(out))
+
+
 class TestResolveError(unittest.TestCase):
     def test_tab_error(self):
         self.assertEqual(pp.resolve_error("You can't edit tab settings for JobProfile, as it's not a valid tab."),

@@ -708,6 +708,51 @@ def _convert_prune_deliverable(sf, args, src_mdtype, dest_mdtype,
     return out_path
 
 
+def _validate_and_heal_deliverable(sf, args, deliverable_path, profile_name,
+                                   dest_mdtype, dest_org, out_dir, logger):
+    """Final gate for a plain-prune deliverable.
+
+    Dry-runs the deliverable AS the destination metadata type and, when it is
+    not clean, self-heals it (per-section prune + final dry-run loop, which
+    resolves and retries) exactly like the same-type prune's built-in final
+    gate. Returns the path of the final, validated deliverable.
+
+    This closes the cross-type gap: a Profile<->PermissionSet conversion was
+    previously written to 4-merged WITHOUT ever being validated, so an invalid
+    deliverable could exit 0."""
+    validation, _cf = _validate_profile_dry_run(
+        sf, dest_org, deliverable_path, profile_name, args.api_version,
+        args.poll_interval, args.job_timeout, logger, out_dir, mdtype=dest_mdtype)
+    if validation == 'clean':
+        logger.log('  OK: final deliverable dry-run clean')
+        return deliverable_path
+
+    logger.log('  WARNING: final deliverable dry-run not clean (%s); self-healing...'
+               % validation)
+    heal_out = os.path.join(out_dir, '.work', 'deliverable-heal')
+    heal_res = prune_stage(
+        sf=sf, org=dest_org, source_profile_path=deliverable_path,
+        profile_name=profile_name, out_dir=heal_out,
+        api_version=args.api_version, poll_interval=args.poll_interval,
+        job_timeout=args.job_timeout, thread_number=args.thread_number,
+        batch_size=args.batch_size, max_iter=args.max_iter,
+        quiet=args.quiet, fresh=True, logger=logger,
+        io_threads=args.io_threads_number)
+    if heal_res['outcome'] != 'SUCCESS':
+        print('ERROR: final deliverable self-heal failed: %s'
+              % (heal_res.get('reason') or 'unknown error'))
+        sys.exit(2)
+    final_path = os.path.join(out_dir, '.work',
+                              'deliverable-final-%s'
+                              % meta_filename(dest_mdtype, profile_name))
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+    shutil.copyfile(heal_res['common_profile_path'], final_path)
+    shutil.rmtree(heal_out, ignore_errors=True)
+    logger.log('  OK: final deliverable self-healed (%d reference(s) removed)'
+               % heal_res['total_removed'])
+    return final_path
+
+
 def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger):
     """Normalize system read-only field ``editable`` flags in a pruned (plain,
     non-merged) profile unless ``--avoid-normalize-ro`` is set. Detects read-only
@@ -1738,13 +1783,18 @@ def _main():
                                    result['common_profile_path'], logger)
 
     # Cross-type plain prune (Profile<->PermissionSet): convert the clean source
-    # into the destination metadata type so the 4-merged deliverable is
-    # deployable AS the destination type. Same-type runs keep the source as-is.
+    # into the destination metadata type, then validate the CONVERTED deliverable
+    # with a dry-run (self-heal + retry on error) so the 4-merged file is
+    # deployable AS the destination type. Same-type runs keep the source as-is
+    # (it is already validated by prune_stage's built-in final gate).
     deliverable_path = result['common_profile_path']
     if result['outcome'] == 'SUCCESS' and src_mdtype != dest_mdtype:
-        deliverable_path = _convert_prune_deliverable(
+        converted = _convert_prune_deliverable(
             sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
             dest_profile_name, dest_org, out_dir, logger)
+        deliverable_path = _validate_and_heal_deliverable(
+            sf, args, converted, dest_profile_name, dest_mdtype, dest_org,
+            out_dir, logger)
 
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:

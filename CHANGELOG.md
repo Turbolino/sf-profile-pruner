@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     dangling detection now relies on the authoritative per-section dry-run +
     final gate; standard tabs (TabDefinition) and fields (FieldDefinition) are
     unaffected.
+  - Cross-type plain prune now validates the CONVERTED deliverable: after a
+    Profile<->PermissionSet conversion, the final file is dry-run AS the
+    destination type and self-healed (resolve + retry) on error, instead of
+    being written to 4-merged unvalidated (which could exit 0 with a
+    non-deployable file).
   - Plain prune rename guard: same-type `-dp`/`-dps` renaming onto a destination
     that already exists in the target org is now a blocking error (exit 2). A
     Profile rename would MERGE (leaving dest-only permissions) and a
