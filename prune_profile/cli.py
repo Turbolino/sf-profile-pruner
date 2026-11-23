@@ -1702,6 +1702,13 @@ def _main():
         logger.log('  OK: retrieved %s (%d bytes)' % (full_name, len(xml)))
         if rerr:
             logger.log('  WARNING: %s' % rerr)
+    else:
+        # File source (-pp): stage.py writes its own ORIGINAL_* copy inside the
+        # stage output dir, but the TOP-LEVEL original_copy (used by
+        # _finalize_prune_output -> removed_non_alignable) must also exist.
+        # Copy the user's file here so manual-ops detection has an original.
+        if os.path.abspath(profile_path) != os.path.abspath(original_copy):
+            shutil.copyfile(profile_path, original_copy)
 
     if mode == 'org':
         logger.log('  context: source %r @ %s  ->  destination %r @ %s' %

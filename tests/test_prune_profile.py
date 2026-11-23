@@ -2778,6 +2778,50 @@ class TestPermissionSet(unittest.TestCase):
         self.assertIsNotNone(rv)
         self.assertIsNone(rv.find('{%s}default' % self.NS))
 
+    def test_convert_ps_to_profile_preserves_default_record_type(self):
+        """PS -> Profile conversion must preserve the destination's default
+        record type (a PS has no `default`; a Profile without a default record
+        type fails the deploy)."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>Account.Business</recordType><visible>true</visible></recordTypeVisibilities>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>Account.Business</recordType><default>false</default><visible>true</visible></recordTypeVisibilities>\n'
+               '<recordTypeVisibilities><recordType>Account.IT</recordType><default>true</default><visible>true</visible></recordTypeVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'),
+                                                  dst_path=os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        rvs = {el.find('{%s}recordType' % self.NS).text: el
+               for el in r.findall('{%s}recordTypeVisibilities' % self.NS)}
+        # Business comes from source; its default is preserved from destination (false)
+        self.assertEqual(rvs['Account.Business'].find('{%s}default' % self.NS).text, 'false')
+        # IT is destination-only default=true -> kept so the Profile stays valid
+        self.assertEqual(rvs['Account.IT'].find('{%s}default' % self.NS).text, 'true')
+
+    def test_convert_ps_to_profile_preserves_default_app(self):
+        """PS -> Profile conversion must preserve the destination's default app."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<applicationVisibilities><application>AppA</application><visible>true</visible></applicationVisibilities>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<applicationVisibilities><application>AppA</application><default>false</default><visible>true</visible></applicationVisibilities>\n'
+               '<applicationVisibilities><application>AppB</application><default>true</default><visible>true</visible></applicationVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'),
+                                                  dst_path=os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        avs = {el.find('{%s}application' % self.NS).text: el
+               for el in r.findall('{%s}applicationVisibilities' % self.NS)}
+        self.assertEqual(avs['AppA'].find('{%s}default' % self.NS).text, 'false')
+        self.assertEqual(avs['AppB'].find('{%s}default' % self.NS).text, 'true')
+
     def test_merge_ps_to_profile_preserves_user_permissions(self):
         """Align PS->Profile: userPermissions are license-bound (a PS has no
         license), so the destination's own values are preserved verbatim rather

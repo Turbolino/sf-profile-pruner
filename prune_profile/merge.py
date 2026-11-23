@@ -1170,6 +1170,14 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
     dst_mdtype = 'PermissionSet' if src_mdtype == 'Profile' else 'Profile'
     src_groups = _groups(src_root)
 
+    # Destination Profile, when provided: used both to keep its Profile-only
+    # sections and to preserve its `default` record type / default app, which a
+    # PermissionSet source cannot express (a Profile without a default record
+    # type fails the deploy with "No default record type specified").
+    dst_groups = None
+    if dst_mdtype == 'Profile' and dst_path and os.path.isfile(dst_path):
+        dst_groups = _groups(etree.parse(dst_path).getroot())
+
     out = etree.Element(M + meta_root(dst_mdtype), nsmap={None: NS})
     notes = []
 
@@ -1192,12 +1200,26 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
             continue
         for el in els:
             m_el = deepcopy(el)
-            # Profile's applicationVisibilities / recordTypeVisibilities carry a
-            # `default` child that the PermissionSet schema does not allow.
-            if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
-                d = m_el.find(M + 'default')
-                if d is not None:
-                    m_el.remove(d)
+            if section in _PS_DROP_DEFAULT_SECTIONS:
+                if dst_mdtype == 'PermissionSet':
+                    # Profile's applicationVisibilities / recordTypeVisibilities
+                    # carry a `default` child the PermissionSet schema forbids.
+                    d = m_el.find(M + 'default')
+                    if d is not None:
+                        m_el.remove(d)
+                else:
+                    # PS -> Profile: the source has no `default`; preserve the
+                    # destination's default (fallback 'false') so the resulting
+                    # Profile keeps a valid default record type / app.
+                    key_child = MERGE_TABLE[section][0]
+                    key = _txt(m_el, key_child)
+                    dst_default = 'false'
+                    if dst_groups is not None:
+                        for d_el in dst_groups.get(section, []):
+                            if _txt(d_el, key_child) == key:
+                                dst_default = _txt(d_el, 'default') or 'false'
+                                break
+                    _set_child_text(m_el, 'default', dst_default)
             out.append(m_el)
             copied += 1
     if copied:
@@ -1213,13 +1235,22 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
         notes.append('label set to %r' % lbl)
     else:
         kept = []
-        if dst_path and os.path.isfile(dst_path):
-            dst_root = etree.parse(dst_path).getroot()
-            dst_groups = _groups(dst_root)
+        if dst_groups is not None:
             for section in PROFILE_EXCLUSIVE_SECTIONS:
                 for el in dst_groups.get(section, []):
                     out.append(deepcopy(el))
                     kept.append(section)
+            # Keep the destination's default record types / default apps that
+            # the source PermissionSet does not mention: dropping them would
+            # make the Profile invalid ("No default record type specified").
+            for section in _PS_DROP_DEFAULT_SECTIONS:
+                key_child = MERGE_TABLE[section][0]
+                src_keys = {_txt(e, key_child) for e in src_groups.get(section, [])}
+                for d_el in dst_groups.get(section, []):
+                    if (_txt(d_el, key_child) not in src_keys
+                            and _txt(d_el, 'default') == 'true'):
+                        out.append(deepcopy(d_el))
+                        kept.append(section)
         if kept:
             notes.append('destination Profile-only sections kept as-is: %s'
                          % ', '.join(sorted(set(kept))))

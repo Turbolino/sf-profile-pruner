@@ -88,6 +88,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     destination type and self-healed (resolve + retry) on error, instead of
     being written to 4-merged unvalidated (which could exit 0 with a
     non-deployable file).
+  - PS -> Profile conversion preserves the destination's `default` record type
+    and default app (a PermissionSet source has no `default` concept; a Profile
+    without a default record type fails the deploy), keeping the destination's
+    default-marked entries even when the source does not mention them.
+  - File source (`-pp`) now copies the source file to the top-level
+    `ORIGINAL_*` path before pruning, fixing a crash in manual-ops detection
+    ("failed to load external entity") that occurred for file sources.
   - Plain prune rename guard: same-type `-dp`/`-dps` renaming onto a destination
     that already exists in the target org is now a blocking error (exit 2). A
     Profile rename would MERGE (leaving dest-only permissions) and a
