@@ -1956,6 +1956,45 @@ class TestMerge(unittest.TestCase):
                 '<fieldPermissions><field>Obj.Formula__c</field><editable>true</editable><readable>true</readable></fieldPermissions>'))
             self.assertEqual(pp.normalize_profile_read_only(p, set()), 0)
 
+    def test_tostring_xml_double_quoted_declaration(self):
+        """tostring_xml must emit a DOUBLE-quoted XML declaration, unlike
+        lxml's built-in single-quoted one."""
+        root = pp.etree.Element(pp.M + 'Profile', nsmap={None: pp.NS})
+        data = pp.tostring_xml(root)
+        first = data.decode('utf-8').splitlines()[0]
+        self.assertEqual(first, '<?xml version="1.0" encoding="UTF-8"?>')
+        self.assertNotIn("version='1.0'", first)
+
+    def test_normalized_field_changes(self):
+        """normalized_field_changes lists the editable true->false rewrites the
+        prune normalization introduced between the original and the clean file."""
+        orig = self._profile(
+            '<fieldPermissions><field>Account.BillingAddress</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+            '<fieldPermissions><field>Case.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>')
+        clean = self._profile(
+            '<fieldPermissions><field>Account.BillingAddress</field><editable>false</editable><readable>true</readable></fieldPermissions>\n'
+            '<fieldPermissions><field>Case.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>')
+        with tempfile.TemporaryDirectory() as d:
+            write_text(os.path.join(d, 'o.xml'), orig)
+            write_text(os.path.join(d, 'c.xml'), clean)
+            changes = pp.normalized_field_changes(
+                os.path.join(d, 'o.xml'), os.path.join(d, 'c.xml'))
+        self.assertEqual(changes, [{'field': 'Account.BillingAddress',
+                                    'old': 'true', 'new': 'false'}])
+
+    def test_write_prune_what_is_changed_normalized_section(self):
+        """The plain-prune WIC must include a NORMALIZED section (not only the
+        REMOVED references)."""
+        removed = {'ApexClass': {'Foo'}}
+        normalized = [{'field': 'Account.BillingAddress', 'old': 'true', 'new': 'false'}]
+        with tempfile.TemporaryDirectory() as d:
+            p = pp.write_prune_what_is_changed(
+                os.path.join(d, 'wic.txt'), removed, [], 'devorg', normalized)
+            s = read_text(p)
+        self.assertIn('NORMALIZED (read-only fields rewritten to editable=false): 1', s)
+        self.assertIn('Account.BillingAddress', s)
+        self.assertIn('true -> false', s)
+
     def test_merged_output_indented_one_entry_per_line(self):
         xml, _, _ = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',

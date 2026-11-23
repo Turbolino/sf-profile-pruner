@@ -18,6 +18,25 @@ from lxml import etree
 from .constants import BLOCK_MAP, M, NS, METADATA_TYPES, decode_bytes, is_standard_api_name, meta_root
 
 
+def tostring_xml(root, encoding='UTF-8', pretty_print=False):
+    """Serialize ``root`` with a DOUBLE-QUOTED XML declaration.
+
+    lxml's built-in declaration uses single quotes
+    (``<?xml version='1.0' encoding='UTF-8'?>``); Salesforce metadata and the
+    rest of the toolchain conventionally write double quotes
+    (``<?xml version="1.0" encoding="UTF-8"?>``). Returns UTF-8 bytes.
+    """
+    body = etree.tostring(root, encoding=encoding, xml_declaration=False,
+                          pretty_print=pretty_print)
+    return ('<?xml version="1.0" encoding="%s"?>\n' % encoding).encode('ascii') + body
+
+
+def write_xml(path, root, encoding='UTF-8', pretty_print=False):
+    """Write ``root`` to ``path`` with a double-quoted XML declaration."""
+    with open(path, 'wb') as f:
+        f.write(tostring_xml(root, encoding=encoding, pretty_print=pretty_print))
+
+
 def resolve_error(problem):
     m = re.match(
         r'^In\s+([^:]+):\s*(\S+)\s*-\s*no\s+(\S+)\s+named\s+(.+)\s+found\s*$',
@@ -79,7 +98,7 @@ def remove_block(work_path, member, candidates):
         if to_remove:
             for el in to_remove:
                 el.getparent().remove(el)
-            tree.write(work_path, encoding='utf-8', xml_declaration=True)
+            write_xml(work_path, root)
             return len(to_remove)
 
     # Generic fallback: leaf whose exact text == member.
@@ -95,7 +114,7 @@ def remove_block(work_path, member, candidates):
                 parent.remove(block)
                 removed += 1
     if removed:
-        tree.write(work_path, encoding='utf-8', xml_declaration=True)
+        write_xml(work_path, root)
         return removed
 
     raise RuntimeError("NO BLOCK FOUND for '%s'" % member)
@@ -242,7 +261,7 @@ def apply_removals_batch(work_path, removals):
                         parent.remove(block)
                         removed_total += 1
                     break
-    tree.write(work_path, encoding='utf-8', xml_declaration=True)
+    write_xml(work_path, root)
     return removed_total
 
 
@@ -379,7 +398,7 @@ def build_subprofile(elements, mdtype='Profile', label=None):
         lbl.text = label or 'Pruner'
     for el in elements:
         root.append(deepcopy(el))
-    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+    return tostring_xml(root)
 
 
 def root_metadata_type(root):

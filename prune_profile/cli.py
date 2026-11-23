@@ -64,7 +64,8 @@ from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     classify_layout_ops, convert_metadata_type, diff_profiles,
                     field_permissions_editable, field_permissions_names,
                     license_mismatch, merge_profiles, metadata_license,
-                    normalize_profile_read_only, removed_non_alignable,
+                    normalize_profile_read_only, normalized_field_changes,
+                    removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
@@ -76,7 +77,7 @@ from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     tooling_query)
 from .stage import prune_stage
 from .xmlio import (detect_metadata_type, load_log_entries, read_report_summary,
-                    write_package_xml, write_sfdx_project)
+                    tostring_xml, write_package_xml, write_sfdx_project)
 
 
 def _rel(base, path):
@@ -473,7 +474,7 @@ def _empty_metadata_xml(mdtype, name=''):
     if mdtype == 'PermissionSet':
         lbl = etree.SubElement(root, M + 'label')
         lbl.text = name or 'Pruner'
-    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+    return tostring_xml(root)
 
 
 def _validate_ps_api_name(name):
@@ -714,6 +715,10 @@ def _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
     # Manual ops reflect what the PRUNE removed from the source (not the
     # cross-type conversion drops, which are inherent to the type boundary).
     manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
+    # Read-only field editable flags rewritten by the normalization pass: list
+    # them so the what-is-changed report shows every ACTUAL change (not just the
+    # dangling references removed).
+    normalized = normalized_field_changes(original_copy, clean_path)
     # Classify layoutAssignments removals (single-layout = redundant/ignorable,
     # multi-layout = needs check) so both reports and the console split them.
     if any(op.get('section') == 'layoutAssignments' for op in manual_ops):
@@ -733,7 +738,7 @@ def _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
         removed_by_type.setdefault(typ, set()).add(member)
     wic_path = write_prune_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'),
-        removed_by_type, manual_ops, dest_org)
+        removed_by_type, manual_ops, dest_org, normalized)
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name,
                                  logger, quiet, mdtype=mdtype)
     return wic_path

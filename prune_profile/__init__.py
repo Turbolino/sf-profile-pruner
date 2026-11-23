@@ -60,6 +60,7 @@ from .merge import (
     merge_profiles,
     metadata_license,
     normalize_profile_read_only,
+    normalized_field_changes,
     removed_non_alignable,
     render_diff_report,
     render_diff_summary,
@@ -114,8 +115,10 @@ from .xmlio import (
     resolve_error,
     root_metadata_type,
     strip_blank_lines,
+    tostring_xml,
     write_package_xml,
     write_sfdx_project,
+    write_xml,
 )
 
 __all__ = [
@@ -134,6 +137,7 @@ __all__ = [
     'convert_metadata_type',
     'format_ops_table', 'merge_profiles', 'normalize_profile_read_only',
     'metadata_license', 'license_mismatch',
+    'normalized_field_changes',
     'removed_non_alignable', 'write_manual_ops',
     'render_diff_report',
     'render_diff_summary',
@@ -156,5 +160,6 @@ __all__ = [
     'prepare_work_copy', 'prunable_blocks', 'read_outcome', 'read_report_summary',
     'remove_block',
     'remove_from_list', 'remove_temp_project', 'resolve_error', 'root_metadata_type',
-    'strip_blank_lines', 'write_package_xml', 'write_sfdx_project', 'etree',
+    'strip_blank_lines', 'tostring_xml', 'write_package_xml', 'write_sfdx_project',
+    'write_xml', 'etree',
 ]

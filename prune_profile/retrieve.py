@@ -21,6 +21,7 @@ from lxml import etree
 
 from .constants import decode_bytes, meta_root
 from .sfcli import find_node, find_sf_node_modules
+from .xmlio import tostring_xml
 
 METADATA_NS = 'http://soap.sforce.com/2006/04/metadata'
 
@@ -97,7 +98,7 @@ def profile_json_to_xml(data, clean=True, mdtype='Profile'):
             for el in root.findall('{%s}%s' % (METADATA_NS, section)):
                 root.remove(el)
     etree.indent(root, space='    ')
-    return etree.tostring(root, encoding='UTF-8', xml_declaration=True)
+    return tostring_xml(root)
 
 
 def retrieve_profiles(username, profile_names, clean=True,

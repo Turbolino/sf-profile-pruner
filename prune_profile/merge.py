@@ -28,6 +28,7 @@ import os
 from lxml import etree
 
 from .constants import M, NS, __version__, meta_root, tab_section
+from .xmlio import tostring_xml, write_xml
 
 # ---------------------------------------------------------------------------
 # section -> (key_child, {child: off_text})
@@ -126,6 +127,23 @@ def field_permissions_editable(path):
     return out
 
 
+def normalized_field_changes(original_path, clean_path):
+    """fieldPermissions whose ``editable`` value changed between the untouched
+    source (``original_path``) and the cleaned deliverable (``clean_path``) —
+    i.e. the read-only normalization the plain prune applied. Returns a list of
+    ``{field, old, new}`` sorted by field name (``old``/``new`` are the editable
+    text; ``''`` = absent)."""
+    orig = field_permissions_editable(original_path)
+    clean = field_permissions_editable(clean_path)
+    changes = []
+    for field in sorted(clean):
+        new = clean[field]
+        old = orig.get(field)
+        if old is not None and old != new:
+            changes.append({'field': field, 'old': old, 'new': new})
+    return changes
+
+
 def normalize_profile_read_only(path, read_only_fields):
     """Force ``editable=false`` on the ``fieldPermissions`` entries of `path`
     whose field is in ``read_only_fields``, in place. Returns the number of
@@ -149,7 +167,7 @@ def normalize_profile_read_only(path, read_only_fields):
                 count += 1
     if count:
         etree.indent(root, space='    ')
-        tree.write(path, encoding='utf-8', xml_declaration=True)
+        write_xml(path, root)
     return count
 
 
@@ -701,8 +719,7 @@ def write_diff_xml(sections, src_label, dst_label, diff_dir,
     etree.indent(root, space='    ')
     path = os.path.join(diff_dir, 'diff-data.xml')
     with open(path, 'wb') as f:
-        f.write(etree.tostring(root, encoding='utf-8', xml_declaration=True,
-                               pretty_print=True))
+        f.write(tostring_xml(root, pretty_print=True))
     return path
 
 
@@ -1167,7 +1184,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                     out.append(deepcopy(el))
 
     etree.indent(out, space='    ')
-    xml = etree.tostring(out, xml_declaration=True, encoding='UTF-8')
+    xml = tostring_xml(out)
     return xml, manual_ops, changes
 
 
@@ -1292,7 +1309,7 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
             notes.append('no destination Profile provided: Profile-only sections left empty')
 
     etree.indent(out, space='    ')
-    return etree.tostring(out, xml_declaration=True, encoding='UTF-8'), notes
+    return tostring_xml(out), notes
 
 
 def removed_non_alignable(original_path, clean_path):
@@ -1558,15 +1575,18 @@ def write_what_is_changed(path, changes, dest_env):
     return path
 
 
-def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env):
+def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env,
+                                normalized=None):
     """Write the what-is-changed report for a plain prune (no merge): the
-    dangling references removed from the profile and the non-alignable manual
+    dangling references removed from the profile, the read-only field
+    ``editable`` flags normalized to ``false``, and the non-alignable manual
     operations. Returns the path.
 
     ``removed_by_type`` maps a metadata type name to an iterable of removed
-    member names. The report groups them by type so the removed references are
-    easy to review without touching the org.
+    member names. ``normalized`` is a list of ``{field, old, new}`` from
+    :func:`normalized_field_changes` (empty when nothing was rewritten).
     """
+    normalized = normalized or []
     total_removed = sum(len(v) for v in removed_by_type.values())
     lines = [
         'WHAT IS CHANGED - prune (destination: %s)' % dest_env,
@@ -1586,6 +1606,20 @@ def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env):
         lines.append('  %s: %d' % (typ, len(members)))
         for m in members:
             lines.append('    - %s' % m)
+        lines.append('')
+    lines.append('NORMALIZED (read-only fields rewritten to editable=false): %d'
+                 % len(normalized))
+    if normalized:
+        lines.append('')
+        lines.append('  These fields are system read-only (formula / roll-up summary /')
+        lines.append('  auto number / compound address or location): Salesforce ignores the')
+        lines.append('  editable flag, so the cleaned profile rewrites it to false to match')
+        lines.append('  what the org actually enforces (old -> new).')
+        lines.append('')
+        for c in normalized:
+            old = c['old'] or '(absent)'
+            new = c['new'] or '(absent)'
+            lines.append('  %-45s %s -> %s' % (c['field'], old, new))
         lines.append('')
     lines.append('MANUAL (non-alignable sections): %d' % len(manual_ops))
     if manual_ops:

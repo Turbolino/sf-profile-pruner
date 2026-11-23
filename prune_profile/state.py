@@ -8,7 +8,7 @@ from copy import deepcopy
 from lxml import etree
 
 from .constants import BLOCK_MAP, M, NS, STANDARD_TYPES, meta_root
-from .xmlio import extract_common_members, remove_from_list, write_package_xml
+from .xmlio import extract_common_members, remove_from_list, write_package_xml, write_xml
 
 
 class SharedState:
@@ -172,8 +172,7 @@ class SharedState:
         os.makedirs(os.path.dirname(self.missing_pkg_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.todeploy_path), exist_ok=True)
         etree.indent(root, space='    ')
-        tree = etree.ElementTree(root)
-        tree.write(self.common_profile_path, encoding='utf-8', xml_declaration=True)
+        write_xml(self.common_profile_path, root)
         # Standard metadata cannot be packaged: keep it in the log/report but
         # exclude it from MISSING/package.xml (which lists deployable types).
         deployable = {t: m for t, m in self.removed_by_type.items()
