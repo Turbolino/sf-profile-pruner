@@ -37,6 +37,37 @@ def write_xml(path, root, encoding='UTF-8', pretty_print=False):
         f.write(tostring_xml(root, encoding=encoding, pretty_print=pretty_print))
 
 
+_SINGLE_QUOTED_DECL_RE = re.compile(
+    r"^(\ufeff)?<\?xml version='([^']*)' encoding='([^']*)'\?>(\r?\n)?")
+
+
+def normalize_xml_declaration(path):
+    """Rewrite a SINGLE-quoted XML declaration to double quotes in place.
+
+    lxml used to emit ``<?xml version='1.0' encoding='UTF-8'?>``; user-supplied
+    ``-pp`` source files may still carry it. Every file the tool writes uses
+    ``tostring_xml``/``write_xml`` (double quotes), but verbatim copies of an
+    INPUT file (``ORIGINAL_*``, work copies) would keep the input's header —
+    this normalizes them so no tool-produced file ships a single-quoted
+    declaration. Returns True when the file was rewritten.
+    """
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError:
+        return False
+    text = decode_bytes(data)
+    m = _SINGLE_QUOTED_DECL_RE.match(text)
+    if not m:
+        return False
+    bom, ver, enc, nl = m.groups()
+    new_text = ('%s<?xml version="%s" encoding="%s"?>%s%s'
+                % (bom or '', ver, enc, nl or '', text[m.end():]))
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(new_text)
+    return True
+
+
 def resolve_error(problem):
     m = re.match(
         r'^In\s+([^:]+):\s*(\S+)\s*-\s*no\s+(\S+)\s+named\s+(.+)\s+found\s*$',
@@ -325,6 +356,7 @@ def prepare_work_copy(work_path, source_path, missing_log, fresh):
     os.makedirs(os.path.dirname(work_path), exist_ok=True)
     if os.path.abspath(source_path) != os.path.abspath(work_path):
         shutil.copyfile(source_path, work_path)
+        normalize_xml_declaration(work_path)
     os.chmod(work_path, 0o666)
     if fresh:
         return

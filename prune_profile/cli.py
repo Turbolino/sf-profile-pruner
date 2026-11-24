@@ -52,6 +52,7 @@ from .constants import (
     NS,
     STORY,
     __version__,
+    is_admin_profile,
     is_standard_api_name,
     meta_filename,
     meta_folder,
@@ -74,12 +75,11 @@ from .parallel import run_parallel
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
-                    set_deploy_start_interval, soql_query, standard_entities,
-                    tooling_query)
+                    set_deploy_start_interval, soql_query, standard_entities)
 from .stage import prune_stage
-from .xmlio import (detect_metadata_type, load_log_entries, parse_ignore_package,
-                    read_report_summary, tostring_xml, write_package_xml,
-                    write_sfdx_project)
+from .xmlio import (detect_metadata_type, load_log_entries, normalize_xml_declaration,
+                    parse_ignore_package, read_report_summary, tostring_xml,
+                    write_package_xml, write_sfdx_project)
 
 
 def _rel(base, path):
@@ -394,10 +394,18 @@ def _read_only_field_set(sf, src_org, dest_org, src_clean_path, dst_clean_path,
 
 
 def _warn_if_not_admin(sf, org, logger):
-    """Non-blocking warning when the connecting user of `org` is not a System
-    Administrator. Prune/diff/align results can depend on the current profile's
+    """Non-blocking warning when the connecting user of `org` is not an
+    administrator. Prune/diff/align results can depend on the current profile's
     permissions (the tool connects as the logged-in user), so we surface this
-    instead of failing. Never raises and never stops the run."""
+    instead of failing. Never raises and never stops the run.
+
+    Uses STANDARD SOQL: the Tooling API does not support the ``Profile``
+    relation on ``User`` (``INVALID_FIELD: No such relation 'Profile' on
+    entity 'User'``), which made the old check fail with a misleading "no user
+    record found". The profile name is then matched against
+    :func:`is_admin_profile` (standard localized names + conventional custom
+    admin names).
+    """
     logger.log('  - checking the connecting user profile in %s (admin check)...' % org)
     username, uerr = org_username(sf, org)
     if not username:
@@ -405,23 +413,28 @@ def _warn_if_not_admin(sf, org, logger):
                    '(admin check skipped): %s' % (org, uerr or 'unknown error'))
         return
     try:
-        records, _err = tooling_query(
+        records, qerr = soql_query(
             sf, org,
             "SELECT Id, Profile.Name FROM User WHERE Username = '%s' LIMIT 1"
             % username.replace("'", "\\'"))
     except Exception:
         logger.log('  WARNING: admin check failed for %s (non-blocking).' % org)
         return
+    if records is None:
+        logger.log('  WARNING: admin check unavailable for %s (%s).'
+                   % (org, qerr or 'query error'))
+        return
     if not records:
-        logger.log('  WARNING: no user record found in %s (admin check skipped).' % org)
+        logger.log('  WARNING: no user record found for %r in %s (admin check skipped).'
+                   % (username, org))
         return
     profile = (records[0].get('Profile') or {}).get('Name') or ''
-    if profile and profile != 'System Administrator':
-        logger.log('  WARNING: ALERT (non-blocking): the current user in %s has profile %r, '
-                   'not "System Administrator"; the results may depend on the '
-                   'current profile permissions.' % (org, profile))
-    else:
-        logger.log('  OK: connecting user in %s is %s' % (org, profile or 'unknown'))
+    if profile and is_admin_profile(profile):
+        logger.log('  OK: connecting user in %s is %s' % (org, profile))
+        return
+    logger.log('  WARNING: ALERT (non-blocking): the connecting user in %s has profile %r, '
+               'which is not an administrator profile; the results may depend on the '
+               'current profile permissions.' % (org, profile or 'unknown'))
 
 
 def _warn_permissionset_deploy(logger, dest_mdtype, quiet, deploy=False):
@@ -718,6 +731,7 @@ def _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
     os.makedirs(merge_dir, exist_ok=True)
     final_profile = os.path.join(merge_dir, meta_filename(mdtype, dest_profile_name))
     shutil.copyfile(clean_path, final_profile)
+    normalize_xml_declaration(final_profile)
     # Manual ops reflect what the PRUNE removed from the source (not the
     # cross-type conversion drops, which are inherent to the type boundary).
     manual_ops = removed_non_alignable(original_copy, result['common_profile_path'])
@@ -2010,6 +2024,7 @@ def _main():
         # Copy the user's file here so manual-ops detection has an original.
         if os.path.abspath(profile_path) != os.path.abspath(original_copy):
             shutil.copyfile(profile_path, original_copy)
+            normalize_xml_declaration(original_copy)
 
     if mode == 'org':
         logger.log('  context: source %r @ %s  ->  destination %r @ %s' %

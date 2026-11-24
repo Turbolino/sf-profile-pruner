@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.22.1] - 2026-11-24
 
+### Fixed
+
+- The admin check no longer fails with a misleading "no user record found": it
+  now queries the connecting user via STANDARD SOQL (the Tooling API does not
+  support the `Profile` relation on `User`, which made the query error out), and
+  matches the profile against a list of standard/localized System Administrator
+  names (plus conventional custom admin names like "Amministratore LI") instead
+  of the exact English name only.
+- Every tool-produced file now carries a DOUBLE-quoted XML declaration even when
+  the input (`-pp`) source file had a single-quoted one: verbatim copies of
+  input files (`ORIGINAL_*`, work copies, the final 4-merged deliverable) are
+  normalized in place.
+
 ### Changed
 
 - Plain prune on a Profile with `--ignore` now STATES the destination's values

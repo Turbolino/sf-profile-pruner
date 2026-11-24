@@ -17,6 +17,7 @@ from lxml import etree
 from . import constants
 from .board import Control, Logger, PrefetchStatus, Progress, StatusBoard
 from .constants import (
+    ADMIN_PROFILE_NAMES,
     APP_NAME,
     AUTHOR_NOTE,
     BANNER,
@@ -40,6 +41,7 @@ from .constants import (
     __email__,
     __version__,
     decode_bytes,
+    is_admin_profile,
     is_standard_api_name,
     version_ge,
 )
@@ -108,6 +110,7 @@ from .xmlio import (
     extract_common_members,
     humanize_status,
     load_log_entries,
+    normalize_xml_declaration,
     parse_ignore_package,
     prepare_work_copy,
     prunable_blocks,
@@ -130,7 +133,8 @@ __all__ = [
     'DISCLAIMER', 'LISTABLE', 'LIST_METADATA_NAME', 'M',
     'MAX_CHUNK_SIZE', 'MAX_IO_THREADS', 'MIN_API', 'MIN_CHUNK_SIZE', 'NS', 'STANDARD_TYPES', 'STORY',
     'TERMINAL_STATUSES', '__version__', '__author__',
-    '__email__', 'is_standard_api_name', 'version_ge', 'decode_bytes',
+    '__email__', 'is_admin_profile', 'is_standard_api_name', 'version_ge', 'decode_bytes',
+    'ADMIN_PROFILE_NAMES', 'normalize_xml_declaration',
     'DEFAULT_BATCH_SIZE', 'DEFAULT_IO_THREADS', 'run_parallel',
     'Control', 'Logger', 'PrefetchStatus', 'Progress', 'StatusBoard', 'SharedState',
     'prune_stage',

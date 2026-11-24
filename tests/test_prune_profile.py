@@ -3079,6 +3079,40 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(v('')[0], False)           # empty
         self.assertEqual(v('A' * 81)[0], False)     # too long
 
+    def test_is_admin_profile(self):
+        """is_admin_profile: exact localized System Administrator names +
+        conventional custom admin names; non-admin names are rejected."""
+        for name in ('System Administrator', 'system administrator',
+                     'Amministratore di sistema', 'Administrateur système',
+                     'Systemadministrator', 'Administrador del sistema',
+                     'システム管理者', '系统管理员', 'Системный администратор'):
+            self.assertTrue(pp.is_admin_profile(name), name)
+        for name in ('Amministratore LI', 'Sales Administrator', 'Admin'):
+            self.assertTrue(pp.is_admin_profile(name), name)
+        for name in ('Standard User', 'Standard Platform User', 'Utente standard',
+                     '', None):
+            self.assertFalse(pp.is_admin_profile(name), repr(name))
+
+    def test_normalize_xml_declaration(self):
+        """normalize_xml_declaration rewrites a single-quoted declaration to
+        double quotes (BOM and newline preserved); double-quoted / absent
+        declarations are left untouched."""
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'x.xml')
+            write_text(p, "<?xml version='1.0' encoding='UTF-8'?>\n<X/>\n")
+            self.assertTrue(pp.normalize_xml_declaration(p))
+            self.assertTrue(read_text(p).startswith(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'))
+            self.assertFalse(pp.normalize_xml_declaration(p))  # idempotent
+            p2 = os.path.join(d, 'bom.xml')
+            write_text(p2, "\ufeff<?xml version='1.0' encoding='UTF-8'?>\n<X/>")
+            self.assertTrue(pp.normalize_xml_declaration(p2))
+            self.assertTrue(read_text(p2).startswith(
+                "\ufeff<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"))
+            p3 = os.path.join(d, 'plain.xml')
+            write_text(p3, '<X/>')
+            self.assertFalse(pp.normalize_xml_declaration(p3))
+
     def test_merge_preserve_dest_label(self):
         """A NEW PermissionSet (dest missing) keeps its own unique label instead
         of the source's label, which may already be in use in the org."""

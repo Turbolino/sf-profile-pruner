@@ -32,6 +32,7 @@ from .xmlio import (
     detect_metadata_type,
     filter_ignored_groups,
     load_log_entries,
+    normalize_xml_declaration,
     prunable_blocks,
     read_outcome,
     remove_from_list,
@@ -96,6 +97,7 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
     # Untouched copy of the source (kept for reconstruction on resume).
     if os.path.abspath(source_profile_path) != os.path.abspath(original_copy):
         shutil.copyfile(source_profile_path, original_copy)
+        normalize_xml_declaration(original_copy)
 
     # Minimal project scaffolding (a single sfdx-project.json is enough).
     if not os.path.isfile(os.path.join(project_dir, 'sfdx-project.json')):

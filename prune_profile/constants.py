@@ -281,6 +281,59 @@ def is_standard_api_name(name):
     return '__' not in name
 
 
+# Standard (localized) names of the System Administrator profile, the profile
+# every org's admin user carries. The admin check in cli._warn_if_not_admin
+# compares case-insensitively against this list and, as a fallback, accepts any
+# name containing one of _ADMIN_NAME_TOKENS (custom admin profiles are
+# conventionally named after the admin role).
+ADMIN_PROFILE_NAMES = (
+    'System Administrator',
+    'Amministratore di sistema',
+    'Administrateur système',
+    'Administrateur systeme',
+    'Systemadministrator',
+    'Administrador del sistema',
+    'Administrador do sistema',
+    'Administrator systemu',
+    'Sistem Yöneticisi',
+    'Systeembeheerder',
+    'Systemadministratör',
+    'Järjestelmänvalvoja',
+    'Správce systému',
+    'Rendszergazda',
+    'Administrator sistem',
+    'Διαχειριστής συστήματος',
+    'Quản trị viên hệ thống',
+    'システム管理者',
+    '시스템 관리자',
+    '系统管理员',
+    '系統管理員',
+    'ผู้ดูแลระบบ',
+    'מנהל מערכת',
+    'مدير النظام',
+    'Системный администратор',
+)
+
+_ADMIN_NAME_TOKENS = ('admin', 'amministratore', 'administrador', 'administrateur',
+                      'администратор', 'админ')
+
+
+def is_admin_profile(name):
+    """True when `name` is (or is conventionally) an administrator profile.
+
+    Exact case-insensitive match against the standard/localized System
+    Administrator names first; then a substring fallback for custom admin
+    profiles (e.g. "Amministratore LI", "Sales Administrator").
+    """
+    n = (name or '').strip()
+    if not n:
+        return False
+    low = n.casefold()
+    if low in {x.casefold() for x in ADMIN_PROFILE_NAMES}:
+        return True
+    return any(tok in low for tok in _ADMIN_NAME_TOKENS)
+
+
 def decode_bytes(data):
     """Decode bytes as UTF-8, falling back to Windows-1252 (ANSI) when the
     bytes are not valid UTF-8.
