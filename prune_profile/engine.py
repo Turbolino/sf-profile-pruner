@@ -18,6 +18,24 @@ from .xmlio import (
 )
 
 
+_LAYOUT_NS_RE = re.compile(r'^[A-Za-z][A-Za-z0-9]*__')
+
+
+def _normalize_layout_name(name):
+    """Strip the namespace prefix from the LAYOUT part of a layout full name.
+
+    The profile stores managed-package layouts WITH the namespace on the layout
+    name (``et4ae5__Obj__c-et4ae5__Layout Name``), while ``sf org list metadata
+    --metadata-type Layout`` returns them WITHOUT it (``et4ae5__Obj__c-Layout
+    Name``). Both sides are normalized before comparing, so a namespace
+    difference is never treated as dangling.
+    """
+    if '-' not in name:
+        return name
+    obj, layout = name.split('-', 1)
+    return '%s-%s' % (obj, _LAYOUT_NS_RE.sub('', layout))
+
+
 def prefetch_dangling(sf, org, groups, api_version, logger, status=None,
                       io_threads=8):
     """Detect dangling references by listing existing org metadata per type.
@@ -44,12 +62,91 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None,
         blocks = [(b, c) for b, c in mappings if groups.get(b)]
         if blocks:
             active.append((mdtype, blocks))
+    # Layout and CustomMetadataType are NOT in LISTABLE: they need dedicated,
+    # conservative logic (see the helpers below), so they are appended here.
+    if groups.get('layoutAssignments'):
+        active.append(('Layout', [('layoutAssignments', 'layout')]))
+    if groups.get('customMetadataTypeAccesses'):
+        active.append(('CustomMetadataType', [('customMetadataTypeAccesses', 'name')]))
 
     n_types = len(active)
     _report('%d metadata type(s) to check' % n_types)
 
+    def _txt(el, child):
+        ce = el.find(M + child)
+        return (ce.text or '').strip() if ce is not None else ''
+
+    def _refs(blocks):
+        """Referenced member names for `blocks`, deduplicated, in file order."""
+        refs = []
+        for block, child in blocks:
+            for el in groups.get(block, []):
+                v = _txt(el, child)
+                if v and v != '*' and v not in refs:
+                    refs.append(v)
+        return refs
+
+    def _entity_definition_present(objects):
+        """Set of `objects` (API names) that EXIST in the org, via EntityDefinition
+        (Tooling API, batched IN filters). Returns ``(present_or_None, err)``."""
+        present = set()
+        for i in range(0, len(objects), 40):
+            chunk = objects[i:i + 40]
+            in_clause = ', '.join("'%s'" % o.replace("'", "\\'") for o in chunk)
+            recs, err = tooling_query(
+                sf, org,
+                'SELECT QualifiedApiName FROM EntityDefinition '
+                'WHERE QualifiedApiName IN (%s)' % in_clause)
+            if recs is None:
+                return None, err
+            for r in recs:
+                if r.get('QualifiedApiName'):
+                    present.add(str(r['QualifiedApiName']))
+        return present, None
+
+    def _layout_prefetch(blocks):
+        names, err = list_metadata(sf, org, 'Layout')
+        if names is None:
+            return {'err': err}
+        if not names:
+            return {'empty': True}
+        existing = {_normalize_layout_name(n) for n in names}
+        dangling = [v for v in _refs(blocks)
+                    if _normalize_layout_name(v) not in existing]
+        if dangling:
+            # An unmatched layout whose OBJECT exists in the org is left to the
+            # authoritative dry-run: listMetadata does not enumerate every
+            # layout (__hd/analytics layouts, some managed-package layouts), so
+            # absence from the listing is NOT proof of absence from the org.
+            objects = sorted({v.split('-', 1)[0] for v in dangling})
+            present, ed_err = _entity_definition_present(objects)
+            if ed_err is not None:
+                return {'skip': ed_err}
+            dangling = [v for v in dangling
+                        if v.split('-', 1)[0] not in present]
+        return {'existing': len(existing),
+                'removals': [('Layout', m) for m in dangling]}
+
+    def _mdt_prefetch(blocks):
+        # Custom metadata TYPES exist in EntityDefinition (QualifiedApiName
+        # 'X__mdt') but `sf org list metadata --metadata-type CustomMetadata`
+        # does not enumerate them; EntityDefinition is the existence oracle.
+        refs = _refs(blocks)
+        if not refs:
+            return {'empty': True}
+        present, err = _entity_definition_present(sorted(refs))
+        if err is not None:
+            return {'skip': err}
+        dangling = sorted(set(refs) - present)
+        return {'existing': len(present),
+                'removals': [('CustomMetadataType', m) for m in dangling]}
+
     def _one(mdtype_blocks):
         mdtype, blocks = mdtype_blocks
+        if mdtype == 'Layout':
+            return _layout_prefetch(blocks)
+        if mdtype == 'CustomMetadataType':
+            return _mdt_prefetch(blocks)
         list_name = LIST_METADATA_NAME.get(mdtype, mdtype)
         names, err = list_metadata(sf, org, list_name)
         if names is None:
@@ -83,6 +180,9 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None,
         if r.get('err'):
             _report('[%d/%d] %s: skipped (%s)' % (i, n_types, list_name, r['err']))
             continue
+        if r.get('skip'):
+            _report('[%d/%d] %s: skipped (%s)' % (i, n_types, list_name, r['skip']))
+            continue
         if r.get('empty'):
             _report('[%d/%d] %s: zero members, skipping' % (i, n_types, mdtype))
             continue
@@ -102,17 +202,15 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
     """Detect standard metadata the target org does not have, via its Tooling
     API, and return (type, member, source) removals.
 
-    Covers three profile sections with three sources:
+    Covers ONE profile section with one source:
 
-      - ``tabVisibilities``   ``standard-*``  -> TabDefinition   (`StandardTab`)
-      - ``objectPermissions`` standard object -> EntityDefinition (`StandardObject`)
-      - ``fieldPermissions``  standard field  -> FieldDefinition  (`StandardField`)
+      - ``tabVisibilities`` ``standard-*`` -> TabDefinition (`StandardTab`)
 
-    EntityDefinition does not support queryMore and FieldDefinition requires a
-    reified filter, so both are queried with a ``WHERE ... IN`` on exactly the
-    names the profile references (in batches), never with an unfiltered scan.
-    A source that fails is skipped without aborting the other two (the dry-run
-    loop below remains the authoritative fallback).
+    Standard OBJECTS and standard FIELDS are deliberately NOT pruned here:
+    EntityDefinition does not enumerate external-data / Data Cloud objects and
+    FieldDefinition does not enumerate feature-gated fields (Milestones, Live
+    Chat, Entitlements, Analytics, ...) that the Profile schema still accepts.
+    Both are left to the authoritative per-section dry-run.
 
     `status` is an optional callable(message) for live console progress."""
     def _report(msg):
@@ -165,81 +263,14 @@ def prefetch_standard_dangling(sf, org, groups, logger, status=None,
     if std_objs:
         _report('%d standard object(s) present (not pruned via EntityDefinition, which is incomplete for external/Data Cloud objects)' % len(std_objs))
 
-    # ---------- standard fields (fieldPermissions: Object.Field) ----------
-    # FieldDefinition does not support queryMore(), so a full scan is out, and
-    # DurableId is NOT reliably 'Object.Field' (relationship/system fields like
-    # Account.ParentId use a different DurableId) — filtering on it yields false
-    # negatives. EntityDefinition.QualifiedApiName + QualifiedApiName is
-    # authoritative for every field (relationships included), so we query by
-    # object. To keep the number of queries low (per-object round trips are
-    # slow and trip the Tooling API rate limit) we batch several objects per
-    # query with an IN filter, and split a batch in half when it trips the
-    # single-batch row limit (EXCEEDED_ID_LIMIT).
-    fields_by_obj = {}
-    for el in groups.get('fieldPermissions', []):
-        v = _txt(el, 'field')
-        if v and '.' in v:
-            obj, fname = v.split('.', 1)
-            if obj and is_standard_api_name(obj):
-                fields_by_obj.setdefault(obj, set()).add(fname)
-
-    def _collect(batch):
-        """Collect fields for a list of objects. Returns ``(ok, existing_set,
-        err)``; on EXCEEDED_ID_LIMIT the batch is split in half and retried
-        (recursively) within the same task."""
-        if not batch:
-            return True, set(), None
-        in_clause = ', '.join("'%s'" % o for o in batch)
-        recs, err = tooling_query(
-            sf, org,
-            'SELECT EntityDefinition.QualifiedApiName, QualifiedApiName '
-            'FROM FieldDefinition '
-            'WHERE EntityDefinition.QualifiedApiName IN (%s)' % in_clause)
-        if recs is not None:
-            out = set()
-            for r in recs:
-                ed = r.get('EntityDefinition') or {}
-                o = ed.get('QualifiedApiName') if isinstance(ed, dict) else ''
-                out.add('%s.%s' % (o, r.get('QualifiedApiName')))
-            return True, out, None
-        if err and 'EXCEEDED_ID_LIMIT' in err and len(batch) > 1:
-            mid = len(batch) // 2
-            ok_a, out_a, err_a = _collect(batch[:mid])
-            ok_b, out_b, err_b = _collect(batch[mid:])
-            return (ok_a and ok_b), (out_a | out_b), (err_a or err_b)
-        return False, set(), err
-
-    if fields_by_obj:
-        total = sum(len(s) for s in fields_by_obj.values())
-        _report('listing %d standard field(s) across %d object(s) via FieldDefinition...'
-                % (total, len(fields_by_obj)))
-        existing = set()  # 'Object.Field' values present in the org
-        objects = sorted(fields_by_obj)
-        batches = [objects[i:i + 40] for i in range(0, len(objects), 40)]
-        results, errors = run_parallel(batches, _collect, max_workers=io_threads)
-        ok = True
-        for i in range(len(batches)):
-            if errors[i]:
-                _report('FieldDefinition batch skipped: %s' % errors[i])
-                ok = False
-                break
-            ok_b, out_b, err_b = results[i]
-            if not ok_b:
-                _report('FieldDefinition batch skipped: %s' % (err_b or 'unknown error'))
-                ok = False
-                break
-            existing |= out_b
-        if ok:
-            dangling = []
-            for obj in objects:
-                for fname in sorted(fields_by_obj[obj]):
-                    key = '%s.%s' % (obj, fname)
-                    if key not in existing:
-                        dangling.append(key)
-            for key in dangling:
-                removals.append(('StandardField', key, 'FieldDefinition'))
-            _report('FieldDefinition: %d valid, %d dangling' %
-                    (total - len(dangling), len(dangling)))
+    # ---------- standard fields: NOT pruned (see docstring) ----------
+    # FieldDefinition does not enumerate feature-gated fields (Milestones,
+    # Live Chat, Entitlements, Analytics, ...) that the Profile schema still
+    # accepts: pruning them removed ~22 VALID standard fields from a single
+    # Profile, silently stripping real permission entries. The per-section
+    # dry-run + final gate remain authoritative.
+    if groups.get('fieldPermissions'):
+        _report('standard field(s) present (not pruned via FieldDefinition, which is incomplete for feature-gated fields)')
 
     return removals
 

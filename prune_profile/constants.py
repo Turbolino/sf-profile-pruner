@@ -141,6 +141,13 @@ BLOCK_MAP = {
 # ---------------------------------------------------------------------------
 
 # metadata-type name (for `sf org list metadata`) -> [(block, child)]
+#
+# Layout and CustomMetadataType are deliberately NOT here: `list metadata`
+# Layout does not enumerate every layout (managed-package layouts are listed
+# WITHOUT the namespace prefix and __hd/analytics layouts may be missing
+# entirely) and does not enumerate custom metadata types at all. Both are
+# checked by engine.prefetch_dangling with dedicated, conservative logic
+# (layout-name normalization + EntityDefinition as the existence oracle).
 LISTABLE = {
     'ApexClass':          [('classAccesses', 'apexClass')],
     'ApexPage':           [('pageAccesses', 'apexPage'),
@@ -149,11 +156,9 @@ LISTABLE = {
     'CustomTab':          [('tabVisibilities', 'tab'),
                            ('tabSettings', 'tab')],
     'CustomPermission':   [('customPermissions', 'name')],
-    'CustomMetadataType': [('customMetadataTypeAccesses', 'name')],
     'ExternalDataSource': [('externalDataSourceAccesses', 'externalDataSource')],
     'Flow':               [('flowAccesses', 'flow'),
                            ('loginFlows', 'flow')],
-    'Layout':             [('layoutAssignments', 'layout')],
     'RecordType':         [('recordTypeVisibilities', 'recordType'),
                            ('layoutAssignments', 'recordType')],
     'ServicePresenceStatus': [('servicePresenceStatusAccesses', 'servicePresenceStatus')],
@@ -166,9 +171,8 @@ LISTABLE = {
 
 # The `--metadata-type` name passed to `sf org list metadata` for a LISTABLE
 # key. Defaults to the key itself; differs where the Profile section name is
-# not the Metadata API type name (customMetadataTypeAccesses -> CustomMetadata).
+# not the Metadata API type name.
 LIST_METADATA_NAME = {
-    'CustomMetadataType': 'CustomMetadata',
 }
 
 # Minimum API version that introduced the corresponding Profile section; the

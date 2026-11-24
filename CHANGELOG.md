@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The pre-fetch no longer removes VALID metadata on false positives:
+  - layout references: managed-package layouts are stored with the namespace
+    (`ns__Obj__c-ns__Layout`) but listed without it, and `__hd`/analytics
+    layouts may be missing from `list metadata Layout` entirely - names are now
+    normalized before comparing, and an unmatched layout whose OBJECT exists
+    (EntityDefinition) is left to the authoritative dry-run;
+  - custom metadata types: existence is now checked via EntityDefinition
+    (`X__mdt`), not via `list metadata CustomMetadata` (which does not
+    enumerate them);
+  - standard fields: FieldDefinition-based pruning is REMOVED entirely - it
+    does not enumerate feature-gated fields (Milestones, Live Chat,
+    Entitlements, Analytics, ...) that the Profile schema still accepts, and it
+    silently stripped ~22 valid fieldPermissions from a real Profile; standard
+    fields are now left to the authoritative dry-run, exactly like standard
+    objects.
 - The admin check no longer fails with a misleading "no user record found": it
   now queries the connecting user via STANDARD SOQL (the Tooling API does not
   support the `Profile` relation on `User`, which made the query error out), and

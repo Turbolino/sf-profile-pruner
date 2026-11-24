@@ -1067,13 +1067,16 @@ class TestPrefetch(unittest.TestCase):
         for mdtype, mappings in pp.LISTABLE.items():
             for block, _child in mappings:
                 self.assertIn(block, prunable)
+        # Layout and CustomMetadataType are special-cased in
+        # engine.prefetch_dangling (listMetadata is an unreliable oracle for
+        # them), so they must NOT go through the generic LISTABLE loop.
+        self.assertNotIn('Layout', pp.LISTABLE)
+        self.assertNotIn('CustomMetadataType', pp.LISTABLE)
 
     def test_list_metadata_name_maps_profile_section_to_api_type(self):
-        # The Profile section is `customMetadataTypeAccesses`, but the Metadata
-        # API type to enumerate via `sf org list metadata` is `CustomMetadata`.
-        self.assertEqual(pp.LIST_METADATA_NAME['CustomMetadataType'],
-                         'CustomMetadata')
-        # Every other LISTABLE key lists under its own name.
+        # Every LISTABLE key lists under its own name (the only mapping that
+        # ever existed - CustomMetadataType -> CustomMetadata - was removed
+        # together with the listMetadata-based custom-metadata prefetch).
         for mdtype in pp.LISTABLE:
             if mdtype not in pp.LIST_METADATA_NAME:
                 self.assertEqual(pp.LIST_METADATA_NAME.get(mdtype, mdtype), mdtype)
@@ -1166,6 +1169,81 @@ class TestPrefetch(unittest.TestCase):
         self.assertTrue(any('skipped' in m for m in messages))
 
 
+    def test_prefetch_layout_normalizes_namespace(self):
+        # Managed-package layouts are stored WITH the namespace on the layout
+        # part but listed WITHOUT it; the namespace difference must never be
+        # treated as dangling. A layout whose object genuinely does not exist
+        # is still pruned.
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<layoutAssignments><layout>et4ae5__Automated_Send__c-et4ae5__Active Send Layout</layout></layoutAssignments>'
+               '<layoutAssignments><layout>MissingObj__c-Missing Layout</layout></layoutAssignments>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'layoutAssignments': [c for c in root if c.tag == pp.M + 'layoutAssignments']}
+
+        def fake_list(sf, org, mdtype):
+            if mdtype == 'Layout':
+                return (['et4ae5__Automated_Send__c-Active Send Layout'], None)
+            return ([], None)
+
+        def fake_query(sf, org, soql):
+            # MissingObj__c does not exist in EntityDefinition -> dangling
+            return ([], None)
+
+        with mock.patch.object(pp.engine, 'list_metadata', side_effect=fake_list), \
+             mock.patch.object(pp.engine, 'tooling_query', side_effect=fake_query):
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0', pp.Logger(True))
+        self.assertEqual(removals, [('Layout', 'MissingObj__c-Missing Layout')])
+
+    def test_prefetch_layout_hd_object_not_pruned(self):
+        # __hd (analytics) layouts are not enumerated by listMetadata, but their
+        # OBJECT exists: absence from the listing is NOT proof of dangling, so
+        # the reference is left to the authoritative dry-run.
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<layoutAssignments><layout>ForecastingItem__hd-Forecasting Item Layout</layout></layoutAssignments>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'layoutAssignments': [c for c in root if c.tag == pp.M + 'layoutAssignments']}
+
+        def fake_list(sf, org, mdtype):
+            if mdtype == 'Layout':
+                return (['SomeObj-Some Layout'], None)
+            return ([], None)
+
+        def fake_query(sf, org, soql):
+            if 'EntityDefinition' in soql:
+                return ([{'QualifiedApiName': 'ForecastingItem__hd'}], None)
+            return ([], None)
+
+        with mock.patch.object(pp.engine, 'list_metadata', side_effect=fake_list), \
+             mock.patch.object(pp.engine, 'tooling_query', side_effect=fake_query):
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0', pp.Logger(True))
+        self.assertEqual(removals, [])
+
+    def test_prefetch_mdt_uses_entity_definition(self):
+        # Custom metadata TYPES exist in EntityDefinition but are NOT enumerated
+        # by `list metadata --metadata-type CustomMetadata`: EntityDefinition is
+        # the existence oracle, and list_metadata must not be called for them.
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<customMetadataTypeAccesses><name>Config__mdt</name></customMetadataTypeAccesses>'
+               '<customMetadataTypeAccesses><name>Missing__mdt</name></customMetadataTypeAccesses>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'customMetadataTypeAccesses': [c for c in root
+                                                 if c.tag == pp.M + 'customMetadataTypeAccesses']}
+
+        def fake_query(sf, org, soql):
+            if 'EntityDefinition' in soql:
+                return ([{'QualifiedApiName': 'Config__mdt'}], None)
+            return ([], None)
+
+        with mock.patch.object(pp.engine, 'tooling_query', side_effect=fake_query), \
+             mock.patch.object(pp.engine, 'list_metadata') as lm:
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0', pp.Logger(True))
+        lm.assert_not_called()
+        self.assertEqual(removals, [('CustomMetadataType', 'Missing__mdt')])
+
+
 class TestPrefetchStandards(unittest.TestCase):
     def _groups(self, xml):
         root = pp.etree.fromstring(xml.encode('utf-8'))
@@ -1174,7 +1252,7 @@ class TestPrefetchStandards(unittest.TestCase):
             groups.setdefault(el.tag.split('}')[-1], []).append(el)
         return groups
 
-    def test_removes_dangling_standard_tabs_objects_fields(self):
+    def test_removes_dangling_standard_tabs_only(self):
         xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
                '<tabVisibilities><tab>standard-Account</tab></tabVisibilities>'
                '<tabVisibilities><tab>standard-DataMaskJobSession</tab></tabVisibilities>'
@@ -1210,18 +1288,14 @@ class TestPrefetchStandards(unittest.TestCase):
 
         self.assertEqual(by_type['StandardTab'],
                          [('standard-DataMaskJobSession', 'TabDefinition')])
-        # Standard OBJECTS are no longer removed via EntityDefinition (it does
-        # not enumerate external-data / Data Cloud objects), so GhostObject is
-        # left to the authoritative dry-run, not removed here.
+        # Standard OBJECTS are not removed via EntityDefinition (it does not
+        # enumerate external-data / Data Cloud objects): GhostObject is left to
+        # the authoritative dry-run, not removed here.
         self.assertNotIn('StandardObject', by_type)
-        self.assertEqual(by_type['StandardField'],
-                         [('Account.GhostField__c', 'FieldDefinition')])
-        # custom metadata types (__mdt) must NOT be classified as standard
-        obj_members = [m for m, _s in by_type.get('StandardObject', [])]
-        fld_members = [m for m, _s in by_type.get('StandardField', [])]
-        self.assertNotIn('MyCustom__c', obj_members)
-        self.assertNotIn('MyMeta__mdt', obj_members)
-        self.assertNotIn('MyMeta__mdt.AnyField__c', fld_members)
+        # Standard FIELDS are NOT removed via FieldDefinition either: it does
+        # not enumerate feature-gated fields (Milestones, Live Chat, ...) that
+        # the Profile schema still accepts. GhostField__c stays for the dry-run.
+        self.assertNotIn('StandardField', by_type)
 
     def test_source_failure_skips_only_that_source(self):
         xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
