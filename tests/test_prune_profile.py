@@ -1243,6 +1243,27 @@ class TestPrefetch(unittest.TestCase):
         lm.assert_not_called()
         self.assertEqual(removals, [('CustomMetadataType', 'Missing__mdt')])
 
+    def test_prefetch_recordtype_preserves_person_account(self):
+        # The person-account pseudo-object's record types live on Account
+        # (IsPersonType=true) and are NOT enumerated by listMetadata: they must
+        # never be treated as dangling. A genuinely absent record type still is.
+        xml = ('<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+               '<recordTypeVisibilities><recordType>PersonAccount.PersonAccount</recordType></recordTypeVisibilities>'
+               '<recordTypeVisibilities><recordType>Idea.InternalIdeasIdeaRecordType</recordType></recordTypeVisibilities>'
+               '</Profile>')
+        root = pp.etree.fromstring(xml.encode('utf-8'))
+        groups = {'recordTypeVisibilities': [c for c in root
+                                             if c.tag == pp.M + 'recordTypeVisibilities']}
+
+        def fake_list(sf, org, mdtype):
+            if mdtype == 'RecordType':
+                return (['Account.Business'], None)
+            return ([], None)
+
+        with mock.patch.object(pp.engine, 'list_metadata', side_effect=fake_list):
+            removals = pp.prefetch_dangling('sf', 'org', groups, '68.0', pp.Logger(True))
+        self.assertEqual(removals, [('RecordType', 'Idea.InternalIdeasIdeaRecordType')])
+
 
 class TestPrefetchStandards(unittest.TestCase):
     def _groups(self, xml):

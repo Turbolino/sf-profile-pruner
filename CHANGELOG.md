@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - custom metadata types: existence is now checked via EntityDefinition
     (`X__mdt`), not via `list metadata CustomMetadata` (which does not
     enumerate them);
+  - record types: the person-account pseudo-object's record types
+    (`PersonAccount.PersonAccount`) live on `Account` with `IsPersonType=true`
+    and are NOT enumerated by `list metadata --metadata-type RecordType` - they
+    are no longer treated as dangling (verified via standard SOQL against the
+    org);
   - standard fields: FieldDefinition-based pruning is REMOVED entirely - it
     does not enumerate feature-gated fields (Milestones, Live Chat,
     Entitlements, Analytics, ...) that the Profile schema still accepts, and it

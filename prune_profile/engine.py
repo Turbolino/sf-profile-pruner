@@ -164,6 +164,13 @@ def prefetch_dangling(sf, org, groups, api_version, logger, status=None,
                     # listMetadata --metadata-type CustomTab cannot see them, so
                     # they must never be treated as dangling.
                     continue
+                if mdtype == 'RecordType' and member.startswith('PersonAccount.'):
+                    # The person-account pseudo-object's record types live on
+                    # Account (IsPersonType=true) and are NOT enumerated by
+                    # `list metadata --metadata-type RecordType`: absence from
+                    # the listing is not proof of dangling. Leave them to the
+                    # authoritative dry-run.
+                    continue
                 removals.append((mdtype, member))
         return {'existing': len(existing), 'removals': removals}
 
