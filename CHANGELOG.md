@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.0] - 2026-11-24
+
+### Added
+
+- `--ignore path/to/package.xml`: exclude metadata from the operation. The
+  package lists metadata type + members (e.g. `<name>ApexClass</name>` +
+  `<members>Foo</members>`; `*` ignores a whole type). Supported on:
+  - `--diff` — ignored entries are excluded from both sides and never reported
+    as a difference;
+  - `--align-from-source` — ignored entries are removed from the source AND
+    kept verbatim in the destination (the source's value is never propagated
+    and the destination value is never turned off);
+  - plain prune — ignored entries are removed from the source, so their source
+    value is not propagated; on a PermissionSet output they become
+    destination-only and are preserved verbatim (see 2.21.4).
+
 ## [2.21.4] - 2026-11-24
 
 ### Fixed

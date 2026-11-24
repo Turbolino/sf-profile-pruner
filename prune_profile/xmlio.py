@@ -140,6 +140,60 @@ def write_package_xml(path, entries, api_version):
         f.write('\n'.join(lines) + '\n')
 
 
+def parse_ignore_package(path):
+    """Parse a package.xml into ``{BLOCK_MAP_type: set(member)}`` for `--ignore`.
+
+    Only metadata types with a ``BLOCK_MAP`` entry are kept (the ones a
+    Profile/PermissionSet can reference); others are skipped. The package.xml
+    name ``CustomMetadata`` maps to BLOCK_MAP's ``CustomMetadataType``. A
+    ``<members>*</members>`` entry is kept as ``'*'`` (ignore the whole type).
+    """
+    root = etree.parse(path).getroot()
+    out = {}
+
+    def _txt(el, child):
+        ce = el.find(M + child)
+        return (ce.text or '').strip() if ce is not None else ''
+
+    for types_el in root.findall(M + 'types'):
+        typ = _txt(types_el, 'name')
+        if typ == 'CustomMetadata':
+            typ = 'CustomMetadataType'
+        if typ not in BLOCK_MAP:
+            continue
+        members = set()
+        for m_el in types_el.findall(M + 'members'):
+            v = (m_el.text or '').strip()
+            if v:
+                members.add(v)
+        if members:
+            out.setdefault(typ, set()).update(members)
+    return out
+
+
+def filter_ignored_groups(groups, ignore):
+    """Return a copy of ``groups`` with the entries matched by ``ignore``
+    removed. ``ignore`` is ``{BLOCK_MAP_type: set(member)}`` (from
+    :func:`parse_ignore_package`); a ``'*'`` member drops the whole mapped
+    block. Returns ``(filtered_groups, removed_count)``."""
+    out = {block: list(els) for block, els in groups.items()}
+    removed = 0
+    for typ, members in ignore.items():
+        for member in members:
+            for block, _child, _mode in BLOCK_MAP.get(typ, []):
+                els = out.get(block)
+                if els is None:
+                    continue
+                if member == '*':
+                    removed += len(els)
+                    out[block] = []
+                else:
+                    kept, n = remove_from_list(els, block, member)
+                    out[block] = kept
+                    removed += n
+    return out, removed
+
+
 def strip_blank_lines(path):
     """Removes blank lines (left behind by the XML removals)."""
     with open(path, 'rb') as f:

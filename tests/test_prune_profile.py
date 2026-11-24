@@ -3144,6 +3144,62 @@ class TestPermissionSet(unittest.TestCase):
         self.assertIn('fieldPermissions: 1', s)
         self.assertIn('- Case.Status', s)
 
+    def test_parse_ignore_package(self):
+        """parse_ignore_package maps package.xml names to BLOCK_MAP types and
+        keeps the '*' wildcard; CustomMetadata maps to CustomMetadataType."""
+        pkg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+               '<Package xmlns="%s">\n'
+               '  <types><members>Foo</members><members>Bar</members><name>ApexClass</name></types>\n'
+               '  <types><members>MyObj__c</members><name>CustomObject</name></types>\n'
+               '  <types><members>*</members><name>CustomTab</name></types>\n'
+               '  <types><members>MyMdt</members><name>CustomMetadata</name></types>\n'
+               '  <types><members>Unused</members><name>StandardValueSet</name></types>\n'
+               '  <version>68.0</version>\n'
+               '</Package>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'ignore.xml')
+            write_text(p, pkg)
+            out = pp.parse_ignore_package(p)
+        self.assertEqual(out['ApexClass'], {'Foo', 'Bar'})
+        self.assertEqual(out['CustomObject'], {'MyObj__c'})
+        self.assertEqual(out['CustomTab'], {'*'})
+        self.assertEqual(out['CustomMetadataType'], {'MyMdt'})
+        self.assertNotIn('StandardValueSet', out)
+
+    def test_merge_ignore_keeps_dest_value(self):
+        """--ignore on align: the ignored entry keeps the DESTINATION value
+        (the source's change is not propagated)."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<classAccesses><apexClass>Foo</apexClass><enabled>true</enabled></classAccesses>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<classAccesses><apexClass>Foo</apexClass><enabled>false</enabled></classAccesses>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, _, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'),
+                ignore={'ApexClass': {'Foo'}})
+        r = pp.etree.fromstring(xml)
+        cls = r.find('{%s}classAccesses' % self.NS)
+        self.assertEqual(cls.findtext('{%s}enabled' % self.NS), 'false')  # dest value
+
+    def test_diff_ignore_excludes_entry(self):
+        """--ignore on diff: the ignored entry is excluded from both sides, so
+        it is not reported as a difference."""
+        src = self._ps('<classAccesses><apexClass>Foo</apexClass><enabled>true</enabled></classAccesses>')
+        dst = self._ps('<classAccesses><apexClass>Foo</apexClass><enabled>false</enabled></classAccesses>')
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            sections = pp.diff_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'),
+                ignore={'ApexClass': {'Foo'}})
+        self.assertEqual(sections['classAccesses']['source_count'], 0)
+        self.assertEqual(sections['classAccesses']['dest_count'], 0)
+        self.assertEqual(sections['classAccesses']['different'], [])
+
     def test_finalize_prune_classifies_layout_ops(self):
         """The plain-prune finalizer must classify layoutAssignments removals
         (REDUNDANT vs NEEDS CHECK) exactly like the alignment flow, instead of

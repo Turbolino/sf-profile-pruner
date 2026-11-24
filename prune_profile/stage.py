@@ -30,6 +30,7 @@ from .sfcli import dry_run
 from .state import SharedState
 from .xmlio import (
     detect_metadata_type,
+    filter_ignored_groups,
     load_log_entries,
     prunable_blocks,
     read_outcome,
@@ -52,7 +53,8 @@ def _rel(base, path):
 
 def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
                 api_version, poll_interval, job_timeout, thread_number,
-                batch_size, max_iter, quiet, fresh, logger, io_threads=8):
+                batch_size, max_iter, quiet, fresh, logger, io_threads=8,
+                ignore=None):
     """Prune `profile_name` (from `source_profile_path`) against `org`.
 
     Writes COMMON/, MISSING/, missing_log.txt, report.txt and run.log under
@@ -149,6 +151,13 @@ def prune_stage(*, sf, org, source_profile_path, profile_name, out_dir,
         block = el.tag.split('}')[-1]
         groups.setdefault(block, []).append(el)
     logger.log('Read %d section(s) with %d entry(ies) in total.' % (len(groups), len(original_seq)))
+
+    # --ignore: exclude the ignored entries from the source BEFORE pruning, so
+    # their source value is never propagated (and, for a PermissionSet output,
+    # they become destination-only and are preserved verbatim downstream).
+    if ignore:
+        groups, n_ignored = filter_ignored_groups(groups, ignore)
+        logger.log('IGNORED (--ignore): %d entry(ies) excluded from the source.' % n_ignored)
 
     # ---------- apply recorded removals (resume) ----------
     # Capture the true original section sizes first, so the board keeps showing

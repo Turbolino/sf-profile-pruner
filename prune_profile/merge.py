@@ -27,8 +27,8 @@ import os
 
 from lxml import etree
 
-from .constants import M, NS, __version__, meta_root, tab_section
-from .xmlio import tostring_xml, write_xml
+from .constants import BLOCK_MAP, M, NS, __version__, meta_root, tab_section
+from .xmlio import _matches, filter_ignored_groups, tostring_xml, write_xml
 
 # ---------------------------------------------------------------------------
 # section -> (key_child, {child: off_text})
@@ -443,8 +443,12 @@ def _diff_entry_fields(src_el, dst_el):
     return diffs
 
 
-def diff_profiles(source_path, dest_path):
+def diff_profiles(source_path, dest_path, ignore=None):
     """Compare two profiles section by section.
+
+    ``ignore`` (optional) is a ``{BLOCK_MAP_type: set(member)}`` map (from
+    ``--ignore``): entries matching it are excluded from BOTH sides before the
+    comparison, so they are not reported as a difference.
 
     Returns ``{section: {...}}`` where each section maps to
     ``{source_count, dest_count, only_source, only_dest, common, different,
@@ -461,6 +465,9 @@ def diff_profiles(source_path, dest_path):
     dst_root = etree.parse(dest_path).getroot()
     src_groups = _groups(src_root)
     dst_groups = _groups(dst_root)
+    if ignore:
+        src_groups, _n1 = filter_ignored_groups(src_groups, ignore)
+        dst_groups, _n2 = filter_ignored_groups(dst_groups, ignore)
 
     # Cross-type (Profile <-> PermissionSet): the tab section is named
     # differently on each side, so normalise both to a common 'tabVisibilities'
@@ -889,7 +896,7 @@ def _removed_block(section, entries, dest_env, verdict_note=None):
 def merge_profiles(source_path, dest_path, dest_env='destination org',
                    read_only_fields=None, keep_user_permissions=None,
                    keep_object_permissions=None, preserve_dest_label=False,
-                   preserve_dest_only=False):
+                   preserve_dest_only=False, ignore=None):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
@@ -902,6 +909,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     turned off: the merged file is a union that never revokes anything the
     destination already grants. This is the opposite of the alignment semantic
     (which turns destination-only entries OFF on purpose).
+
+    ``ignore`` (optional) is a ``{BLOCK_MAP_type: set(member)}`` map (from
+    ``--ignore``). Ignored entries are removed from the SOURCE (so the source's
+    value is never propagated) and, when they exist only in the destination,
+    KEPT VERBATIM instead of turned off (the destination value stays).
 
     ``read_only_fields`` (optional) is a set of ``fieldPermissions`` field full
     names whose type is inherently read-only (formula / roll-up summary /
@@ -938,6 +950,8 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     dst_root = etree.parse(dest_path).getroot()
     src_groups = _groups(src_root)
     dst_groups = _groups(dst_root)
+    if ignore:
+        src_groups, _ignored_n = filter_ignored_groups(src_groups, ignore)
 
     read_only_fields = read_only_fields or set()
     keep_user_permissions = keep_user_permissions or set()
@@ -1050,6 +1064,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 # included, so the merged file faithfully reproduces the
                 # destination for anything the source does not declare).
                 if preserve_dest_only:
+                    merged_section.append(deepcopy(el))
+                    continue
+                # --ignore: an ignored destination-only entry is left as-is (the
+                # source's value is NOT propagated, and it must not be turned
+                # off).
+                if _element_ignored(el, section, ignore):
                     merged_section.append(deepcopy(el))
                     continue
                 # Skip destination-only entries that are already fully off:
@@ -1421,6 +1441,27 @@ def _diff_key_label(key, spec):
     if isinstance(key, tuple):
         return '.'.join(str(k) for k in key if k != '')
     return str(key)
+
+
+def _element_ignored(el, section, ignore):
+    """True when the entry `el` of `section` is matched by the `--ignore` set
+    (``{BLOCK_MAP_type: set(member)}``). Mirrors :func:`filter_ignored_groups`
+    (same BLOCK_MAP matching); a ``'*'`` member ignores the whole type."""
+    if not ignore:
+        return False
+    for typ, cands in BLOCK_MAP.items():
+        members = ignore.get(typ)
+        if not members:
+            continue
+        for block, child, mode in cands:
+            if block != section:
+                continue
+            ce = el.find(M + child)
+            val = (ce.text or '').strip() if ce is not None else ''
+            for member in members:
+                if member == '*' or _matches(val, member, mode):
+                    return True
+    return False
 
 
 def classify_layout_ops(manual_ops, changes, layout_count):

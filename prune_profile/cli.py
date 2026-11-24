@@ -77,8 +77,9 @@ from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     set_deploy_start_interval, soql_query, standard_entities,
                     tooling_query)
 from .stage import prune_stage
-from .xmlio import (detect_metadata_type, load_log_entries, read_report_summary,
-                    tostring_xml, write_package_xml, write_sfdx_project)
+from .xmlio import (detect_metadata_type, load_log_entries, parse_ignore_package,
+                    read_report_summary, tostring_xml, write_package_xml,
+                    write_sfdx_project)
 
 
 def _rel(base, path):
@@ -1131,7 +1132,7 @@ def _resume_alignment(args, src_org, src_profile_name, dest_profile_name,
 
 def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
               dest_profile_name, dest_org, src_org, src_mdtype, dest_mdtype,
-              logger):
+              logger, ignore=None):
     """Run --diff: retrieve the destination profile/permission set and compare
     the two section by section (pure comparison; no prune, dry-run or deploy).
     Writes ``diff/diff-report.txt`` and prints a summary table. Exits with 0."""
@@ -1173,7 +1174,7 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
 
     src_label = '%s %s "%s"' % (src_mdtype, src_org or 'file', src_profile_name)
     dst_label = '%s %s "%s"' % (dest_mdtype, dest_org, dest_profile_name)
-    sections = diff_profiles(source_profile_path, dest_path)
+    sections = diff_profiles(source_profile_path, dest_path, ignore=ignore)
     report_text = render_diff_report(sections, src_label, dst_label)
     report_path = os.path.join(diff_dir, 'diff-report.txt')
     with open(report_path, 'w', encoding='utf-8') as _f:
@@ -1205,7 +1206,7 @@ def _run_diff(sf, args, out_dir, source_profile_path, src_profile_name,
 
 def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
                    dest_profile_name, dest_org, src_org, src_mdtype, dest_mdtype,
-                   do_deploy, logger):
+                   do_deploy, logger, ignore=None):
     """Run --align-from-source: prune the source against the destination,
     retrieve + prune the destination, merge (source authoritative, destination-
     only entries turned off), and optionally deploy. Exits with the result code."""
@@ -1241,7 +1242,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         job_timeout=args.job_timeout, thread_number=args.thread_number,
         batch_size=args.batch_size, max_iter=args.max_iter,
         quiet=args.quiet, fresh=args.fresh, logger=logger,
-        io_threads=args.io_threads_number)
+        io_threads=args.io_threads_number, ignore=ignore)
     if src_res['outcome'] != 'SUCCESS':
         print('ERROR: source prune failed: %s' % (src_res.get('reason') or 'unknown error'))
         sys.exit(2)
@@ -1374,7 +1375,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
         args, sf, src_org, dest_org, src_clean, dst_clean, logger)
     merged_xml, manual_ops, changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, read_only_fields=read_only_fields,
-        preserve_dest_label=dest_missing)
+        preserve_dest_label=dest_missing, ignore=ignore)
     merge_dir = os.path.join(out_dir, '4-merged')
     os.makedirs(merge_dir, exist_ok=True)
     merged_path = os.path.join(merge_dir, meta_filename(dest_mdtype, dest_profile_name))
@@ -1428,7 +1429,7 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
             read_only_fields=read_only_fields,
             keep_user_permissions=keep_user_permissions,
             keep_object_permissions=keep_object_permissions,
-            preserve_dest_label=dest_missing)
+            preserve_dest_label=dest_missing, ignore=ignore)
         with open(merged_path, 'wb') as _f:
             _f.write(merged_xml)
         validation, _cf = _validate_profile_dry_run(
@@ -1618,6 +1619,12 @@ def _main():
                         help='command/path of the Salesforce CLI (default: sf)')
 
     g_act = ap.add_argument_group('behavior')
+    g_act.add_argument('--ignore', default=None, metavar='PACKAGE_XML',
+                       help='path of a package.xml listing metadata to IGNORE '
+                            '(metadata not yet released). The ignored entries are '
+                            'excluded from --diff, --align-from-source and the plain '
+                            'prune; their destination value is kept (never propagated '
+                            'from the source, never turned off).')
     g_act.add_argument('--align-from-source', action='store_true',
                        help='make the destination identical to the source: turns OFF '
                             'destination-only permissions and turns ON source-only ones '
@@ -1670,6 +1677,20 @@ def _main():
                        version='%s v%s - %s' % (APP_NAME, __version__, AUTHOR_NOTE))
 
     args = ap.parse_args()
+
+    # ---------- --ignore: parse the package.xml into {type: members} ----------
+    ignore = {}
+    if args.ignore:
+        if not os.path.isfile(args.ignore):
+            print('ERROR: --ignore file not found: %s' % args.ignore)
+            sys.exit(2)
+        try:
+            ignore = parse_ignore_package(args.ignore)
+        except Exception as e:
+            print('ERROR: cannot parse --ignore package.xml %r: %s' % (args.ignore, e))
+            sys.exit(2)
+        if not ignore:
+            print('WARNING: --ignore package.xml lists no ignorable metadata type.')
 
     # ---------- numeric validation ----------
     if not (1 <= args.thread_number <= 64):
@@ -1962,14 +1983,14 @@ def _main():
     if args.diff:
         _run_diff(sf, args, out_dir, profile_path, src_profile_name,
                   dest_profile_name, dest_org, src_org, src_mdtype, dest_mdtype,
-                  logger)
+                  logger, ignore=ignore)
         sys.exit(1)  # _run_diff exits; safety net only
 
     # ---------- alignment (--align-from-source): separate flow ----------
     if do_align:
         _run_alignment(sf, args, out_dir, profile_path, src_profile_name,
                        dest_profile_name, dest_org, src_org, src_mdtype,
-                       dest_mdtype, do_deploy, logger)
+                       dest_mdtype, do_deploy, logger, ignore=ignore)
         sys.exit(1)  # _run_alignment exits; safety net only
 
     # ---------- run the prune stage ----------
@@ -2021,6 +2042,7 @@ def _main():
         fresh=args.fresh,
         logger=logger,
         io_threads=args.io_threads_number,
+        ignore=ignore,
     )
 
     # Normalize system read-only field editable flags (default; --avoid-normalize-ro
@@ -2122,6 +2144,7 @@ def _main():
                 fresh=False,
                 logger=logger,
                 io_threads=args.io_threads_number,
+                ignore=ignore,
             )
             result_state = result['outcome']
             if result_state != 'SUCCESS':
