@@ -61,7 +61,8 @@ from .constants import (
 )
 from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     READ_ONLY_FIELD_TYPE_EXACT, READ_ONLY_FIELD_TYPE_PREFIXES,
-                    classify_layout_ops, convert_metadata_type, diff_profiles,
+                    classify_layout_ops, convert_metadata_type, dest_only_members,
+                    diff_profiles,
                     field_permissions_editable, field_permissions_names,
                     license_mismatch, merge_profiles, metadata_license,
                     normalize_profile_read_only, normalized_field_changes,
@@ -698,12 +699,16 @@ def _write_and_report_manual_ops(manual_ops, out_dir, profile_name, logger, quie
 
 def _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
                            dest_profile_name, dest_org, logger, quiet,
-                           mdtype='Profile', clean_path=None):
+                           mdtype='Profile', clean_path=None, preserved=None):
     """Assemble the ``4-merged/`` folder for a plain prune run: copy the clean
-    profile, write ``what-is-changed.txt`` (removed dangling references +
-    manual operations) and ``MANUAL-OPERATIONS.txt``. Returns the
-    what-is-changed path. ``clean_path`` overrides the clean source path (used
-    when a cross-type conversion produced the final deliverable).
+    profile, write ``what-is-changed.txt`` (removed dangling references,
+    preserved destination-only entries, normalized read-only fields, and manual
+    operations) and ``MANUAL-OPERATIONS.txt``. Returns the what-is-changed path.
+    ``clean_path`` overrides the clean source path (used when a cross-type
+    conversion or a preserve-destination merge produced the final deliverable).
+
+    ``preserved`` is the ``{section: [member, ...]}`` map from
+    :func:`dest_only_members` (only for a PermissionSet plain prune).
 
     ``layoutAssignments`` manual operations are classified REDUNDANT (ignorable)
     vs NEEDS CHECK here too (via ``classify_layout_ops``), so a plain prune
@@ -738,7 +743,7 @@ def _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
         removed_by_type.setdefault(typ, set()).add(member)
     wic_path = write_prune_what_is_changed(
         os.path.join(merge_dir, 'what-is-changed.txt'),
-        removed_by_type, manual_ops, dest_org, normalized)
+        removed_by_type, manual_ops, dest_org, normalized, preserved)
     _write_and_report_manual_ops(manual_ops, merge_dir, dest_profile_name,
                                  logger, quiet, mdtype=mdtype)
     return wic_path
@@ -835,6 +840,75 @@ def _validate_and_heal_deliverable(sf, args, deliverable_path, profile_name,
     logger.log('  OK: final deliverable self-healed (%d reference(s) removed)'
                % heal_res['total_removed'])
     return final_path
+
+
+def _preserve_dest_merge(sf, args, src_clean, dest_profile_name, dest_org,
+                         out_dir, logger):
+    """Plain prune on an authoritative PermissionSet: keep destination-only
+    permissions instead of revoking them.
+
+    A PermissionSet deploy is authoritative (anything absent from the file is
+    REVOKED), so shipping only the pruned source would silently revoke every
+    permission the destination holds but the source does not declare. To avoid
+    that, retrieve the destination, prune it against itself (drop its own
+    dangling references), and merge it UNDER the source with
+    ``preserve_dest_only=True``. Returns ``(final_deliverable_path,
+    preserved_members)`` where ``preserved_members`` is the
+    ``{section: [member, ...]}`` map from :func:`dest_only_members`.
+    """
+    username, uerr = org_username(sf, dest_org)
+    if not username:
+        print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
+        sys.exit(2)
+    dest_dir = os.path.join(out_dir, '2-destination-retrieved')
+    os.makedirs(dest_dir, exist_ok=True)
+    logger.log('  - retrieving destination PermissionSet %r from %s (preserve only)...'
+               % (dest_profile_name, dest_org))
+    clean = not args.full_profile
+    dest_profiles, derr = retrieve_profiles(username, [dest_profile_name],
+                                            clean=clean, mdtype='PermissionSet')
+    dest_missing = not dest_profiles
+    if dest_missing:
+        _warn_destination_missing(
+            logger, args.quiet, 'PermissionSet', dest_profile_name, dest_org,
+            'nothing to preserve (it will be created from the source)')
+    dest_raw = os.path.join(dest_dir, meta_filename('PermissionSet', dest_profile_name))
+    with open(dest_raw, 'wb') as _f:
+        if dest_missing:
+            _f.write(_empty_metadata_xml('PermissionSet', dest_profile_name))
+        else:
+            _f.write(dest_profiles[0][1])
+
+    dst_out = os.path.join(out_dir, '3-destination-pruned')
+    logger.log('  - pruning the destination against itself...')
+    dst_res = prune_stage(
+        sf=sf, org=dest_org, source_profile_path=dest_raw,
+        profile_name=dest_profile_name, out_dir=dst_out,
+        api_version=args.api_version, poll_interval=args.poll_interval,
+        job_timeout=args.job_timeout, thread_number=args.thread_number,
+        batch_size=args.batch_size, max_iter=args.max_iter,
+        quiet=args.quiet, fresh=args.fresh, logger=logger,
+        io_threads=args.io_threads_number)
+    if dst_res['outcome'] != 'SUCCESS':
+        print('ERROR: destination prune failed: %s'
+              % (dst_res.get('reason') or 'unknown error'))
+        sys.exit(2)
+    dst_clean = dst_res['common_profile_path']
+
+    merged_xml, _manual_ops, _changes = merge_profiles(
+        src_clean, dst_clean, dest_env=dest_org, preserve_dest_only=True)
+    merge_path = os.path.join(
+        out_dir, '.work', 'preserved-%s'
+        % meta_filename('PermissionSet', dest_profile_name))
+    os.makedirs(os.path.dirname(merge_path), exist_ok=True)
+    with open(merge_path, 'wb') as _f:
+        _f.write(merged_xml)
+
+    preserved = dest_only_members(src_clean, dst_clean)
+    final_path = _validate_and_heal_deliverable(
+        sf, args, merge_path, dest_profile_name, 'PermissionSet', dest_org,
+        out_dir, logger)
+    return final_path, preserved
 
 
 def _normalize_prune_read_only(sf, args, src_org, dest_org, common_path, logger):
@@ -1970,11 +2044,22 @@ def _main():
             sf, args, converted, dest_profile_name, dest_mdtype, dest_org,
             out_dir, logger)
 
+    # PermissionSet output is authoritative: preserve destination-only
+    # permissions (never revoke them) instead of shipping only the pruned
+    # source. A Profile output needs nothing here (deploy merge = omission is
+    # already a no-op that leaves the destination untouched).
+    preserved = {}
+    if result['outcome'] == 'SUCCESS' and dest_mdtype == 'PermissionSet':
+        deliverable_path, preserved = _preserve_dest_merge(
+            sf, args, deliverable_path, dest_profile_name, dest_org, out_dir,
+            logger)
+
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
         _finalize_prune_output(sf, result, merge_dir, src_out, original_copy,
                                dest_profile_name, dest_org, logger, args.quiet,
-                               mdtype=dest_mdtype, clean_path=deliverable_path)
+                               mdtype=dest_mdtype, clean_path=deliverable_path,
+                               preserved=preserved)
         prev = read_report_summary(os.path.join(src_out, 'report.txt'))
         print('Profile "%s" is already clean (previous run: %s). Nothing to do.'
               % (src_profile_name, prev.get('outcome') or 'SUCCESS'))
@@ -2050,6 +2135,10 @@ def _main():
                 deliverable_path = _convert_prune_deliverable(
                     sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
                     dest_profile_name, dest_org, out_dir, logger)
+            if dest_mdtype == 'PermissionSet':
+                deliverable_path, preserved = _preserve_dest_merge(
+                    sf, args, deliverable_path, dest_profile_name, dest_org,
+                    out_dir, logger)
             new_sig = _sig(deliverable_path)
             if new_sig == prev_sig:
                 result_state = 'DEPLOY_FAILED'
@@ -2084,7 +2173,7 @@ def _main():
     wic_path = _finalize_prune_output(
         sf, report_result, merge_dir, src_out, original_copy,
         dest_profile_name, dest_org, logger, args.quiet, mdtype=dest_mdtype,
-        clean_path=deliverable_path)
+        clean_path=deliverable_path, preserved=preserved)
     logger.log('  OK: what-is-changed written: %s' % _rel(out_dir, wic_path))
 
     # Propagate a non-zero exit code when the prune did not succeed. The

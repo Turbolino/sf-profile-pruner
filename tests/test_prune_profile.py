@@ -3088,6 +3088,62 @@ class TestPermissionSet(unittest.TestCase):
         r2 = pp.etree.fromstring(xml2)
         self.assertEqual(r2.find('{%s}label' % self.NS).text, 'Direttore Object Permission')
 
+    def test_merge_preserve_dest_only_keeps_dest_entries(self):
+        """preserve_dest_only=True keeps destination-only entries verbatim (a
+        plain prune on an authoritative PermissionSet never revokes)."""
+        src = ('<PermissionSet xmlns="%s">\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
+               '<objectPermissions><object>Account</object><allowRead>true</allowRead></objectPermissions>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'),
+                preserve_dest_only=True)
+        r = pp.etree.fromstring(xml)
+        ops = {el.findtext('{%s}object' % self.NS):
+               el.findtext('{%s}allowRead' % self.NS)
+               for el in r.findall('{%s}objectPermissions' % self.NS)}
+        self.assertEqual(ops.get('Account'), 'true')   # kept, not turned off
+        self.assertEqual(ops.get('Lead'), 'true')
+        self.assertFalse(any(c['kind'] == 'revoke' for c in changes))
+
+    def test_dest_only_members(self):
+        """dest_only_members lists destination-only entries, grouped by section."""
+        src = self._ps(
+            '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>')
+        dst = self._ps(
+            '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>'
+            '<objectPermissions><object>Account</object><allowRead>true</allowRead></objectPermissions>'
+            '<fieldPermissions><field>Case.Status</field><editable>true</editable><readable>true</readable></fieldPermissions>')
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            members = pp.dest_only_members(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        self.assertEqual(members['objectPermissions'], ['Account'])
+        self.assertEqual(members['fieldPermissions'], ['Case.Status'])
+
+    def test_write_prune_what_is_changed_preserved_section(self):
+        """The plain-prune WIC reports the PRESERVED destination-only entries."""
+        removed = {'ApexClass': {'Foo'}}
+        preserved = {'objectPermissions': ['Account'],
+                     'fieldPermissions': ['Case.Status']}
+        with tempfile.TemporaryDirectory() as d:
+            p = pp.write_prune_what_is_changed(
+                os.path.join(d, 'wic.txt'), removed, [], 'devorg',
+                preserved=preserved)
+            s = read_text(p)
+        self.assertIn('PRESERVED (destination-only entries kept verbatim, NOT revoked): 2', s)
+        self.assertIn('objectPermissions: 1', s)
+        self.assertIn('- Account', s)
+        self.assertIn('fieldPermissions: 1', s)
+        self.assertIn('- Case.Status', s)
+
     def test_finalize_prune_classifies_layout_ops(self):
         """The plain-prune finalizer must classify layoutAssignments removals
         (REDUNDANT vs NEEDS CHECK) exactly like the alignment flow, instead of

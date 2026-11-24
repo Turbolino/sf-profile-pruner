@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.4] - 2026-11-24
+
+### Fixed
+
+- Plain prune on a PermissionSet no longer revokes destination-only permissions.
+  A PermissionSet deploy is authoritative (anything absent from the file is
+  revoked), so the old behavior — shipping only the pruned source — silently
+  revoked every permission the destination held but the source did not declare.
+  The plain prune now retrieves the destination, prunes it against itself, and
+  merges it UNDER the source with `preserve_dest_only=True`: the final
+  PermissionSet is a union that keeps every destination-only entry verbatim.
+  A Profile output is unchanged (a deploy merge already leaves omitted entries
+  untouched).
+- `what-is-changed.txt` now reports a `PRESERVED (destination-only entries kept
+  verbatim, NOT revoked)` section for a PermissionSet plain prune.
+
 ## [2.21.3] - 2026-11-24
 
 ### Fixed

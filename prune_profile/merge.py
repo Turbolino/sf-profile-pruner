@@ -888,13 +888,20 @@ def _removed_block(section, entries, dest_env, verdict_note=None):
 
 def merge_profiles(source_path, dest_path, dest_env='destination org',
                    read_only_fields=None, keep_user_permissions=None,
-                   keep_object_permissions=None, preserve_dest_label=False):
+                   keep_object_permissions=None, preserve_dest_label=False,
+                   preserve_dest_only=False):
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
     destination-only entry is turned off (alignable sections) or recorded as a
     manual operation (non-alignable sections). Destination-only entries that
     are already off are skipped (no change).
+
+    With ``preserve_dest_only=True`` (plain prune on an authoritative
+    PermissionSet), destination-only entries are KEPT VERBATIM instead of being
+    turned off: the merged file is a union that never revokes anything the
+    destination already grants. This is the opposite of the alignment semantic
+    (which turns destination-only entries OFF on purpose).
 
     ``read_only_fields`` (optional) is a set of ``fieldPermissions`` field full
     names whose type is inherently read-only (formula / roll-up summary /
@@ -994,7 +1001,7 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             # has no license: in a PS -> Profile align, dest-only userPermissions
             # cannot be turned off, so they are preserved verbatim. Source-only /
             # shared entries still align normally.
-            preserve_dest_only = (
+            preserve_user_perm_dest_only = (
                 section == 'userPermissions'
                 and src_mdtype == 'PermissionSet'
                 and dst_mdtype == 'Profile')
@@ -1038,13 +1045,20 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             for key, el in dst_by_key.items():
                 if key in src_by_key:
                     continue
+                # Plain prune on an authoritative PermissionSet never revokes:
+                # keep every destination-only entry verbatim (already-off ones
+                # included, so the merged file faithfully reproduces the
+                # destination for anything the source does not declare).
+                if preserve_dest_only:
+                    merged_section.append(deepcopy(el))
+                    continue
                 # Skip destination-only entries that are already fully off:
                 # turning them off again is a no-op, not a change to report.
                 if all(_txt(el, f) in ('', off_val) for f, off_val in off_fields.items()):
                     continue
                 # In PS -> Profile, userPermissions are license-bound and cannot
                 # be turned off: preserve a dest-only userPermission verbatim.
-                if preserve_dest_only:
+                if preserve_user_perm_dest_only:
                     merged_section.append(deepcopy(el))
                     continue
                 # A PermissionSet source has no notion of the Profile's default
@@ -1373,6 +1387,42 @@ def removed_non_alignable(original_path, clean_path):
     return ops
 
 
+def dest_only_members(src_path, dst_path):
+    """Return ``{section: [member, ...]}`` for entries present in ``dst_path``
+    but absent from ``src_path`` — the destination-only metadata a plain prune
+    PRESERVES (never revokes). ``member`` is the entry's primary key rendered
+    as a readable string (``Object.Field``, ``MyApexClass``, ``standard-Home``).
+    Used by the what-is-changed report of a PermissionSet plain prune.
+    """
+    src_root = etree.parse(src_path).getroot()
+    dst_root = etree.parse(dst_path).getroot()
+    src_groups = _groups(src_root)
+    dst_groups = _groups(dst_root)
+    out = {}
+    for section in dst_groups:
+        spec = _diff_key_spec(section)
+        src_keys = {_diff_key(el, spec) for el in src_groups.get(section, [])}
+        members = []
+        for el in dst_groups[section]:
+            key = _diff_key(el, spec)
+            if key in src_keys:
+                continue
+            members.append(_diff_key_label(key, spec))
+        if members:
+            out[section] = sorted(members)
+    return out
+
+
+def _diff_key_label(key, spec):
+    """Human-readable rendering of a diff key (see ``_diff_key``)."""
+    if spec is _LAYOUT_ASSIGNMENT_KEY:
+        obj, rt = key
+        return obj if not rt else '%s (record type: %s)' % (obj, rt)
+    if isinstance(key, tuple):
+        return '.'.join(str(k) for k in key if k != '')
+    return str(key)
+
+
 def classify_layout_ops(manual_ops, changes, layout_count):
     """Annotate layoutAssignments entries with a redundancy verdict.
 
@@ -1610,18 +1660,23 @@ def write_what_is_changed(path, changes, dest_env):
 
 
 def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env,
-                                normalized=None):
+                                normalized=None, preserved=None):
     """Write the what-is-changed report for a plain prune (no merge): the
     dangling references removed from the profile, the read-only field
-    ``editable`` flags normalized to ``false``, and the non-alignable manual
-    operations. Returns the path.
+    ``editable`` flags normalized to ``false``, the destination-only entries
+    PRESERVED verbatim (PermissionSet plain prune only), and the non-alignable
+    manual operations. Returns the path.
 
     ``removed_by_type`` maps a metadata type name to an iterable of removed
     member names. ``normalized`` is a list of ``{field, old, new}`` from
-    :func:`normalized_field_changes` (empty when nothing was rewritten).
+    :func:`normalized_field_changes`. ``preserved`` is the
+    ``{section: [member, ...]}`` map from :func:`dest_only_members` (empty when
+    nothing is kept from the destination).
     """
     normalized = normalized or []
+    preserved = preserved or {}
     total_removed = sum(len(v) for v in removed_by_type.values())
+    total_preserved = sum(len(v) for v in preserved.values())
     lines = [
         'WHAT IS CHANGED - prune (destination: %s)' % dest_env,
         '=' * 78,
@@ -1641,6 +1696,21 @@ def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env,
         for m in members:
             lines.append('    - %s' % m)
         lines.append('')
+    lines.append('PRESERVED (destination-only entries kept verbatim, NOT revoked): %d'
+                 % total_preserved)
+    if preserved:
+        lines.append('')
+        lines.append('  A PermissionSet deploy is authoritative: every permission absent')
+        lines.append('  from the file is REVOKED. These entries exist only in the')
+        lines.append('  destination, so the cleaned PermissionSet keeps them with the')
+        lines.append('  destination value (the source does not change or revoke them).')
+        lines.append('')
+        for section in sorted(preserved):
+            members = preserved[section]
+            lines.append('  %s: %d' % (section, len(members)))
+            for m in members:
+                lines.append('    - %s' % m)
+            lines.append('')
     lines.append('NORMALIZED (read-only fields rewritten to editable=false): %d'
                  % len(normalized))
     if normalized:
