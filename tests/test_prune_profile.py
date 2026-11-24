@@ -1861,9 +1861,29 @@ class TestMerge(unittest.TestCase):
         table = pp.format_ops_table(ops)
         self.assertIn('VERDICT', table)
         self.assertIn('REDUNDANT (ignorable)', table)
+        # the WHERE column is intentionally not rendered
+        self.assertNotIn('WHERE', table)
+        self.assertNotIn('Setup > Object Manager', table)
         # explicit show_verdict=False drops the column
         table2 = pp.format_ops_table(ops, show_verdict=False)
         self.assertNotIn('VERDICT', table2)
+
+    def test_format_ops_table_sorts_by_verdict(self):
+        """Rows are ordered by verdict: REDUNDANT first, then NEEDS CHECK,
+        then unclassified."""
+        ops = [
+            {'section': 'loginFlows', 'item': 'ZFlow', 'operation': 'x', 'verdict': ''},
+            {'section': 'layoutAssignments', 'item': 'NeedCheck', 'operation': 'x',
+             'verdict': 'NEEDS CHECK'},
+            {'section': 'layoutAssignments', 'item': 'Redundant', 'operation': 'x',
+             'verdict': 'REDUNDANT (ignorable)'},
+        ]
+        table = pp.format_ops_table(ops)
+        i_red = table.index('Redundant')
+        i_chk = table.index('NeedCheck')
+        i_oth = table.index('ZFlow')
+        self.assertLess(i_red, i_chk)
+        self.assertLess(i_chk, i_oth)
 
     def test_write_manual_ops_splits_redundant_vs_check(self):
         ops = [
@@ -3199,6 +3219,36 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(sections['classAccesses']['source_count'], 0)
         self.assertEqual(sections['classAccesses']['dest_count'], 0)
         self.assertEqual(sections['classAccesses']['different'], [])
+
+    def test_patch_ignored_entries(self):
+        """patch_ignored_entries: ignored entries take the DESTINATION value
+        (replaced in place when shared, appended when source-only), everything
+        else is untouched; absent from the destination = stays absent."""
+        deliverable = ('<Profile xmlns="%s">\n'
+                       '<classAccesses><apexClass>Foo</apexClass><enabled>true</enabled></classAccesses>\n'
+                       '<classAccesses><apexClass>Bar</apexClass><enabled>true</enabled></classAccesses>\n'
+                       '<fieldPermissions><field>Acc.Keep__c</field><editable>true</editable><readable>true</readable></fieldPermissions>\n'
+                       '</Profile>\n' % self.NS)
+        dst = ('<Profile xmlns="%s">\n'
+               '<classAccesses><apexClass>Foo</apexClass><enabled>false</enabled></classAccesses>\n'
+               '<classAccesses><apexClass>Baz</apexClass><enabled>true</enabled></classAccesses>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'del.xml', deliverable)
+            self._write(d, 'dst.xml', dst)
+            xml, patched = pp.patch_ignored_entries(
+                os.path.join(d, 'del.xml'), os.path.join(d, 'dst.xml'),
+                ignore={'ApexClass': {'Foo', 'Baz'}})
+        r = pp.etree.fromstring(xml)
+        cls = {el.findtext('{%s}apexClass' % self.NS):
+               el.findtext('{%s}enabled' % self.NS)
+               for el in r.findall('{%s}classAccesses' % self.NS)}
+        self.assertEqual(cls['Foo'], 'false')    # replaced with dest value
+        self.assertEqual(cls['Bar'], 'true')     # untouched
+        self.assertEqual(cls['Baz'], 'true')     # appended (dest-only)
+        fps = r.findall('{%s}fieldPermissions' % self.NS)
+        self.assertEqual(len(fps), 1)            # untouched section intact
+        self.assertEqual(patched, {'classAccesses': ['Baz', 'Foo']})
 
     def test_finalize_prune_classifies_layout_ops(self):
         """The plain-prune finalizer must classify layoutAssignments removals

@@ -1433,6 +1433,62 @@ def dest_only_members(src_path, dst_path):
     return out
 
 
+def patch_ignored_entries(deliverable_path, dst_clean_path, ignore):
+    """Overwrite the deliverable's ignored entries with the DESTINATION's
+    values (plain prune, Profile output, ``--ignore``).
+
+    For every entry matched by ``ignore``, when the pruned destination Profile
+    declares a corresponding entry, the deliverable takes the destination's
+    value — the existing entry is replaced in place, or APPENDED when the
+    source did not declare it. Entries the destination does not have stay
+    absent (they would be dangling there). Returns ``(patched_xml_bytes,
+    patched_map)`` where ``patched_map`` is ``{section: [label, ...]}``.
+    """
+    root = etree.parse(deliverable_path).getroot()
+    dst_groups = _groups(etree.parse(dst_clean_path).getroot())
+
+    # document-order index: section -> list of (root_index, element)
+    sec_order = {}
+    for i, el in enumerate(root):
+        if isinstance(el.tag, str):
+            sec_order.setdefault(el.tag.split('}')[-1], []).append((i, el))
+
+    patched = {}
+    for section, dst_els in dst_groups.items():
+        spec = _diff_key_spec(section)
+        src_els = [el for _i, el in sec_order.get(section, [])]
+        src_by_key = {_diff_key(el, spec): el for el in src_els}
+        for d_el in dst_els:
+            if not _element_ignored(d_el, section, ignore):
+                continue
+            key = _diff_key(d_el, spec)
+            label = _diff_key_label(key, spec)
+            if key in src_by_key:
+                # Replace in place: the destination value wins for ignored
+                # entries (the source's change is NOT propagated).
+                old = src_by_key[key]
+                parent = old.getparent()
+                idx = list(parent).index(old)
+                parent.remove(old)
+                parent.insert(idx, deepcopy(d_el))
+            else:
+                # The source does not declare it: append it after the section's
+                # last element (so the deliverable states the destination value
+                # explicitly instead of relying on deploy-merge omission).
+                slots = sec_order.get(section)
+                if slots:
+                    anchor = slots[-1][1]
+                    idx = list(root).index(anchor)
+                    root.insert(idx + 1, deepcopy(d_el))
+                    slots.append((idx + 1, root[idx + 1]))
+                else:
+                    root.append(deepcopy(d_el))
+                    sec_order.setdefault(section, []).append((len(root) - 1, root[-1]))
+            patched.setdefault(section, []).append(label)
+    etree.indent(root, space='    ')
+    return tostring_xml(root), {s: sorted(set(v)) for s, v in patched.items()}
+
+
 def _diff_key_label(key, spec):
     """Human-readable rendering of a diff key (see ``_diff_key``)."""
     if spec is _LAYOUT_ASSIGNMENT_KEY:
@@ -1504,7 +1560,10 @@ def format_ops_table(ops, show_verdict=None, omit_operation=False):
     extra VERDICT column is added, unless ``show_verdict`` is explicitly False
     (e.g. when the section header already states the verdict). ``omit_operation``
     drops the MANUAL OPERATION column (used when the explanation is stated once
-    in the section header instead of being repeated on every row)."""
+    in the section header instead of being repeated on every row). The WHERE
+    column is intentionally NOT rendered (the verdict is the actionable bit);
+    rows are ordered by verdict (REDUNDANT first, then NEEDS CHECK, then
+    unclassified), each group by section and item."""
     if show_verdict is None:
         show_verdict = any('verdict' in o for o in ops)
     header = ['SECTION', 'ITEM']
@@ -1512,7 +1571,6 @@ def format_ops_table(ops, show_verdict=None, omit_operation=False):
         header.append('MANUAL OPERATION')
     if show_verdict:
         header.append('VERDICT')
-    header.append('WHERE')
 
     def _row(o):
         r = [o['section'], o['item']]
@@ -1520,10 +1578,14 @@ def format_ops_table(ops, show_verdict=None, omit_operation=False):
             r.append(o['operation'])
         if show_verdict:
             r.append(o.get('verdict', '-'))
-        r.append(o['where'])
         return r
 
-    rows = [_row(o) for o in ops]
+    def _sort_key(o):
+        v = o.get('verdict') or ''
+        rank = 0 if v.startswith('REDUNDANT') else 1 if v == 'NEEDS CHECK' else 2
+        return (rank, o['section'], o['item'])
+
+    rows = [_row(o) for o in sorted(ops, key=_sort_key)]
     widths = [max(len(str(h)), max((len(str(r[i])) for r in rows), default=0))
               for i, h in enumerate(header)]
 

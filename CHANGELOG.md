@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.1] - 2026-11-24
+
+### Changed
+
+- Plain prune on a Profile with `--ignore` now STATES the destination's values
+  for the ignored entries in the final deliverable (explicit and auditable)
+  instead of silently omitting them: the destination Profile is retrieved and
+  pruned against itself, the deliverable is patched (entry replaced in place
+  when shared, appended when destination-only), the patched file is dry-run
+  validated, and the WIC reports them under PRESERVED.
+- Same-type plain prune (Profile output) now dry-run validates the FINAL
+  deliverable AFTER the read-only field normalization: previously the
+  authoritative gate ran before the `editable=false` rewrites, so the file that
+  ships was never re-validated after being modified.
+- The manual-operations table in the reports no longer renders the WHERE column
+  and is ordered by verdict (REDUNDANT first, then NEEDS CHECK, then
+  unclassified).
+
 ## [2.22.0] - 2026-11-24
 
 ### Added

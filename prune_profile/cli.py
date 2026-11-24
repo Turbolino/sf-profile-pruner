@@ -66,7 +66,7 @@ from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     field_permissions_editable, field_permissions_names,
                     license_mismatch, merge_profiles, metadata_license,
                     normalize_profile_read_only, normalized_field_changes,
-                    removed_non_alignable,
+                    patch_ignored_entries, removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
@@ -843,40 +843,32 @@ def _validate_and_heal_deliverable(sf, args, deliverable_path, profile_name,
     return final_path
 
 
-def _preserve_dest_merge(sf, args, src_clean, dest_profile_name, dest_org,
-                         out_dir, logger):
-    """Plain prune on an authoritative PermissionSet: keep destination-only
-    permissions instead of revoking them.
-
-    A PermissionSet deploy is authoritative (anything absent from the file is
-    REVOKED), so shipping only the pruned source would silently revoke every
-    permission the destination holds but the source does not declare. To avoid
-    that, retrieve the destination, prune it against itself (drop its own
-    dangling references), and merge it UNDER the source with
-    ``preserve_dest_only=True``. Returns ``(final_deliverable_path,
-    preserved_members)`` where ``preserved_members`` is the
-    ``{section: [member, ...]}`` map from :func:`dest_only_members`.
-    """
+def _retrieve_pruned_dest(sf, args, mdtype, dest_profile_name, dest_org,
+                          out_dir, logger):
+    """Retrieve the destination Profile/PermissionSet and prune it against
+    itself (drop its own dangling references). Returns ``(dst_clean_path,
+    dest_missing)``. Shared by the PermissionSet preserve-merge and the
+    Profile ignore-patch."""
     username, uerr = org_username(sf, dest_org)
     if not username:
         print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
         sys.exit(2)
     dest_dir = os.path.join(out_dir, '2-destination-retrieved')
     os.makedirs(dest_dir, exist_ok=True)
-    logger.log('  - retrieving destination PermissionSet %r from %s (preserve only)...'
-               % (dest_profile_name, dest_org))
+    logger.log('  - retrieving destination %s %r from %s (preserve only)...'
+               % (mdtype, dest_profile_name, dest_org))
     clean = not args.full_profile
     dest_profiles, derr = retrieve_profiles(username, [dest_profile_name],
-                                            clean=clean, mdtype='PermissionSet')
+                                            clean=clean, mdtype=mdtype)
     dest_missing = not dest_profiles
     if dest_missing:
         _warn_destination_missing(
-            logger, args.quiet, 'PermissionSet', dest_profile_name, dest_org,
+            logger, args.quiet, mdtype, dest_profile_name, dest_org,
             'nothing to preserve (it will be created from the source)')
-    dest_raw = os.path.join(dest_dir, meta_filename('PermissionSet', dest_profile_name))
+    dest_raw = os.path.join(dest_dir, meta_filename(mdtype, dest_profile_name))
     with open(dest_raw, 'wb') as _f:
         if dest_missing:
-            _f.write(_empty_metadata_xml('PermissionSet', dest_profile_name))
+            _f.write(_empty_metadata_xml(mdtype, dest_profile_name))
         else:
             _f.write(dest_profiles[0][1])
 
@@ -894,7 +886,25 @@ def _preserve_dest_merge(sf, args, src_clean, dest_profile_name, dest_org,
         print('ERROR: destination prune failed: %s'
               % (dst_res.get('reason') or 'unknown error'))
         sys.exit(2)
-    dst_clean = dst_res['common_profile_path']
+    return dst_res['common_profile_path'], dest_missing
+
+
+def _preserve_dest_merge(sf, args, src_clean, dest_profile_name, dest_org,
+                         out_dir, logger):
+    """Plain prune on an authoritative PermissionSet: keep destination-only
+    permissions instead of revoking them.
+
+    A PermissionSet deploy is authoritative (anything absent from the file is
+    REVOKED), so shipping only the pruned source would silently revoke every
+    permission the destination holds but the source does not declare. To avoid
+    that, retrieve the destination, prune it against itself (drop its own
+    dangling references), and merge it UNDER the source with
+    ``preserve_dest_only=True``. Returns ``(final_deliverable_path,
+    preserved_members)`` where ``preserved_members`` is the
+    ``{section: [member, ...]}`` map from :func:`dest_only_members`.
+    """
+    dst_clean, dest_missing = _retrieve_pruned_dest(
+        sf, args, 'PermissionSet', dest_profile_name, dest_org, out_dir, logger)
 
     merged_xml, _manual_ops, _changes = merge_profiles(
         src_clean, dst_clean, dest_env=dest_org, preserve_dest_only=True)
@@ -909,6 +919,35 @@ def _preserve_dest_merge(sf, args, src_clean, dest_profile_name, dest_org,
     final_path = _validate_and_heal_deliverable(
         sf, args, merge_path, dest_profile_name, 'PermissionSet', dest_org,
         out_dir, logger)
+    return final_path, preserved
+
+
+def _patch_ignored_profile(sf, args, deliverable_path, dest_profile_name,
+                           dest_org, out_dir, logger, ignore):
+    """Plain prune on a Profile with ``--ignore``: the final deliverable states
+    the DESTINATION's values for the ignored entries (explicit and auditable)
+    instead of silently omitting them.
+
+    Retrieve + prune the destination Profile, patch the deliverable (replace
+    in place / append, via :func:`patch_ignored_entries`), and dry-run validate
+    the patched file. Returns ``(final_deliverable_path, preserved_map)``.
+    """
+    dst_clean, dest_missing = _retrieve_pruned_dest(
+        sf, args, 'Profile', dest_profile_name, dest_org, out_dir, logger)
+    if dest_missing:
+        logger.log('  OK: destination Profile missing - nothing to patch.')
+        return deliverable_path, {}
+    xml, preserved = patch_ignored_entries(deliverable_path, dst_clean, ignore)
+    patch_path = os.path.join(out_dir, '.work',
+                              'patched-%s' % meta_filename('Profile', dest_profile_name))
+    os.makedirs(os.path.dirname(patch_path), exist_ok=True)
+    with open(patch_path, 'wb') as _f:
+        _f.write(xml)
+    n = sum(len(v) for v in preserved.values())
+    logger.log('  OK: %d ignored entry(ies) set to the destination value.' % n)
+    final_path = _validate_and_heal_deliverable(
+        sf, args, patch_path, dest_profile_name, 'Profile', dest_org, out_dir,
+        logger)
     return final_path, preserved
 
 
@@ -2055,26 +2094,38 @@ def _main():
     # Cross-type plain prune (Profile<->PermissionSet): convert the clean source
     # into the destination metadata type, then validate the CONVERTED deliverable
     # with a dry-run (self-heal + retry on error) so the 4-merged file is
-    # deployable AS the destination type. Same-type runs keep the source as-is
-    # (it is already validated by prune_stage's built-in final gate).
+    # deployable AS the destination type. Same-type runs keep the source as-is.
     deliverable_path = result['common_profile_path']
-    if result['outcome'] == 'SUCCESS' and src_mdtype != dest_mdtype:
-        converted = _convert_prune_deliverable(
-            sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
-            dest_profile_name, dest_org, out_dir, logger)
-        deliverable_path = _validate_and_heal_deliverable(
-            sf, args, converted, dest_profile_name, dest_mdtype, dest_org,
-            out_dir, logger)
-
-    # PermissionSet output is authoritative: preserve destination-only
-    # permissions (never revoke them) instead of shipping only the pruned
-    # source. A Profile output needs nothing here (deploy merge = omission is
-    # already a no-op that leaves the destination untouched).
     preserved = {}
-    if result['outcome'] == 'SUCCESS' and dest_mdtype == 'PermissionSet':
-        deliverable_path, preserved = _preserve_dest_merge(
-            sf, args, deliverable_path, dest_profile_name, dest_org, out_dir,
-            logger)
+    if result['outcome'] == 'SUCCESS':
+        if src_mdtype != dest_mdtype:
+            converted = _convert_prune_deliverable(
+                sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
+                dest_profile_name, dest_org, out_dir, logger)
+            deliverable_path = _validate_and_heal_deliverable(
+                sf, args, converted, dest_profile_name, dest_mdtype, dest_org,
+                out_dir, logger)
+        elif dest_mdtype == 'PermissionSet':
+            # PermissionSet output is authoritative: preserve destination-only
+            # permissions (never revoke them) instead of shipping only the
+            # pruned source.
+            deliverable_path, preserved = _preserve_dest_merge(
+                sf, args, deliverable_path, dest_profile_name, dest_org, out_dir,
+                logger)
+        elif dest_mdtype == 'Profile' and ignore:
+            # Profile output with --ignore: the ignored entries get the
+            # DESTINATION's values (explicit, auditable).
+            deliverable_path, preserved = _patch_ignored_profile(
+                sf, args, deliverable_path, dest_profile_name, dest_org, out_dir,
+                logger, ignore)
+        else:
+            # Same-type Profile: prune_stage's internal gate ran BEFORE the
+            # read-only normalization rewrote the editable flags. Re-validate
+            # the FINAL deliverable so the authoritative dry-run always sees
+            # exactly what ships.
+            deliverable_path = _validate_and_heal_deliverable(
+                sf, args, deliverable_path, dest_profile_name, dest_mdtype,
+                dest_org, out_dir, logger)
 
     # ---------- already clean? (resume short-circuit) ----------
     if result['already_clean'] and not do_deploy:
@@ -2162,6 +2213,16 @@ def _main():
                 deliverable_path, preserved = _preserve_dest_merge(
                     sf, args, deliverable_path, dest_profile_name, dest_org,
                     out_dir, logger)
+            elif dest_mdtype == 'Profile' and ignore:
+                deliverable_path, preserved = _patch_ignored_profile(
+                    sf, args, deliverable_path, dest_profile_name, dest_org,
+                    out_dir, logger, ignore)
+            elif dest_mdtype == 'Profile':
+                # Re-validate after the read-only normalization (same as the
+                # main flow): the dry-run must see the FINAL deliverable.
+                deliverable_path = _validate_and_heal_deliverable(
+                    sf, args, deliverable_path, dest_profile_name, dest_mdtype,
+                    dest_org, out_dir, logger)
             new_sig = _sig(deliverable_path)
             if new_sig == prev_sig:
                 result_state = 'DEPLOY_FAILED'
