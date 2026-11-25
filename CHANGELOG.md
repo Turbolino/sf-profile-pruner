@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.2] - 2026-11-25
+
+### Fixed
+
+- The merge (plain prune and align) no longer hoists the tab section
+  (`tabVisibilities` / `tabSettings`) to the top of the output file: it is now
+  emitted at its original document position. The previous behaviour reordered
+  the deliverable against the source file and produced spurious git
+  additions/removals for entries that were not touched at all.
+
 ## [2.22.1] - 2026-11-24
 
 ### Fixed

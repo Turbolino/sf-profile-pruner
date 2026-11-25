@@ -1653,6 +1653,37 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(changes, [])
         self.assertEqual(manual_ops, [])
 
+    def test_merge_preserves_document_order_with_tabs_in_place(self):
+        # Regression: the tab section must keep its original document position.
+        # It used to be hoisted to the top of the merged file, which reordered
+        # the output and produced spurious git adds/removes for entries that
+        # were not touched at all.
+        sections = ('<classAccesses><apexClass>A</apexClass><enabled>true</enabled></classAccesses>\n'
+                    '<fieldPermissions><field>Acc.F__c</field><readable>true</readable><editable>true</editable></fieldPermissions>\n'
+                    '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+                    '<userPermissions><enabled>true</enabled><name>ViewSetup</name></userPermissions>')
+        xml, _, _ = self._merge(sections, sections)
+        root = pp.etree.fromstring(xml)
+        order = [c.tag.split('}')[-1] for c in root]
+        self.assertEqual(order, ['classAccesses', 'fieldPermissions',
+                                 'tabVisibilities', 'userPermissions'])
+
+    def test_ps_plain_preserve_keeps_tab_settings_position(self):
+        # PermissionSet plain prune (preserve_dest_only=True): tabSettings sits
+        # in the middle of the document and must stay there in the merged file.
+        body = ('<classAccesses><apexClass>A</apexClass><enabled>true</enabled></classAccesses>\n'
+                '<tabSettings><tab>standard-Account</tab><visibility>Available</visibility></tabSettings>\n'
+                '<userPermissions><enabled>true</enabled><name>ViewSetup</name></userPermissions>')
+        src = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+               '<PermissionSet xmlns="%s">\n%s\n</PermissionSet>\n' % (self.NS, body))
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, 's.xml'); dp = os.path.join(d, 'd.xml')
+            write_text(sp, src); write_text(dp, src)
+            xml, _, _ = pp.merge_profiles(sp, dp, preserve_dest_only=True)
+        root = pp.etree.fromstring(xml)
+        order = [c.tag.split('}')[-1] for c in root]
+        self.assertEqual(order, ['classAccesses', 'tabSettings', 'userPermissions'])
+
     def test_read_only_field_editable_not_diffed(self):
         # A read-only field (e.g. compound address) with editable=true on BOTH
         # sides: normalization forces false in the merged, but the editable

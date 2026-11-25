@@ -321,14 +321,15 @@ def _make_tab_off_element(tab, mdtype):
     return ne
 
 
-def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
-    """Merge the tab section (tabVisibilities / tabSettings) into `out`.
+def _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
+    """Merge the tab section (tabVisibilities / tabSettings).
 
     Source is authoritative and re-materialised in the destination schema; a
     destination-only tab that is not already off (level 0) is turned OFF. A
     source-only tab at level 0 is skipped (absence already means "off"), while
     a source-only tab at level 1 or 2 is carried over (a real grant / available
-    state to replicate). Returns nothing (appends to `out` and `changes`)."""
+    state to replicate). Returns the merged elements (appends to `changes`);
+    the caller emits them at the tab section's original document position."""
     src_els = src_groups.get(tab_section(src_mdtype), [])
     dst_els = dst_groups.get(tab_section(dst_mdtype), [])
     src_by_tab = {_txt(el, 'tab'): el for el in src_els}
@@ -345,8 +346,6 @@ def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
         if _tab_level(_txt(d_el, 'visibility'), dst_mdtype) == 0:
             continue  # already off in the destination: no change to report
         merged.append(_make_tab_off_element(tab, dst_mdtype))
-    for m_el in merged:
-        out.append(m_el)
 
     # Level-based diff: a change is recorded only when the semantic level moves.
     merged_by_tab = {_txt(e, 'tab'): e for e in merged}
@@ -367,6 +366,7 @@ def _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
             'element': deepcopy(m_el) if m_el is not None else deepcopy(d_el),
             'old_values': {'visibility': old},
         })
+    return merged
 
 
 def _normalize_tab_section(groups, mdtype):
@@ -969,13 +969,20 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     for s in dst_groups:
         if s not in sections:
             sections.append(s)
+    ordered_sections = list(sections)  # full document order, tab sections included
 
     # The tab section is the one schema difference between Profile and
-    # PermissionSet: handle it once (special-case), before the generic loop.
+    # PermissionSet: merge it once (special-case), but emit it at its original
+    # document position - hoisting it to the top of the file would reorder the
+    # output and turn every untouched entry into spurious git adds/removes.
     tab_sections_present = [s for s in sections if s in ('tabVisibilities', 'tabSettings')]
     sections = [s for s in sections if s not in ('tabVisibilities', 'tabSettings')]
+    tab_els = None
+    emit_tabs_before = set()
     if tab_sections_present:
-        _merge_tabs(out, src_groups, dst_groups, src_mdtype, dst_mdtype, changes)
+        tab_els = _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype, changes)
+        first_tab_idx = ordered_sections.index(tab_sections_present[0])
+        emit_tabs_before = set(ordered_sections[first_tab_idx + 1:])
 
     # Profile-only sections have no PermissionSet counterpart: they must never
     # be injected into a PermissionSet output (an invalid PS). In a Profile ->
@@ -1000,7 +1007,11 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
         # have no Profile counterpart and must not leak into the Profile output.
         sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
 
+    tabs_emitted = tab_els is None
     for section in sections:
+        if not tabs_emitted and section in emit_tabs_before:
+            out.extend(tab_els)
+            tabs_emitted = True
         src_els = src_groups.get(section, [])
         dst_els = dst_groups.get(section, [])
 
@@ -1216,6 +1227,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             else:
                 for el in dst_els:
                     out.append(deepcopy(el))
+
+    if not tabs_emitted:
+        # The tab section was the last one in the source document (or every
+        # section after it was filtered out): emit it at the end, matching its
+        # original position relative to the surviving sections.
+        out.extend(tab_els or [])
 
     etree.indent(out, space='    ')
     xml = tostring_xml(out)
