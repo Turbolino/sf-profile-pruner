@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **objectPermissions OFF entries state ``viewAllFields=false`` too** (an
   omitted flag would revoke it on a PermissionSet deploy and leave it
   untouched on a Profile deploy - neither is a correct explicit OFF).
+- **Mixed (Profile<->PermissionSet) runs are unchanged**: the conversion path
+  keeps its pre-2.22.3 behaviour (convert + validate; destination PS
+  preserve-merge and ``--ignore`` patch only where they applied before).
 
 ## [2.22.2] - 2026-11-25
 

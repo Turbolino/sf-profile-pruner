@@ -67,7 +67,7 @@ from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     field_permissions_editable, field_permissions_names,
                     license_mismatch, merge_profiles, metadata_license,
                     normalize_profile_read_only, normalized_field_changes,
-                    removed_non_alignable,
+                    patch_ignored_entries, removed_non_alignable,
                     render_diff_report, render_diff_summary, write_diff_json,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
@@ -935,6 +935,35 @@ def _preserve_dest_merge(sf, args, src_clean, dest_profile_name, dest_org,
     final_path = _validate_and_heal_deliverable(
         sf, args, merge_path, dest_profile_name, mdtype, dest_org,
         out_dir, logger)
+    return final_path, preserved
+
+
+def _patch_ignored_profile(sf, args, deliverable_path, dest_profile_name,
+                           dest_org, out_dir, logger, ignore):
+    """Plain prune on a Profile with ``--ignore``, MIXED runs only: the final
+    deliverable states the DESTINATION's values for the ignored entries
+    (explicit and auditable) instead of silently omitting them.
+
+    Retrieve + prune the destination Profile, patch the deliverable (replace
+    in place / append, via :func:`patch_ignored_entries`), and dry-run validate
+    the patched file. Returns ``(final_deliverable_path, preserved_map)``.
+    """
+    dst_clean, dest_missing = _retrieve_pruned_dest(
+        sf, args, 'Profile', dest_profile_name, dest_org, out_dir, logger)
+    if dest_missing:
+        logger.log('  OK: destination Profile missing - nothing to patch.')
+        return deliverable_path, {}
+    xml, preserved = patch_ignored_entries(deliverable_path, dst_clean, ignore)
+    patch_path = os.path.join(out_dir, '.work',
+                              'patched-%s' % meta_filename('Profile', dest_profile_name))
+    os.makedirs(os.path.dirname(patch_path), exist_ok=True)
+    with open(patch_path, 'wb') as _f:
+        _f.write(xml)
+    n = sum(len(v) for v in preserved.values())
+    logger.log('  OK: %d ignored entry(ies) set to the destination value.' % n)
+    final_path = _validate_and_heal_deliverable(
+        sf, args, patch_path, dest_profile_name, 'Profile', dest_org, out_dir,
+        logger)
     return final_path, preserved
 
 
@@ -2186,10 +2215,30 @@ def _main():
                 deliverable_path = _convert_prune_deliverable(
                     sf, args, src_mdtype, dest_mdtype, result['common_profile_path'],
                     dest_profile_name, dest_org, out_dir, logger)
-            if dest_mdtype in ('PermissionSet', 'Profile'):
+            if src_mdtype == dest_mdtype and dest_mdtype in ('PermissionSet', 'Profile'):
+                # Same-type (non-mixed): destination-preserving merge.
                 deliverable_path, preserved = _preserve_dest_merge(
                     sf, args, deliverable_path, dest_profile_name, dest_org,
                     out_dir, logger, mdtype=dest_mdtype)
+            elif dest_mdtype == 'PermissionSet':
+                # Mixed source Profile -> destination PermissionSet: unchanged
+                # pre-2.22.3 behaviour (preserve the destination PS).
+                deliverable_path, preserved = _preserve_dest_merge(
+                    sf, args, deliverable_path, dest_profile_name, dest_org,
+                    out_dir, logger, mdtype='PermissionSet')
+            elif dest_mdtype == 'Profile' and ignore:
+                # Mixed source PermissionSet -> destination Profile with
+                # --ignore: unchanged pre-2.22.3 behaviour (patch the ignored
+                # entries with the destination value).
+                deliverable_path, preserved = _patch_ignored_profile(
+                    sf, args, deliverable_path, dest_profile_name, dest_org,
+                    out_dir, logger, ignore)
+            else:
+                # Mixed source PermissionSet -> destination Profile: unchanged
+                # pre-2.22.3 behaviour (validate the converted deliverable).
+                deliverable_path = _validate_and_heal_deliverable(
+                    sf, args, deliverable_path, dest_profile_name, dest_mdtype,
+                    dest_org, out_dir, logger)
             new_sig = _sig(deliverable_path)
             if new_sig == prev_sig:
                 result_state = 'DEPLOY_FAILED'
