@@ -321,15 +321,20 @@ def _make_tab_off_element(tab, mdtype):
     return ne
 
 
-def _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
+def _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype, changes,
+                preserve_dest_only=False):
     """Merge the tab section (tabVisibilities / tabSettings).
 
-    Source is authoritative and re-materialised in the destination schema; a
-    destination-only tab that is not already off (level 0) is turned OFF. A
-    source-only tab at level 0 is skipped (absence already means "off"), while
-    a source-only tab at level 1 or 2 is carried over (a real grant / available
-    state to replicate). Returns the merged elements (appends to `changes`);
-    the caller emits them at the tab section's original document position."""
+    Source is authoritative and re-materialised in the destination schema.
+    With ``preserve_dest_only`` (plain prune), every destination-only tab is
+    kept VERBATIM at its destination level. Otherwise (align), every
+    destination-only tab is materialized at level 0 (OFF) - including tabs
+    that were already off, so the deliverable states every destination entry.
+    A source-only tab at level 0 is skipped (absence already means "off"),
+    while a source-only tab at level 1 or 2 is carried over (a real grant /
+    available state to replicate). Returns the merged elements (appends to
+    `changes`); the caller emits them at the tab section's original document
+    position."""
     src_els = src_groups.get(tab_section(src_mdtype), [])
     dst_els = dst_groups.get(tab_section(dst_mdtype), [])
     src_by_tab = {_txt(el, 'tab'): el for el in src_els}
@@ -343,8 +348,10 @@ def _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype, changes):
     for tab, d_el in dst_by_tab.items():
         if tab in src_by_tab:
             continue
-        if _tab_level(_txt(d_el, 'visibility'), dst_mdtype) == 0:
-            continue  # already off in the destination: no change to report
+        if preserve_dest_only:
+            # Plain prune never revokes: keep the destination tab verbatim.
+            merged.append(_convert_tab_element(d_el, dst_mdtype, dst_mdtype))
+            continue
         merged.append(_make_tab_off_element(tab, dst_mdtype))
 
     # Level-based diff: a change is recorded only when the semantic level moves.
@@ -900,15 +907,17 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     """Merge a pruned source profile with a pruned destination profile.
 
     Source is authoritative: every source entry is kept verbatim; every
-    destination-only entry is turned off (alignable sections) or recorded as a
-    manual operation (non-alignable sections). Destination-only entries that
-    are already off are skipped (no change).
+    destination-only entry is materialized OFF (alignable sections) or
+    recorded as a manual operation (non-alignable sections). A
+    destination-only entry that is already off is materialized OFF anyway
+    (an explicit no-op) so the deliverable states every entry the
+    destination values.
 
-    With ``preserve_dest_only=True`` (plain prune on an authoritative
-    PermissionSet), destination-only entries are KEPT VERBATIM instead of being
-    turned off: the merged file is a union that never revokes anything the
-    destination already grants. This is the opposite of the alignment semantic
-    (which turns destination-only entries OFF on purpose).
+    With ``preserve_dest_only=True`` (plain prune, non-mixed runs), the
+    destination-only entries are KEPT VERBATIM instead of being turned off:
+    the merged file is a union that never revokes anything the destination
+    already grants. This is the opposite of the alignment semantic (which
+    turns destination-only entries OFF on purpose).
 
     ``ignore`` (optional) is a ``{BLOCK_MAP_type: set(member)}`` map (from
     ``--ignore``). Ignored entries are removed from the SOURCE (so the source's
@@ -980,7 +989,8 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
     tab_els = None
     emit_tabs_before = set()
     if tab_sections_present:
-        tab_els = _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype, changes)
+        tab_els = _merge_tabs(src_groups, dst_groups, src_mdtype, dst_mdtype,
+                              changes, preserve_dest_only=preserve_dest_only)
         first_tab_idx = ordered_sections.index(tab_sections_present[0])
         emit_tabs_before = set(ordered_sections[first_tab_idx + 1:])
 
@@ -1022,6 +1032,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             # the off-value map.
             if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
                 off_fields = {k: v for k, v in off_fields.items() if k != 'default'}
+            # objectPermissions also carry viewAllFields: an OFF entry must
+            # state it explicitly (omitting it from a PermissionSet deploy
+            # would REVOKE it, omitting it from a Profile deploy would leave
+            # the destination value untouched - neither is "off").
+            if section == 'objectPermissions':
+                off_fields = dict(off_fields, viewAllFields='false')
             # userPermissions are license-bound on a Profile and a PermissionSet
             # has no license: in a PS -> Profile align, dest-only userPermissions
             # cannot be turned off, so they are preserved verbatim. Source-only /
@@ -1082,10 +1098,6 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 # off).
                 if _element_ignored(el, section, ignore):
                     merged_section.append(deepcopy(el))
-                    continue
-                # Skip destination-only entries that are already fully off:
-                # turning them off again is a no-op, not a change to report.
-                if all(_txt(el, f) in ('', off_val) for f, off_val in off_fields.items()):
                     continue
                 # In PS -> Profile, userPermissions are license-bound and cannot
                 # be turned off: preserve a dest-only userPermission verbatim.
@@ -1183,6 +1195,12 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                             },
                         })
                 else:
+                    if preserve_dest_only:
+                        # Plain prune never revokes: a destination-only layout
+                        # assignment cannot be turned off by a deploy, so it is
+                        # kept verbatim with the destination value.
+                        out.append(deepcopy(d_el))
+                        continue
                     # REMOVE: destination-only slot. A Profile deploy cannot turn
                     # an assignment off, so this is a manual operation.
                     manual_ops.append(_describe_entry(section, d_el))
@@ -1201,6 +1219,13 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
                 out.append(deepcopy(el))
             for el in dst_els:
                 if _entry_key(el, keys) not in src_keys:
+                    if preserve_dest_only:
+                        # Plain prune never revokes: a destination-only entry in
+                        # a section with no deploy-able off value is kept
+                        # verbatim with the destination value (no manual action
+                        # to report - nothing changes in the destination).
+                        out.append(deepcopy(el))
+                        continue
                     manual_ops.append(_describe_entry(section, el))
                     change = {
                         'kind': 'removed',
@@ -1784,8 +1809,8 @@ def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env,
     """Write the what-is-changed report for a plain prune (no merge): the
     dangling references removed from the profile, the read-only field
     ``editable`` flags normalized to ``false``, the destination-only entries
-    PRESERVED verbatim (PermissionSet plain prune only), and the non-alignable
-    manual operations. Returns the path.
+    PRESERVED verbatim (both metadata types, non-mixed runs), and the
+    non-alignable manual operations. Returns the path.
 
     ``removed_by_type`` maps a metadata type name to an iterable of removed
     member names. ``normalized`` is a list of ``{field, old, new}`` from
@@ -1820,10 +1845,12 @@ def write_prune_what_is_changed(path, removed_by_type, manual_ops, dest_env,
                  % total_preserved)
     if preserved:
         lines.append('')
-        lines.append('  A PermissionSet deploy is authoritative: every permission absent')
-        lines.append('  from the file is REVOKED. These entries exist only in the')
-        lines.append('  destination, so the cleaned PermissionSet keeps them with the')
-        lines.append('  destination value (the source does not change or revoke them).')
+        lines.append('  These entries exist only in the destination, so the cleaned file')
+        lines.append('  keeps them with the destination value (the source does not')
+        lines.append('  change or revoke them). On a PermissionSet deploy this is')
+        lines.append('  required (anything absent from the file is REVOKED); on a')
+        lines.append('  Profile it makes the deliverable state the destination entries')
+        lines.append('  explicitly instead of leaving them implicit.')
         lines.append('')
         for section in sorted(preserved):
             members = preserved[section]

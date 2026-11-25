@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.3] - 2026-11-25
+
+### Fixed
+
+- **Plain prune on a Profile now preserves destination-only entries** (same
+  non-mixed behaviour as PermissionSet): the destination is retrieved, pruned
+  against itself and merged UNDER the source with ``preserve_dest_only=True``,
+  so the deliverable states EVERY entry the destination values, with the
+  DESTINATION's value - never an explicit OFF (a Profile deploy would revoke
+  it). Non-alignable destination-only sections (layoutAssignments,
+  loginFlows, loginIpRanges, loginHours) are kept verbatim too.
+- **The tab section now honours plain vs align**: a destination-only tab is
+  kept VERBATIM in the plain deliverable (it used to be turned OFF) and
+  materialized OFF in the align deliverable.
+- **Align now materializes destination-only entries that are already off** as
+  explicit no-op OFF entries (they used to be omitted), so in every non-mixed
+  run (Profile->Profile / PermissionSet->PermissionSet) the deliverable is
+  source (minus dangling references, minus --ignore) PLUS every
+  destination-only entry - OFF in align, destination value in plain. The
+  destination's valued entries are the complete universe - no org-wide
+  enumeration is performed.
+- **objectPermissions OFF entries state ``viewAllFields=false`` too** (an
+  omitted flag would revoke it on a PermissionSet deploy and leave it
+  untouched on a Profile deploy - neither is a correct explicit OFF).
+
 ## [2.22.2] - 2026-11-25
 
 ### Fixed

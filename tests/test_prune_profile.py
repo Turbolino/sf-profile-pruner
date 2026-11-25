@@ -1623,19 +1623,91 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(changes[0]['kind'], 'revoke')
         self.assertEqual(changes[0]['old_values'], {'visibility': 'DefaultOn'})
 
-    def test_dest_only_entry_already_off_is_skipped(self):
+    def test_dest_only_entry_already_off_is_kept_off(self):
         xml, manual_ops, changes = self._merge(
             '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>',
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
              '<tabVisibilities><tab>TabB__c</tab><visibility>Hidden</visibility></tabVisibilities>'),
         )
-        # TabB is destination-only but already Hidden: no change, not in output.
+        # TabB is destination-only and already Hidden: the align deliverable
+        # still states it (explicit OFF, an explicit no-op) - every destination
+        # entry is in the file, but nothing is reported as a change.
         root = pp.etree.fromstring(xml)
-        tabs = [el.find('{%s}tab' % self.NS).text
-                for el in root.findall('{%s}tabVisibilities' % self.NS)]
-        self.assertEqual(tabs, ['TabA__c'])
+        tabs = {el.find('{%s}tab' % self.NS).text:
+                el.find('{%s}visibility' % self.NS).text
+                for el in root.findall('{%s}tabVisibilities' % self.NS)}
+        self.assertEqual(tabs['TabA__c'], 'DefaultOn')
+        self.assertEqual(tabs['TabB__c'], 'Hidden')
         self.assertEqual(changes, [])
         self.assertEqual(manual_ops, [])
+
+    def test_plain_preserve_keeps_dest_only_on_tab_verbatim(self):
+        # Plain prune (preserve_dest_only=True): a destination-only ON tab is
+        # kept VERBATIM, never turned off.
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._profile(
+                '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'))
+            write_text(dst, TestMerge._profile(
+                ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+                 '<tabVisibilities><tab>TabB__c</tab><visibility>DefaultOn</visibility></tabVisibilities>')))
+            xml, manual_ops, changes = pp.merge_profiles(
+                src, dst, preserve_dest_only=True)
+        root = pp.etree.fromstring(xml)
+        tabs = {el.find('{%s}tab' % self.NS).text:
+                el.find('{%s}visibility' % self.NS).text
+                for el in root.findall('{%s}tabVisibilities' % self.NS)}
+        self.assertEqual(tabs['TabB__c'], 'DefaultOn')  # verbatim, NOT Hidden
+        self.assertEqual(changes, [])
+        self.assertEqual(manual_ops, [])
+
+    def test_align_materializes_dest_only_already_off_generic_entry(self):
+        # Align: a destination-only entry that is already fully off is
+        # materialized OFF anyway (every destination entry is in the file),
+        # and reported as NO change (its values do not move).
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._profile(
+                '<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>'))
+            write_text(dst, TestMerge._profile(
+                ('<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>\n'
+                 '<classAccesses><apexClass>B_cls</apexClass><enabled>false</enabled></classAccesses>')))
+            xml, manual_ops, changes = pp.merge_profiles(src, dst)
+        root = pp.etree.fromstring(xml)
+        classes = {el.find('{%s}apexClass' % self.NS).text:
+                   el.find('{%s}enabled' % self.NS).text
+                   for el in root.findall('{%s}classAccesses' % self.NS)}
+        self.assertEqual(classes['B_cls'], 'false')  # present, off
+        self.assertEqual(changes, [])
+        self.assertEqual(manual_ops, [])
+
+    def test_align_object_permissions_off_includes_view_all_fields(self):
+        # objectPermissions OFF entries must state viewAllFields=false too:
+        # omitting it from a PermissionSet deploy would revoke it, from a
+        # Profile deploy would leave the destination value untouched.
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._profile(
+                '<objectPermissions><object>Acc</object><allowRead>true</allowRead></objectPermissions>'))
+            write_text(dst, TestMerge._profile(
+                ('<objectPermissions><object>Acc</object><allowRead>true</allowRead></objectPermissions>\n'
+                 '<objectPermissions><object>Other</object><allowRead>false</allowRead>'
+                 '<allowCreate>false</allowCreate><allowEdit>false</allowEdit>'
+                 '<allowDelete>false</allowDelete><viewAllRecords>false</viewAllRecords>'
+                 '<modifyAllRecords>false</modifyAllRecords>'
+                 '<viewAllFields>true</viewAllFields></objectPermissions>')))
+            xml, manual_ops, changes = pp.merge_profiles(src, dst)
+        root = pp.etree.fromstring(xml)
+        offs = {el.find('{%s}object' % self.NS).text: el
+                for el in root.findall('{%s}objectPermissions' % self.NS)}
+        other = offs['Other']
+        self.assertEqual(other.find('{%s}viewAllFields' % self.NS).text, 'false')
+        # the destination had viewAllFields=true -> this IS a reported revoke
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['old_values']['viewAllFields'], 'true')
 
     def test_source_only_entry_already_off_is_skipped(self):
         xml, manual_ops, changes = self._merge(
@@ -1869,6 +1941,58 @@ class TestMerge(unittest.TestCase):
         self.assertIn('page layout assignment', manual_ops[0]['operation'])
         self.assertEqual(len(changes), 1)
         self.assertEqual(changes[0]['kind'], 'removed')
+
+    def test_plain_preserve_keeps_dest_only_layout_assignment_verbatim(self):
+        # Plain prune (preserve_dest_only=True): a destination-only layout
+        # assignment cannot be turned off, so it is KEPT VERBATIM (the plain
+        # deliverable states every destination-valued entry; nothing to do
+        # manually because nothing changes in the destination).
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._profile(
+                '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'))
+            write_text(dst, TestMerge._profile(
+                ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+                 '<layoutAssignments><layout>Account-Account Layout</layout>'
+                 '<recordType>Account.Partner</recordType></layoutAssignments>\n'
+                 '<loginFlows><flow>MyLoginFlow</flow>'
+                 '<friendlyName>L</friendlyName><flowType>Flow</flowType></loginFlows>')))
+            xml, manual_ops, changes = pp.merge_profiles(
+                src, dst, preserve_dest_only=True)
+        root = pp.etree.fromstring(xml)
+        lays = [el for el in root
+                if el.tag == '{%s}layoutAssignments' % self.NS]
+        self.assertEqual(len(lays), 1)
+        self.assertEqual(lays[0].find('{%s}layout' % self.NS).text,
+                         'Account-Account Layout')
+        self.assertEqual(lays[0].find('{%s}recordType' % self.NS).text,
+                         'Account.Partner')
+        flows = [el for el in root if el.tag == '{%s}loginFlows' % self.NS]
+        self.assertEqual(len(flows), 1)
+        self.assertEqual(flows[0].find('{%s}flow' % self.NS).text,
+                         'MyLoginFlow')
+        self.assertEqual(manual_ops, [])
+        self.assertEqual(changes, [])
+
+    def test_align_still_reports_dest_only_non_alignable_as_manual(self):
+        # Align (preserve_dest_only=False, the default): destination-only
+        # loginFlows remain a MANUAL operation (no deploy-able off value).
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._profile(
+                '<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>'))
+            write_text(dst, TestMerge._profile(
+                ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'
+                 '<loginFlows><flow>MyLoginFlow</flow>'
+                 '<friendlyName>L</friendlyName><flowType>Flow</flowType></loginFlows>')))
+            xml, manual_ops, changes = pp.merge_profiles(src, dst)
+        self.assertEqual(len(manual_ops), 1)
+        self.assertEqual(manual_ops[0]['section'], 'loginFlows')
+        self.assertEqual(changes[0]['kind'], 'removed')
+        root = pp.etree.fromstring(xml)
+        self.assertEqual([el for el in root if el.tag == '{%s}loginFlows' % self.NS], [])
 
     def test_layout_change_same_slot_is_deploy_change_not_manual(self):
         """Same object+recordType, DIFFERENT layout: this is a CHANGE the deploy
