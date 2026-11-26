@@ -72,6 +72,9 @@ from .merge import (PROFILE_EXCLUSIVE_SECTIONS,
                     write_diff_xml, write_manual_ops,
                     write_prune_what_is_changed, write_what_is_changed)
 from .parallel import run_parallel
+from .repair import (build_universe, entry_removals_from_failures,
+                     flip_profile_on, grant_missing, strip_flagged_entries,
+                     write_onniscent_wic)
 from .retrieve import retrieve_profiles
 from .sfcli import (deploy, describe_object, dry_run, field_data_types,
                     find_sf, list_metadata, org_api_version, org_username,
@@ -1552,6 +1555,231 @@ def _run_alignment(sf, args, out_dir, source_profile_path, src_profile_name,
     sys.exit(0 if outcome == 'SUCCESS' else 1)
 
 
+def _render_onniscent_gap(sections):
+    """Preambolo ONNISCENT GAP del report diff: quanti permessi mancano
+    (da concedere) e quanti sono parzialmente concessi (da accendere)."""
+    missing = sum(len(d['only_source']) for d in sections.values())
+    partial = sum(len(d['different']) for d in sections.values())
+    return '\n'.join([
+        'ONNISCENT GAP - what the full-access profile has that the current one lacks',
+        '=' * 78,
+        'missing permissions (to grant): %d' % missing,
+        'partially granted (to turn ON):  %d' % partial,
+        '',
+    ])
+
+
+def _onniscent_heal(sf, args, path, profile_name, org, out_dir, logger, dropped):
+    """Dry-run the repaired profile and drop the entries the deploy rejects
+    (targeted per-entry removal, far cheaper than a full self-heal). Falls
+    back to the prune-stage self-heal when a failure is not entry-level.
+    ``dropped`` collects ``(section, member)`` for the report. Returns the
+    final validated path."""
+    current = path
+    cap = args.max_iter if args.max_iter > 0 else 5000
+    for _round in range(cap):
+        validation, cf = _validate_profile_dry_run(
+            sf, org, current, profile_name, args.api_version,
+            args.poll_interval, args.job_timeout, logger, out_dir,
+            mdtype='Profile')
+        if validation == 'clean':
+            logger.log('  OK: repaired profile dry-run clean')
+            return current
+        removals = entry_removals_from_failures(cf)
+        if not removals:
+            break
+        n = strip_flagged_entries(current, removals)
+        shown = ', '.join(sorted({m for _s, _c, _m, m in removals})[:8])
+        logger.log('  WARNING: dry-run not clean; dropped %d entry(ies): %s'
+                   % (n, shown))
+        for section, _child, _mode, member in removals:
+            dropped.append((section, member))
+    logger.log('  WARNING: repaired profile needs a full self-heal...')
+    return _validate_and_heal_deliverable(
+        sf, args, current, profile_name, 'Profile', org, out_dir, logger)
+
+
+def _onniscent_diff(sf, args, out_dir, full_path, profile_name, org, logger,
+                    ignore=None):
+    """``--onniscent --diff``: pure comparison between the current profile and
+    the computed full-access profile. No deliverable, no deploy, exit 0."""
+    diff_dir = os.path.join(out_dir, 'diff')
+    os.makedirs(diff_dir, exist_ok=True)
+    onn_path = os.path.join(diff_dir, 'onniscent-%s'
+                            % meta_filename('Profile', profile_name))
+    shutil.copyfile(full_path, onn_path)
+
+    username, uerr = org_username(sf, org)
+    if not username:
+        print('ERROR: could not resolve the org %r: %s' % (org, uerr))
+        sys.exit(2)
+    current, rerr = retrieve_profiles(username, [profile_name], clean=False,
+                                      mdtype='Profile')
+    current_path = os.path.join(diff_dir, meta_filename('Profile', profile_name))
+    with open(current_path, 'wb') as _f:
+        if not current:
+            _f.write(_empty_metadata_xml('Profile', profile_name))
+        else:
+            _f.write(current[0][1])
+
+    src_label = 'onniscent (computed full access)'
+    dst_label = 'Profile %s "%s" (current)' % (org, profile_name)
+    sections = diff_profiles(onn_path, current_path, ignore=ignore)
+    report_path = os.path.join(diff_dir, 'diff-report.txt')
+    with open(report_path, 'w', encoding='utf-8') as _f:
+        _f.write(_render_onniscent_gap(sections))
+        _f.write('\n')
+        _f.write(render_diff_report(sections, src_label, dst_label))
+        _f.write('\n')
+    write_diff_json(sections, src_label, dst_label, diff_dir)
+    write_diff_xml(sections, src_label, dst_label, diff_dir)
+    print(_render_onniscent_gap(sections))
+    print(render_diff_summary(sections, src_label, dst_label))
+    logger.log('  OK: diff report written: %s' % _rel(out_dir, report_path))
+    sys.exit(0)
+
+
+def _run_onniscent(sf, args, out_dir, logger, ignore=None):
+    """``--onniscent``: bring the destination Profile to FULL access (flip ON
+    every existing permission entry, grant every org element missing from it),
+    drop what the deploy rejects via the targeted heal, and optionally deploy.
+    With ``--diff`` it becomes a pure comparison. Never touches the org
+    without ``--deploy-on-success``."""
+    dest_org = args.dest_org
+    dest_profile_name = args.dest_profile
+
+    logger.log('')
+    logger.log('-- ONNISCENT -------------------------------------------')
+    logger.log('  purpose: bring Profile %r in %s to FULL access'
+               % (dest_profile_name, dest_org))
+    if args.diff:
+        logger.log('  mode: --diff (pure comparison: no deliverable, no deploy)')
+
+    # Update notice + admin warning, exactly like every other mode.
+    logger.log('  - checking for a newer sf-profile-pruner version...')
+    update_lines = _check_for_update()
+    for line in update_lines:
+        print(line, file=sys.stderr)
+    _warn_if_not_admin(sf, dest_org, logger)
+
+    # API version: explicit or detected from the destination org.
+    api_source = 'explicit'
+    if args.api_version is None:
+        logger.log('  - detecting the latest API version from org %s...' % dest_org)
+        args.api_version, averr = org_api_version(sf, dest_org)
+        if args.api_version is None:
+            print('ERROR: could not detect the latest API version from org %r:'
+                  % dest_org)
+            print('       %s' % (averr or 'unknown error'))
+            print('       Pass --api-version <X.Y> explicitly to continue.')
+            sys.exit(2)
+        api_source = 'auto (latest for org)'
+    logger.log('  OK: API v%s (%s)' % (args.api_version, api_source))
+
+    # Retrieve the profile (full: the untouched sections must stay present).
+    username, uerr = org_username(sf, dest_org)
+    if not username:
+        print('ERROR: could not resolve the destination org %r: %s' % (dest_org, uerr))
+        sys.exit(2)
+    logger.log('  - retrieving Profile %r from %s...' % (dest_profile_name, dest_org))
+    profiles, rerr = retrieve_profiles(username, [dest_profile_name],
+                                       clean=False, mdtype='Profile')
+    if not profiles:
+        print('ERROR: Profile %r not found in org %s: %s'
+              % (dest_profile_name, dest_org, rerr or 'no profile returned'))
+        sys.exit(2)
+    original_copy = os.path.join(out_dir, 'ORIGINAL_%s'
+                                 % meta_filename('Profile', dest_profile_name))
+    with open(original_copy, 'wb') as _f:
+        _f.write(profiles[0][1])
+
+    # 1. flip ON every existing permission entry (--ignore excluded).
+    xml, flipped, already_on = flip_profile_on(original_copy, ignore=ignore)
+    work_dir = os.path.join(out_dir, '.work')
+    os.makedirs(work_dir, exist_ok=True)
+    flipped_path = os.path.join(work_dir, 'onniscent-flipped-%s'
+                                % meta_filename('Profile', dest_profile_name))
+    with open(flipped_path, 'wb') as _f:
+        _f.write(xml)
+    logger.log('  OK: %d entry(ies) turned ON, %d already at full access.'
+               % (sum(flipped.values()), already_on))
+
+    # 2. grant every org element missing from the profile.
+    universe = build_universe(sf, dest_org, args.api_version, logger=logger,
+                              io_threads=args.io_threads_number)
+    xml, granted, synthesized = grant_missing(flipped_path, universe,
+                                              ignore=ignore)
+    full_path = os.path.join(work_dir, 'onniscent-full-%s'
+                             % meta_filename('Profile', dest_profile_name))
+    with open(full_path, 'wb') as _f:
+        _f.write(xml)
+    logger.log('  OK: %d element(s) granted (%d default record type(s) synthesized).'
+               % (sum(granted.values()), synthesized))
+
+    # 3. read-only normalization (default on; --avoid-normalize-ro skips).
+    normalized = 0
+    if not args.avoid_normalize_ro:
+        read_only = _read_only_field_set(sf, dest_org, dest_org, full_path,
+                                         None, logger,
+                                         io_threads=args.io_threads_number)
+        normalized = normalize_profile_read_only(full_path, read_only)
+        logger.log('  OK: %d read-only field(s) normalized to editable=false.'
+                   % normalized)
+    else:
+        logger.log('  - read-only normalization disabled (--avoid-normalize-ro).')
+
+    # 4. --diff: pure comparison, done here (no heal, no deliverable).
+    if args.diff:
+        _onniscent_diff(sf, args, out_dir, full_path, dest_profile_name,
+                        dest_org, logger, ignore=ignore)
+
+    # 5. targeted heal + final validation.
+    dropped = []
+    final_path = _onniscent_heal(sf, args, full_path, dest_profile_name,
+                                 dest_org, out_dir, logger, dropped)
+
+    # 6. finalize 4-merged/ + WIC.
+    merge_dir = os.path.join(out_dir, '4-merged')
+    os.makedirs(merge_dir, exist_ok=True)
+    final_profile = os.path.join(merge_dir,
+                                 meta_filename('Profile', dest_profile_name))
+    shutil.copyfile(final_path, final_profile)
+    normalize_xml_declaration(final_profile)
+    wic_path = write_onniscent_wic(
+        os.path.join(merge_dir, 'what-is-changed.txt'),
+        flipped, granted, dropped, normalized, already_on, synthesized,
+        dest_org)
+    logger.log('  OK: what-is-changed written: %s' % _rel(out_dir, wic_path))
+
+    # 7. optional deploy (only on explicit request, Y/N unless --sure).
+    do_deploy = args.deploy_on_success
+    if do_deploy and not args.sure:
+        if not _confirm('--deploy-on-success will deploy the repaired profile to '
+                        '%s. Deploy? [y/N] ' % dest_org):
+            do_deploy = False
+            print('Deploy skipped: dry-run only.', file=sys.stderr)
+    outcome = 'SUCCESS'
+    deploy_detail = ''
+    if do_deploy:
+        logger.log('  - deploying the repaired profile to %s...' % dest_org)
+        ok, deploy_detail = _deploy_profile(
+            sf, dest_org, final_profile, dest_profile_name, args.api_version,
+            args.poll_interval, args.job_timeout, logger, out_dir,
+            mdtype='Profile')
+        outcome = 'SUCCESS' if ok else 'DEPLOY_FAILED'
+
+    logger.log('========================================================')
+    logger.log('  ONNISCENT RESULT')
+    logger.log('========================================================')
+    logger.log('FLIPPED (turned ON): %d' % sum(flipped.values()))
+    logger.log('GRANTED (added ON) : %d' % sum(granted.values()))
+    logger.log('DROPPED (rejected) : %d' % len(dropped))
+    if deploy_detail:
+        logger.log('DEPLOY: %s' % deploy_detail)
+    logger.log('RESULT:%s' % outcome)
+    sys.exit(0 if outcome == 'SUCCESS' else 1)
+
+
 def _main():
     argv = sys.argv[1:]
     argv, repair_note = _repair_mangled_argv(argv)
@@ -1684,6 +1912,14 @@ def _main():
                        help='compare the source against the destination (read-only): writes '
                             'diff/diff-report.txt + diff/diff-data.json/.xml. No prune, no '
                             'dry-run, no deploy. Works with a source file (via 1) or org (via 2).')
+    g_act.add_argument('--onniscent', action='store_true',
+                       help='bring the destination Profile (-do + -dp) to FULL access: '
+                            'every permission entry present is turned ON and every org '
+                            'element missing from the profile is added ON (enumerated '
+                            'from the org). No source. Entries the deploy rejects are '
+                            'dropped and listed in the report. With --diff it becomes a '
+                            'pure comparison between the current profile and the '
+                            'computed full-access profile (no deliverable, no deploy).')
     g_act.add_argument('--fresh', action='store_true',
                        help='ignore any previous state and restart from the original')
     g_act.add_argument('--avoid-normalize-ro', action='store_true',
@@ -1777,6 +2013,48 @@ def _main():
     if args.diff and args.deploy_on_success:
         print('ERROR: --diff and --deploy-on-success are mutually exclusive.')
         sys.exit(2)
+
+    # --onniscent: no source, Profile-only repair (-do + -dp). Mutually
+    # exclusive with the source-bearing modes; --diff turns it into a pure
+    # comparison between the current profile and the computed full-access one.
+    if args.onniscent:
+        if not args.dest_org:
+            print('ERROR: --onniscent requires --dest-org (-do).')
+            sys.exit(2)
+        if not args.dest_profile:
+            print('ERROR: --onniscent requires --dest-profile (-dp).')
+            sys.exit(2)
+        if args.dest_permissionset:
+            print('ERROR: --onniscent works on Profiles only (-dp), not PermissionSets.')
+            sys.exit(2)
+        if args.src_org or args.src_profile or args.src_permissionset or args.profile_path:
+            print('ERROR: --onniscent has no source: -so/-sp/-sps/-pp are '
+                  'mutually exclusive with it.')
+            sys.exit(2)
+        if args.align_from_source:
+            print('ERROR: --onniscent and --align-from-source are mutually exclusive.')
+            sys.exit(2)
+        if args.new_ps_name:
+            print('ERROR: --onniscent and --new-ps-name are mutually exclusive.')
+            sys.exit(2)
+        if args.force_license_mismatch:
+            print('ERROR: --onniscent and --force-license-mismatch are mutually exclusive.')
+            sys.exit(2)
+
+    # ---------- --onniscent: full-access profile repair (no source) ----------
+    # Dispatched before the source-mode detection, which would otherwise
+    # reject a source-less invocation.
+    if args.onniscent:
+        out_dir = os.path.abspath(args.out_dir or os.getcwd())
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as e:
+            print('ERROR: cannot create output directory %r: %s' % (out_dir, e))
+            sys.exit(2)
+        logger = Logger(args.quiet, os.path.join(out_dir, 'run.log'))
+        sf = find_sf(args.sf)
+        _run_onniscent(sf, args, out_dir, logger, ignore=ignore)
+        sys.exit(1)  # _run_onniscent exits; safety net only
 
     # ---------- mode detection ----------
     # via 1 (file):           -pp + -do

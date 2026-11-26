@@ -1,0 +1,3 @@
+# Keep the source distribution limited to the application itself: the test
+# suite is exercised by CI but must never ship with the published archives.
+prune tests

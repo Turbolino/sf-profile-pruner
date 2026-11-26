@@ -3703,5 +3703,146 @@ class TestPermissionSet(unittest.TestCase):
                 self.assertIn('NEEDS CHECK', {o.get('verdict') for o in ops})
 
 
+class TestOnniscent(unittest.TestCase):
+    """Tests for the --onniscent repair (pure functions only)."""
+
+    NS = 'http://soap.sforce.com/2006/04/metadata'
+
+    @classmethod
+    def _profile(cls, sections_xml):
+        return ('<Profile xmlns="%s">\n%s\n</Profile>\n'
+                % (cls.NS, sections_xml))
+
+    @staticmethod
+    def _flip(xml, ignore=None):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, xml)
+            return pp.flip_profile_on(p, ignore=ignore)
+
+    def test_flip_turns_everything_on_but_keeps_defaults(self):
+        xml, flipped, already = self._flip(self._profile(
+            '<classAccesses><apexClass>A_cls</apexClass><enabled>false</enabled></classAccesses>\n'
+            '<objectPermissions><object>Account</object><allowRead>false</allowRead></objectPermissions>\n'
+            '<fieldPermissions><field>User.Email</field><readable>false</readable><editable>false</editable></fieldPermissions>\n'
+            '<recordTypeVisibilities><recordType>Account.Business</recordType>'
+            '<default>true</default><visible>false</visible></recordTypeVisibilities>\n'
+            '<tabVisibilities><tab>standard-Account</tab><visibility>Hidden</visibility></tabVisibilities>\n'
+            '<layoutAssignments><layout>Lead-Lead Layout</layout></layoutAssignments>\n'
+            '<loginHours><mondayStart>08:00</mondayStart></loginHours>'))
+        r = pp.etree.fromstring(xml)
+        by_obj = {e.findtext('{%s}object' % self.NS): e
+                  for e in r if e.tag == '{%s}objectPermissions' % self.NS}
+        acc = by_obj['Account']
+        for flag in ('allowRead', 'allowCreate', 'allowEdit', 'allowDelete',
+                     'viewAllRecords', 'modifyAllRecords', 'viewAllFields'):
+            self.assertEqual(acc.findtext('{%s}%s' % (self.NS, flag)), 'true')
+        fe = [e for e in r if e.tag == '{%s}fieldPermissions' % self.NS][0]
+        self.assertEqual(fe.findtext('{%s}readable' % self.NS), 'true')
+        self.assertEqual(fe.findtext('{%s}editable' % self.NS), 'true')
+        rt = [e for e in r if e.tag == '{%s}recordTypeVisibilities' % self.NS][0]
+        self.assertEqual(rt.findtext('{%s}visible' % self.NS), 'true')
+        self.assertEqual(rt.findtext('{%s}default' % self.NS), 'true')  # untouched
+        tab = [e for e in r if e.tag == '{%s}tabVisibilities' % self.NS][0]
+        self.assertEqual(tab.findtext('{%s}visibility' % self.NS), 'DefaultOn')
+        # non-permission sections untouched
+        self.assertEqual(len([e for e in r
+                              if e.tag == '{%s}layoutAssignments' % self.NS]), 1)
+        self.assertEqual(len([e for e in r
+                              if e.tag == '{%s}loginHours' % self.NS]), 1)
+        self.assertEqual(flipped, {'classAccesses': 1, 'objectPermissions': 1,
+                                   'fieldPermissions': 1,
+                                   'recordTypeVisibilities': 1,
+                                   'tabVisibilities': 1})
+        self.assertEqual(already, 0)
+
+    def test_flip_counts_already_on_entries(self):
+        xml, flipped, already = self._flip(self._profile(
+            '<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>'))
+        self.assertEqual(flipped, {})
+        self.assertEqual(already, 1)
+
+    def test_flip_respects_ignore(self):
+        ignore = {'ApexClass': {'A_cls'}}
+        xml, flipped, already = self._flip(
+            self._profile('<classAccesses><apexClass>A_cls</apexClass>'
+                          '<enabled>false</enabled></classAccesses>'),
+            ignore=ignore)
+        r = pp.etree.fromstring(xml)
+        fe = [e for e in r if e.tag == '{%s}classAccesses' % self.NS][0]
+        self.assertEqual(fe.findtext('{%s}enabled' % self.NS), 'false')
+        self.assertEqual(flipped, {})
+
+    def test_grant_adds_missing_and_synthesizes_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, self._profile(
+                '<recordTypeVisibilities><recordType>Account.Business</recordType>'
+                '<default>true</default><visible>true</visible></recordTypeVisibilities>'))
+            xml, granted, synth = pp.grant_missing(
+                p, {'classAccesses': ['B_cls'],
+                    'recordTypeVisibilities': ['Account.Business',
+                                               'Case.NewRT', 'Case.OtherRT']})
+        r = pp.etree.fromstring(xml)
+        classes = [e.findtext('{%s}apexClass' % self.NS)
+                   for e in r if e.tag == '{%s}classAccesses' % self.NS]
+        self.assertEqual(classes, ['B_cls'])
+        rts = {e.findtext('{%s}recordType' % self.NS): e
+               for e in r if e.tag == '{%s}recordTypeVisibilities' % self.NS}
+        self.assertEqual(rts['Account.Business'].findtext('{%s}default' % self.NS), 'true')
+        self.assertEqual(rts['Case.NewRT'].findtext('{%s}default' % self.NS), 'true')
+        self.assertIsNone(rts['Case.OtherRT'].find('{%s}default' % self.NS))
+        self.assertEqual(rts['Case.NewRT'].findtext('{%s}visible' % self.NS), 'true')
+        self.assertEqual(synth, 1)
+        self.assertEqual(granted, {'classAccesses': 1, 'recordTypeVisibilities': 2})
+
+    def test_entry_removals_from_failures(self):
+        cf = [
+            {'problem': 'In field: object - no CustomObject named FooShare found'},
+            {'problem': 'Unknown user permission: MysteryPackagePerm'},
+            {'problem': 'You cannot deploy to a required field: '
+                        'SampleObj__c.RequiredFld__c'},
+            {'problem': 'Some other unrelated deploy failure'},
+        ]
+        removals = pp.entry_removals_from_failures(cf)
+        self.assertIn(('objectPermissions', 'object', 'exact', 'FooShare'), removals)
+        self.assertIn(('userPermissions', 'name', 'exact',
+                       'MysteryPackagePerm'), removals)
+        self.assertIn(('fieldPermissions', 'field', 'exact',
+                       'SampleObj__c.RequiredFld__c'), removals)
+
+    def test_strip_flagged_entries(self):
+        xml = self._profile(
+            '<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>\n'
+            '<userPermissions><enabled>true</enabled><name>ViewSetup</name></userPermissions>\n'
+            '<objectPermissions><object>FooShare</object><allowRead>true</allowRead></objectPermissions>')
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'p.xml')
+            write_text(p, xml)
+            n = pp.strip_flagged_entries(p, {
+                ('userPermissions', 'name', 'exact', 'ViewSetup'),
+                ('objectPermissions', 'object', 'exact', 'FooShare'),
+            })
+            self.assertEqual(n, 2)
+            r = pp.etree.parse(p).getroot()
+            self.assertEqual([e.tag.split('}')[-1] for e in r], ['classAccesses'])
+
+    def test_wic_renders_all_sections(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = pp.write_onniscent_wic(
+                os.path.join(d, 'w.txt'),
+                {'classAccesses': 2}, {'userPermissions': 3},
+                [('userPermissions', 'X'), ('fieldPermissions', 'A.B')],
+                4, 7, 1, 'devorg')
+            s = read_text(path)
+        self.assertIn('FLIPPED (turned ON): 2', s)
+        self.assertIn('GRANTED (added ON): 3', s)
+        self.assertIn('DROPPED (rejected by the deploy, removed): 2', s)
+        self.assertIn('userPermissions: X', s)
+        self.assertIn('NORMALIZED (read-only fields rewritten to editable=false): 4', s)
+        self.assertIn('ALREADY ON: 7', s)
+        self.assertIn('SYNTHESIZED DEFAULTS: 1', s)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

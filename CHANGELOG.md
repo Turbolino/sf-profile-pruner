@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.24.1] - 2026-11-27
+
+### Fixed
+
+- Unit tests: every sample name is generic (no org-specific record types,
+  objects or permissions). The test suite never ships with the published
+  archives (``MANIFEST.in`` prunes ``tests/`` from the sdist).
+
+## [2.24.0] - 2026-11-26
+
+### Added
+
+- **`--onniscent`**: bring a destination Profile (`-do <ORG> -dp <PROFILE>`)
+  to FULL admin access with no source. Every permission entry already
+  present is turned ON (objectPermissions get read/create/edit/delete plus
+  viewAllRecords/modifyAllRecords/viewAllFields; fieldPermissions get
+  readable AND editable; tabs become DefaultOn; apps and record types
+  become visible; everything else enabled), and every org element missing
+  from the profile is added ON - enumerated via listMetadata, `sf sobject
+  list` + EntityDefinition (objects / custom settings / custom metadata
+  types), FieldDefinition + sobject describe `permissionable` (required and
+  system-only fields excluded), TabDefinition (standard tabs) and the
+  PermissionSet schema for userPermissions. The `default` app / record-type
+  children of existing entries are never modified; a default record type is
+  synthesized only for objects that had no entry at all (the deploy fails
+  without one). Entries the deploy rejects are dropped by the targeted heal
+  and listed in the report (DROPPED); the run then succeeds. Non-permission
+  sections (layoutAssignments, loginFlows, loginIpRanges, loginHours,
+  userLicense, custom, description) are never touched.
+- **`--onniscent --diff`**: pure comparison between the current profile and
+  the computed full-access profile: writes `diff/onniscent-<Profile>.xml`,
+  `diff/diff-report.txt` with an ONNISCENT GAP preamble (how many
+  permissions are missing / partially granted) and `diff/diff-data.*`. No
+  deliverable, no deploy, exit 0.
+- The usual options apply: `--ignore` (entries excluded from both flip and
+  grant, kept exactly as retrieved), `--avoid-normalize-ro`,
+  `--deploy-on-success [--sure]`, `-od/-tn/-bs/-itn/-av/--poll-interval/
+  --job-timeout`. Mutually exclusive with `-so/-sp/-sps/-pp/
+  --align-from-source/--new-ps-name/--force-license-mismatch`.
+
 ## [2.22.3] - 2026-11-25
 
 ### Changed

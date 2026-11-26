@@ -78,6 +78,9 @@ from .merge import (
 )
 from .retrieve import profile_json_to_xml, retrieve_profiles
 from .parallel import run_parallel
+from .repair import (build_universe, entry_removals_from_failures,
+                     flip_profile_on, grant_missing, strip_flagged_entries,
+                     write_onniscent_wic)
 from .sfcli import (
     _candidate_dirs,
     _node_version,
@@ -156,6 +159,9 @@ __all__ = [
     'write_what_is_changed',
     'write_prune_what_is_changed',
     'prefetch_dangling', 'prefetch_standard_dangling', 'process_section', 'worker',
+    'flip_profile_on', 'grant_missing', 'build_universe',
+    'entry_removals_from_failures', 'strip_flagged_entries',
+    'write_onniscent_wic',
     'profile_json_to_xml', 'retrieve_profiles',
     '_candidate_dirs', '_node_version', '_run_sf', '_sf_invocation',
     'deploy', 'describe_object', 'dry_run', 'field_data_types', 'find_node', 'find_sf',
