@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   position** (it used to come first), so the plain mixed deliverable has the
   same section order as the align mixed one - the option, not the direction,
   determines the output layout too.
+- **Diff report: only-source / only-destination entries now show their field
+  values** (e.g. ``User.Email: readable=true, editable=false``, or an object's
+  full CRUD / viewAll / modifyAll flag set), so the report explains HOW each
+  entry is valued instead of just naming it. The key child is not repeated
+  (it is already the entry label).
 
 ## [2.22.2] - 2026-11-25
 

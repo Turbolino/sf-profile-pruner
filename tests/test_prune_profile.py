@@ -1891,6 +1891,44 @@ class TestMerge(unittest.TestCase):
         self.assertIn('Acc.Z__c', text)
         self.assertIn("source='true' dest='false'", text)
 
+    def test_diff_report_only_entries_show_their_values(self):
+        """The report must explain HOW an only-source / only-dest entry is
+        valued (readable/editable, CRUD flags...), not just list its name.
+        The key child is NOT repeated (already in the label)."""
+        sections = {
+            'fieldPermissions': {
+                'source_count': 1, 'dest_count': 0,
+                'only_source': [{'key': ('User.Email',),
+                                 'values': {'field': 'User.Email',
+                                            'readable': 'true',
+                                            'editable': 'false'}}],
+                'only_dest': [], 'common': [], 'different': [],
+                'key_spec': ['field'],
+            },
+            'objectPermissions': {
+                'source_count': 0, 'dest_count': 1,
+                'only_source': [],
+                'only_dest': [{'key': ('Account',),
+                               'values': {'object': 'Account',
+                                          'allowRead': 'true',
+                                          'allowCreate': 'true',
+                                          'allowEdit': 'true',
+                                          'allowDelete': 'false',
+                                          'viewAllRecords': 'false',
+                                          'modifyAllRecords': 'false'}}],
+                'common': [], 'different': [],
+                'key_spec': ['object'],
+            },
+        }
+        text = pp.render_diff_report(sections, 'src', 'dst')
+        self.assertIn('readable=true, editable=false', text)
+        self.assertIn('allowRead=true', text)
+        self.assertIn('allowDelete=false', text)
+        self.assertIn('modifyAllRecords=false', text)
+        # the key child is shown in the label only, not repeated in the values
+        self.assertNotIn('object=Account', text)
+        self.assertNotIn('field=User.Email', text)
+
     def test_source_only_entry_is_granted(self):
         xml, manual_ops, changes = self._merge(
             ('<tabVisibilities><tab>TabA__c</tab><visibility>DefaultOn</visibility></tabVisibilities>\n'

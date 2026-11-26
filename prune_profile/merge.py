@@ -550,6 +550,36 @@ def _render_diff_key(key):
     return ' / '.join(str(x) for x in key if x)
 
 
+def _render_diff_values(values, key_children):
+    """Render an entry's leaf fields as ``field=value`` pairs for the report.
+    The key children (already shown in the entry label) are omitted, so a
+    ``fieldPermissions`` entry reads ``Acc.X__c: readable=true, editable=false``
+    and an ``objectPermissions`` entry shows every CRUD / viewAll flag. Empty
+    when nothing is left to show."""
+    if not values:
+        return ''
+    excluded = set(key_children or ())
+    parts = ['%s=%s' % (field, val)
+             for field, val in values.items() if field not in excluded]
+    return ', '.join(parts)
+
+
+def _render_diff_only_line(item, key_spec):
+    """One ``only in source/destination`` line: the readable key plus, for
+    structural keys, the entry's field values so the report explains HOW the
+    entry is valued (e.g. which flags are on), not just that it exists."""
+    label = _render_diff_key(item['key'])
+    if not isinstance(item['key'], tuple):
+        # Serialized fallback key (e.g. loginHours): the label already is the
+        # whole element, nothing more to add.
+        return '    - %s' % label
+    key_children = key_spec if isinstance(key_spec, list) else None
+    fields = _render_diff_values(item.get('values') or {}, key_children)
+    if fields:
+        return '    - %s: %s' % (label, fields)
+    return '    - %s' % label
+
+
 def _diff_summary_table(sections):
     """Render only the per-section summary counts as a multi-line string."""
     lines = []
@@ -603,11 +633,11 @@ def render_diff_report(sections, src_label, dst_label, tool_version=None):
         if d['only_source']:
             lines.append('  only in source (%d):' % len(d['only_source']))
             for item in sorted(d['only_source'], key=lambda x: _render_diff_key(x['key'])):
-                lines.append('    - %s' % _render_diff_key(item['key']))
+                lines.append(_render_diff_only_line(item, d['key_spec']))
         if d['only_dest']:
             lines.append('  only in destination (%d):' % len(d['only_dest']))
             for item in sorted(d['only_dest'], key=lambda x: _render_diff_key(x['key'])):
-                lines.append('    - %s' % _render_diff_key(item['key']))
+                lines.append(_render_diff_only_line(item, d['key_spec']))
         if d['common']:
             lines.append('  identical in both (%d): see diff-data.json / diff-data.xml'
                         % len(d['common']))
