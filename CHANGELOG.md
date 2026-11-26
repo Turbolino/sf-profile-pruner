@@ -7,31 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.22.3] - 2026-11-25
 
-### Fixed
+### Changed
 
-- **Plain prune on a Profile now preserves destination-only entries** (same
-  non-mixed behaviour as PermissionSet): the destination is retrieved, pruned
-  against itself and merged UNDER the source with ``preserve_dest_only=True``,
-  so the deliverable states EVERY entry the destination values, with the
-  DESTINATION's value - never an explicit OFF (a Profile deploy would revoke
-  it). Non-alignable destination-only sections (layoutAssignments,
-  loginFlows, loginIpRanges, loginHours) are kept verbatim too.
-- **The tab section now honours plain vs align**: a destination-only tab is
-  kept VERBATIM in the plain deliverable (it used to be turned OFF) and
-  materialized OFF in the align deliverable.
-- **Align now materializes destination-only entries that are already off** as
-  explicit no-op OFF entries (they used to be omitted), so in every non-mixed
-  run (Profile->Profile / PermissionSet->PermissionSet) the deliverable is
-  source (minus dangling references, minus --ignore) PLUS every
-  destination-only entry - OFF in align, destination value in plain. The
-  destination's valued entries are the complete universe - no org-wide
-  enumeration is performed.
+- **One option, one output - regardless of the Profile/PermissionSet
+  combination.** Plain prune and align now behave identically across all four
+  directions (Profile->Profile, PermissionSet->PermissionSet,
+  Profile->PermissionSet, PermissionSet->Profile): the option alone decides
+  what happens to destination-only entries, and the destination's valued
+  entries are the complete universe (no org-wide enumeration).
+  - **plain** (every direction): the source is pruned, converted to the
+    destination type when needed, and the destination - retrieved and pruned
+    against itself - is merged UNDER it with ``preserve_dest_only=True``:
+    every destination-only entry keeps the DESTINATION value, never an
+    explicit OFF (on a Profile deploy that would revoke it). Non-alignable
+    destination-only sections (layoutAssignments, loginFlows, loginIpRanges,
+    loginHours) are kept verbatim too.
+  - **align** (every direction): source-authoritative merge with every
+    destination-only entry materialized OFF (including entries that were
+    already off, now emitted as explicit no-ops; tabs too). In cross-type
+    PermissionSet->Profile aligns the destination-only non-alignable sections
+    are manual operations, exactly like a Profile->Profile align (they used
+    to be kept verbatim).
 - **objectPermissions OFF entries state ``viewAllFields=false`` too** (an
   omitted flag would revoke it on a PermissionSet deploy and leave it
   untouched on a Profile deploy - neither is a correct explicit OFF).
-- **Mixed (Profile<->PermissionSet) runs are unchanged**: the conversion path
-  keeps its pre-2.22.3 behaviour (convert + validate; destination PS
-  preserve-merge and ``--ignore`` patch only where they applied before).
+- Entries ignored via ``--ignore`` are excluded from the source by the prune
+  stage, so they become destination-only and keep the destination value in
+  every plain direction (the former Profile-only ignore-patching path is
+  subsumed by the preserve merge).
+- **Cross-type conversion into a PermissionSet drops the Profile-only
+  `personAccountDefault` child** from recordTypeVisibilities (a person-account
+  source Profile made the converted PS invalid: the schema rejects the child).
+- **`convert_metadata_type` now emits the tab section at its original document
+  position** (it used to come first), so the plain mixed deliverable has the
+  same section order as the align mixed one - the option, not the direction,
+  determines the output layout too.
 
 ## [2.22.2] - 2026-11-25
 

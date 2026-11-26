@@ -1004,15 +1004,20 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
         sections = [s for s in sections if s not in PROFILE_EXCLUSIVE_SECTIONS]
 
     # Cross-type PermissionSet -> Profile: the source PermissionSet carries no
-    # Profile-only sections, so the destination Profile's own values there are
-    # OUT OF SCOPE for the alignment (nothing to compare or turn off). Keep them
-    # verbatim — present and unchanged — instead of reporting them as manual
-    # removals. (Profile -> Profile keeps the normal align behavior.)
+    # Profile-only sections. The NON-alignable ones (layoutAssignments,
+    # loginFlows, loginIpRanges, loginHours) flow through the generic loop so
+    # the output is the SAME as a Profile -> Profile run for the same option:
+    # destination-only entries are manual operations in align, preserved
+    # verbatim in plain. The remaining Profile-only scalars (userLicense,
+    # custom) keep the destination value (identity scalars, not permissions).
     if src_mdtype != dst_mdtype and dst_mdtype == 'Profile':
         for section in PROFILE_EXCLUSIVE_SECTIONS:
+            if section in NON_ALIGNABLE:
+                continue  # handled by the generic loop below
             for el in dst_groups.get(section, []):
                 out.append(deepcopy(el))
-        sections = [s for s in sections if s not in PROFILE_EXCLUSIVE_SECTIONS]
+        sections = [s for s in sections
+                    if s not in PROFILE_EXCLUSIVE_SECTIONS or s in NON_ALIGNABLE]
         # PermissionSet-only scalars (label / hasActivationRequired / license)
         # have no Profile counterpart and must not leak into the Profile output.
         sections = [s for s in sections if s not in _PS_SCALAR_SECTIONS]
@@ -1055,9 +1060,13 @@ def merge_profiles(source_path, dest_path, dest_env='destination org',
             for el in src_els:
                 m_el = deepcopy(el)
                 if section in _PS_DROP_DEFAULT_SECTIONS and dst_mdtype == 'PermissionSet':
-                    d = m_el.find(M + 'default')
-                    if d is not None:
-                        m_el.remove(d)
+                    # Profile-only children forbidden in a PermissionSet: the
+                    # `default` app/record-type flag and the person-account
+                    # `personAccountDefault` flag.
+                    for _child in ('default', 'personAccountDefault'):
+                        _d = m_el.find(M + _child)
+                        if _d is not None:
+                            m_el.remove(_d)
                 # PS -> Profile: a PermissionSet has no `default` concept, so the
                 # destination's default is preserved (source is authoritative
                 # for the other fields, e.g. `visible`).
@@ -1334,50 +1343,53 @@ def convert_metadata_type(src_path, dst_path=None, label=None):
     out = etree.Element(M + meta_root(dst_mdtype), nsmap={None: NS})
     notes = []
 
-    # 1. tab section -> destination vocabulary (source entries only, no revoke).
+    # 1-2. tab section + shared sections, in DOCUMENT ORDER: the tab section
+    # keeps its original position (the alignment merge emits it there too, so
+    # plain and align produce the same section order).
     src_tab = src_groups.get(tab_section(src_mdtype), [])
-    for el in src_tab:
-        out.append(_convert_tab_element(el, src_mdtype, dst_mdtype))
-    if src_tab:
-        notes.append('tab section remapped %s -> %s (%d entr(y/ies))'
-                     % (tab_section(src_mdtype), tab_section(dst_mdtype), len(src_tab)))
-
-    # 2. shared sections verbatim.
     copied = 0
-    for section, els in src_groups.items():
+    for el in src_root:
+        section = el.tag.split('}')[-1]
         if section == tab_section(src_mdtype):
+            out.append(_convert_tab_element(el, src_mdtype, dst_mdtype))
             continue
         if section in PROFILE_EXCLUSIVE_SECTIONS:
             continue
         if section in _PS_SCALAR_SECTIONS:
             continue
-        for el in els:
-            m_el = deepcopy(el)
-            if section in _PS_DROP_DEFAULT_SECTIONS:
-                if dst_mdtype == 'PermissionSet':
-                    # Profile's applicationVisibilities / recordTypeVisibilities
-                    # carry a `default` child the PermissionSet schema forbids.
-                    d = m_el.find(M + 'default')
-                    if d is not None:
-                        m_el.remove(d)
-                else:
-                    # PS -> Profile: the source has no `default`; preserve the
-                    # destination's default (or synthesize a deterministic one
-                    # when there is no destination) so the resulting Profile
-                    # keeps a valid default record type / app.
-                    key_child = MERGE_TABLE[section][0]
-                    key = _txt(m_el, key_child)
-                    dst_default = 'false'
-                    if dst_groups is not None:
-                        for d_el in dst_groups.get(section, []):
-                            if _txt(d_el, key_child) == key:
-                                dst_default = _txt(d_el, 'default') or 'false'
-                                break
-                    elif key in default_keys.get(section, ()):
-                        dst_default = 'true'
-                    _set_child_text(m_el, 'default', dst_default)
-            out.append(m_el)
-            copied += 1
+        m_el = deepcopy(el)
+        if section in _PS_DROP_DEFAULT_SECTIONS:
+            if dst_mdtype == 'PermissionSet':
+                # Profile's applicationVisibilities / recordTypeVisibilities
+                # carry a `default` child the PermissionSet schema forbids;
+                # recordTypeVisibilities may also carry the Profile-only
+                # `personAccountDefault` child (person accounts), forbidden
+                # in a PermissionSet too.
+                for _child in ('default', 'personAccountDefault'):
+                    _d = m_el.find(M + _child)
+                    if _d is not None:
+                        m_el.remove(_d)
+            else:
+                # PS -> Profile: the source has no `default`; preserve the
+                # destination's default (or synthesize a deterministic one
+                # when there is no destination) so the resulting Profile
+                # keeps a valid default record type / app.
+                key_child = MERGE_TABLE[section][0]
+                key = _txt(m_el, key_child)
+                dst_default = 'false'
+                if dst_groups is not None:
+                    for d_el in dst_groups.get(section, []):
+                        if _txt(d_el, key_child) == key:
+                            dst_default = _txt(d_el, 'default') or 'false'
+                            break
+                elif key in default_keys.get(section, ()):
+                    dst_default = 'true'
+                _set_child_text(m_el, 'default', dst_default)
+        out.append(m_el)
+        copied += 1
+    if src_tab:
+        notes.append('tab section remapped %s -> %s (%d entr(y/ies))'
+                     % (tab_section(src_mdtype), tab_section(dst_mdtype), len(src_tab)))
     if copied:
         notes.append('%d shared-section entr(y/ies) copied verbatim' % copied)
 

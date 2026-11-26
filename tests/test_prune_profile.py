@@ -1594,6 +1594,12 @@ class TestMerge(unittest.TestCase):
                 '<Profile xmlns="%s">\n%s\n</Profile>\n'
                 % (cls.NS, sections_xml))
 
+    @classmethod
+    def _permissionset(cls, sections_xml):
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<PermissionSet xmlns="%s">\n%s\n</PermissionSet>\n'
+                % (cls.NS, sections_xml))
+
     @staticmethod
     def _merge(src_sections, dst_sections):
         return TestMerge._merge_with_read_only(src_sections, dst_sections, None)
@@ -1972,6 +1978,50 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(len(flows), 1)
         self.assertEqual(flows[0].find('{%s}flow' % self.NS).text,
                          'MyLoginFlow')
+        self.assertEqual(manual_ops, [])
+        self.assertEqual(changes, [])
+
+    def test_cross_type_align_ps_to_profile_dest_only_non_alignable_is_manual(self):
+        # Cross-type PS -> Profile align must behave EXACTLY like a
+        # Profile -> Profile align: destination-only non-alignable sections
+        # (layoutAssignments) are manual operations, NOT kept verbatim.
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._permissionset(
+                '<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>'))
+            write_text(dst, TestMerge._profile(
+                ('<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>\n'
+                 '<layoutAssignments><layout>Account-Account Layout</layout>'
+                 '<recordType>Account.Partner</recordType></layoutAssignments>')))
+            xml, manual_ops, changes = pp.merge_profiles(src, dst)
+        self.assertEqual(len(manual_ops), 1)
+        self.assertEqual(manual_ops[0]['section'], 'layoutAssignments')
+        root = pp.etree.fromstring(xml)
+        self.assertEqual([e for e in root
+                          if e.tag == '{%s}layoutAssignments' % self.NS], [])
+
+    def test_cross_type_plain_ps_to_profile_preserves_dest_only_non_alignable(self):
+        # Cross-type PS -> Profile plain (preserve_dest_only=True) keeps the
+        # destination-only layoutAssignments VERBATIM - exactly like a
+        # Profile -> Profile plain.
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, 'src.xml')
+            dst = os.path.join(d, 'dst.xml')
+            write_text(src, TestMerge._permissionset(
+                '<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>'))
+            write_text(dst, TestMerge._profile(
+                ('<classAccesses><apexClass>A_cls</apexClass><enabled>true</enabled></classAccesses>\n'
+                 '<layoutAssignments><layout>Account-Account Layout</layout>'
+                 '<recordType>Account.Partner</recordType></layoutAssignments>')))
+            xml, manual_ops, changes = pp.merge_profiles(src, dst, preserve_dest_only=True)
+        root = pp.etree.fromstring(xml)
+        lays = [e for e in root if e.tag == '{%s}layoutAssignments' % self.NS]
+        self.assertEqual(len(lays), 1)
+        self.assertEqual(lays[0].find('{%s}layout' % self.NS).text,
+                         'Account-Account Layout')
+        self.assertEqual(lays[0].find('{%s}recordType' % self.NS).text,
+                         'Account.Partner')
         self.assertEqual(manual_ops, [])
         self.assertEqual(changes, [])
 
@@ -2948,9 +2998,11 @@ class TestPermissionSet(unittest.TestCase):
         self.assertEqual(la.find('{%s}layout' % self.NS).text, 'Lead-Lead Layout')
 
     def test_align_ps_to_profile_keeps_exclusive_sections_unchanged(self):
-        """Align PS->Profile must keep the destination Profile's exclusive
-        sections present and unchanged (not turned off / reported as manual),
-        while still turning OFF destination-only entries in shared sections."""
+        """Align PS->Profile must behave EXACTLY like a Profile->Profile align:
+        destination-only NON-alignable sections (layoutAssignments, loginFlows,
+        loginIpRanges, loginHours) are manual operations (NOT kept verbatim),
+        identity scalars (userLicense, custom) keep the destination value, and
+        destination-only entries in shared sections are still turned OFF."""
         src = ('<PermissionSet xmlns="%s">\n'
                '<objectPermissions><object>Lead</object><allowRead>true</allowRead></objectPermissions>\n'
                '</PermissionSet>\n' % self.NS)
@@ -2971,24 +3023,24 @@ class TestPermissionSet(unittest.TestCase):
         r = pp.etree.fromstring(xml)
         self.assertEqual(r.tag, '{%s}Profile' % self.NS)
         present = {el.tag.split('}')[-1] for el in r}
-        # exclusive sections kept present
-        for exclusive in ('userLicense', 'custom', 'layoutAssignments',
-                          'loginFlows', 'loginIpRanges', 'loginHours'):
-            self.assertIn(exclusive, present)
-        # ...and unchanged
-        la = r.find('{%s}layoutAssignments' % self.NS)
-        self.assertEqual(la.find('{%s}layout' % self.NS).text, 'Lead-Lead Layout')
-        lf = r.find('{%s}loginFlows' % self.NS)
-        self.assertEqual(lf.find('{%s}flow' % self.NS).text, 'MyLoginFlow')
+        # identity scalars keep the destination value
+        for scalar in ('userLicense', 'custom'):
+            self.assertIn(scalar, present)
+        # NON-alignable destination-only sections: manual ops, not in the file
+        for exclusive in ('layoutAssignments', 'loginFlows', 'loginIpRanges',
+                          'loginHours'):
+            self.assertNotIn(exclusive, present)
+        # ...and reported as manual operations (the Profile->Profile behaviour)
+        for exclusive in ('layoutAssignments', 'loginFlows', 'loginIpRanges',
+                          'loginHours'):
+            self.assertTrue(any(o['section'] == exclusive for o in manual_ops),
+                            '%s mancante tra le manual op' % exclusive)
         # shared section still aligned: Account (dest-only) turned OFF
         obj_perm = {el.find('{%s}object' % self.NS).text: el
                     for el in r.findall('{%s}objectPermissions' % self.NS)}
         self.assertIn('Lead', obj_perm)     # source entry kept
         self.assertIn('Account', obj_perm)  # dest-only -> explicit off
         self.assertEqual(obj_perm['Account'].find('{%s}allowRead' % self.NS).text, 'false')
-        # no manual op for the exclusive sections
-        self.assertFalse(any(o['section'] in ('layoutAssignments', 'loginFlows')
-                             for o in manual_ops))
 
     def test_convert_profile_to_ps_drops_app_default(self):
         """Profile applicationVisibilities has a `default` child the PS schema
@@ -3004,6 +3056,51 @@ class TestPermissionSet(unittest.TestCase):
         self.assertIsNotNone(av)
         self.assertIsNone(av.find('{%s}default' % self.NS))
         self.assertEqual(av.find('{%s}visible' % self.NS).text, 'true')
+
+    def test_convert_profile_to_ps_drops_person_account_default(self):
+        """Profile recordTypeVisibilities for person accounts carry the
+        Profile-only `personAccountDefault` child, forbidden in a PermissionSet:
+        cross-type conversion must drop it (along with `default`)."""
+        src = ('<Profile xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>PersonAccount.PersonAccount</recordType>'
+               '<default>false</default><personAccountDefault>true</personAccountDefault>'
+               '<visible>true</visible></recordTypeVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            xml, notes = pp.convert_metadata_type(os.path.join(d, 'src.xml'), label='PS')
+        r = pp.etree.fromstring(xml)
+        rt = r.find('{%s}recordTypeVisibilities' % self.NS)
+        self.assertIsNotNone(rt)
+        self.assertEqual(rt.find('{%s}recordType' % self.NS).text,
+                         'PersonAccount.PersonAccount')
+        self.assertIsNone(rt.find('{%s}default' % self.NS))
+        self.assertIsNone(rt.find('{%s}personAccountDefault' % self.NS))
+        self.assertEqual(rt.find('{%s}visible' % self.NS).text, 'true')
+
+    def test_merge_profile_to_ps_drops_person_account_default(self):
+        """Align Profile->PS: a shared recordTypeVisibilities entry must not
+        carry the Profile-only `personAccountDefault` child in the merged PS."""
+        src = ('<Profile xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>PersonAccount.PersonAccount</recordType>'
+               '<default>false</default><personAccountDefault>true</personAccountDefault>'
+               '<visible>true</visible></recordTypeVisibilities>\n'
+               '</Profile>\n' % self.NS)
+        dst = ('<PermissionSet xmlns="%s">\n'
+               '<recordTypeVisibilities><recordType>PersonAccount.PersonAccount</recordType>'
+               '<visible>true</visible></recordTypeVisibilities>\n'
+               '</PermissionSet>\n' % self.NS)
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, 'src.xml', src)
+            self._write(d, 'dst.xml', dst)
+            xml, manual_ops, changes = pp.merge_profiles(
+                os.path.join(d, 'src.xml'), os.path.join(d, 'dst.xml'))
+        r = pp.etree.fromstring(xml)
+        rt = r.find('{%s}recordTypeVisibilities' % self.NS)
+        self.assertIsNotNone(rt)
+        self.assertIsNone(rt.find('{%s}default' % self.NS))
+        self.assertIsNone(rt.find('{%s}personAccountDefault' % self.NS))
+        self.assertEqual(rt.find('{%s}visible' % self.NS).text, 'true')
 
     def test_merge_profile_to_ps_drops_app_default_and_off(self):
         """Align Profile->PS: applicationVisibilities must not carry `default`
